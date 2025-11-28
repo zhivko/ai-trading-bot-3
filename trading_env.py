@@ -29,7 +29,8 @@ class TradingEnv(gym.Env):
         self.reset()
 
     def reset(self, *, seed=None, options=None):
-        self.current_step = 500
+        self.current_step = 500  # Start at 500 for VP data availability
+        self.train_step = 0  # Track actual training steps (starts from 0)
         self.balance = self.initial_balance
         self.position = 0.0
         self.prev_position = 0.0
@@ -80,32 +81,30 @@ class TradingEnv(gym.Env):
 
         self.prev_price = current_price
         self.current_step += 1
+        self.train_step += 1
 
-        # === FINAL FIX: Gracefully stop when we run out of data ===
+        # === WRAP AROUND DATA (ONE BIG EPISODE) ===
         if self.current_step >= len(self.df):
-            # We have no more data → tell SB3 the episode is over (but do NOT reset anything)
-            terminated = True      # ← This ends the episode cleanly
-            truncated = False
-            obs = self._get_observation()  # last valid observation
-            print(f"\nReached end of data at step {self.current_step}. Ending episode cleanly.")
-            return obs, reward, terminated, truncated, info
+            # Wrap back to start (keep portfolio state, just cycle data)
+            self.current_step = 500  # Reset to min_steps for VP data
+            self.prev_price = self.df.iloc[self.current_step]['close']
+            print(f"\n[Train step {self.train_step}] Data wrapped around. Portfolio: {new_portfolio:.0f}")
 
-        # Normal case: continue training
+        # Never terminate - one big episode for full total-timesteps
         terminated = False
         truncated = False
 
         info = {
-            "portfolio_value": self.balance + self.position * current_price,
+            "portfolio_value": new_portfolio,
             "position": self.position,
         }
 
-        # Logging every 100 steps
-        if self.current_step % 100 == 0:
-            print(f"Step {self.current_step}: Action={action[0]:.3f}, Position={self.position:.3f}, "
-                  f"Reward={reward:.3f}, Portfolio={new_portfolio:.0f}")
+        # Logging (use train_step for consistency with total-timesteps)
+        if self.train_step % 100 == 0:
+            print(f"Step {self.train_step}: Action={action[0]:.3f}, Position={self.position:.3f}, Reward={reward:.3f}, Portfolio={new_portfolio:.0f}")
 
         return self._get_observation(), reward, terminated, truncated, info
-
+    
     def _calculate_portfolio_value(self, price):
         return self.balance + self.position * price
 
