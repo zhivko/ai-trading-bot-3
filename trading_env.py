@@ -14,7 +14,7 @@ class TradingEnv(gym.Env):
         self.vp7_df = vp7_df
         self.vp30_df = vp30_df
         self.episode_length = episode_length_days * 24  # hours
-        self.initial_balance = initial_balance
+        self.initial_balance = initial_balanceb
         self.min_steps = 30 * 24  # to have VP data
         self.verbose = verbose
         self.last_bankrupt_step = -100  # Track last bankruptcy step for cooldown
@@ -114,10 +114,11 @@ class TradingEnv(gym.Env):
         if self.current_price > self.vp_poc_30d:
             reward += 0.001 * abs(self.target_position)
 
-        # 4. Penalty for bankruptcy avoidance trigger (one-time with 100-step cooldown)
-        if bankruptcy_triggered and self.train_step - self.last_bankrupt_step > 100:
-            reward -= 100
-            self.last_bankrupt_step = self.train_step
+        if self.balance <= 0 or new_portfolio < 2500:
+            reward = -100
+            terminated = True
+            if self.current_step > 50:
+                print(f"Bankruptcy occurred at step {self.current_step}")
 
         # No bankruptcy termination
         terminated = False
