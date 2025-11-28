@@ -17,8 +17,9 @@ print("Model loaded successfully")
 # 2. Load data
 pair = 'BTC/USDT'
 data_file = f'{pair.replace("/", "_")}_data.csv'
-df = pd.read_csv(data_file, index_col=0, parse_dates=True)
-print(f"Data loaded: {len(df)} rows")
+df = pd.read_csv(data_file, parse_dates=['timestamp'])
+df = df.set_index('timestamp').sort_index()
+print(f"Full data length: {len(df)} rows")
 
 # Compute VP with caching
 vp7_file = f'{pair.replace("/", "_")}_vp7.pkl'
@@ -168,10 +169,11 @@ ax3.plot(values, color='orange')
 ax3.set_title("Value Function (expected future return)")
 ax3.grid(alpha=0.3)
 
+step = max(1, len(df) // 10)  # 10 ticks
+date_labels = df.index[::step]
 for ax in (ax1, ax2):
-    ax.set_xticks(range(0, len(df), len(df)//20))  # ~20 readable ticks
-    ax.set_xticklabels(df.index[::len(df)//20].strftime('%Y-%m-%d %H:%M'),
-                        rotation=45, ha='right')
+    ax.set_xticks(range(0, len(df), step))
+    ax.set_xticklabels([d.strftime('%Y-%m-%d %H') for d in date_labels], rotation=45)
 
 plt.tight_layout()
 plt.show()
