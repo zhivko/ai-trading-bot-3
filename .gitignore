@@ -1,5 +1,6 @@
 # Data files
 *.csv
+*.pkl
 
 # Model files
 ppo_crypto_trader.zip
