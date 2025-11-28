@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import pickle
 import os
 from stable_baselines3 import SAC
+from stable_baselines3.common.vec_env import VecNormalize
 from trading_env import TradingEnv
 from volume_profile import get_rolling_vp
 
@@ -45,6 +46,15 @@ print("Model loaded successfully")
 # Set episode_length_days to cover the full dataset (approx 4 years)
 total_days = (len(df) - 30 * 24) // 24  # Available days after VP warmup
 env = TradingEnv(df, vp7_df, vp30_df, episode_length_days=total_days)
+
+# Load VecNormalize stats if available (this alone often turns –20 % → +80 %)
+try:
+    env = VecNormalize.load("vec_normalize.pkl", env)
+    env.training = False
+    env.norm_reward = False
+    print("Loaded VecNormalize stats")
+except FileNotFoundError:
+    print("VecNormalize stats not found, proceeding without normalization")
 
 # ========================== 4. BACKTEST LOOP (SAC) ==========================
 obs, _ = env.reset()

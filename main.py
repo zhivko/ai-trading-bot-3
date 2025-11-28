@@ -5,6 +5,7 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 import wandb
 import matplotlib.pyplot as plt
 import pickle
@@ -173,8 +174,9 @@ def main():
         with open(vp30_file, 'wb') as f:
             pickle.dump(vp30_df, f)
 
-    # Create environment
-    env = TradingEnv(df, vp7_df, vp30_df)
+    # Create environment with VecNormalize
+    env = DummyVecEnv([lambda: TradingEnv(df, vp7_df, vp30_df)])
+    env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
     # Initialize wandb
     wandb.init(project="grok-crypto-trader", name="sac-baseline")
@@ -233,8 +235,9 @@ def main():
     callback = WandbCallback(vp7_df=vp7_df, vp30_df=vp30_df)
     model.learn(total_timesteps=hyperparams['total_timesteps'], log_interval=10, callback=callback)
 
-    # Save model
+    # Save model and VecNormalize stats
     model.save("sac_crypto_trader")
+    env.save("vec_normalize.pkl")
 
     print("SAC Training completed.")
 

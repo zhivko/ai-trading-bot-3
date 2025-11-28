@@ -53,6 +53,10 @@ class TradingEnv(gym.Env):
         action = np.clip(action[0], -1.0, 1.0)
         action = np.sign(action) * max(abs(action), 0.3)  # min 30% size
 
+        # Force almost full position size (SAC loves to stay flat)
+        self.position = np.tanh(action * 3.0)
+        self.position = np.clip(self.position, -0.99, 0.99)
+
         # Get current price
         close = self.df.iloc[self.current_step]['close']
 
@@ -63,9 +67,8 @@ class TradingEnv(gym.Env):
         old_position = self.position
 
         # Update position and entry price
-        position_changed = abs(action - self.position) > 1e-6
+        position_changed = abs(self.position - old_position) > 1e-6
         if position_changed:
-            self.position = action
             self.entry_price = close
             self.holding_bars = 0
         else:
@@ -80,6 +83,8 @@ class TradingEnv(gym.Env):
 
         # Reward: change in portfolio value
         reward = current_value - prev_value
+        if np.isnan(reward) or np.isinf(reward):
+            reward = 0.0
 
         # Subtract trading costs
         if position_changed:
@@ -108,11 +113,15 @@ class TradingEnv(gym.Env):
 
         dist_to_poc = abs(close - poc) / close if close != 0 else 0
 
-        # VP bonuses
+        # Stronger VP bonuses
         if self.position > 0 and close <= val * 1.008:
-            reward += 12.0
+            reward += 30.0
         if self.position < 0 and close >= vah * 0.992:
-            reward += 12.0
+            reward += 30.0
+
+        # Bonus for trading near POC
+        if abs(close - poc) / close < 0.005:  # within 0.5% of POC
+            reward += 20.0
 
         # Penalty for fighting POC with big size
         if abs(self.position) > 0.5 and dist_to_poc > 0.02:
@@ -133,7 +142,7 @@ class TradingEnv(gym.Env):
         return obs, reward, self.done, False, {}
 
     def _calculate_portfolio_value(self, price):
-        if self.position == 0:
+        if self.position == 0 or self.entry_price <= 0 or price <= 0:
             return self.cash
         elif self.position > 0:  # Long
             return self.cash + self.position * self.cash * (price / self.entry_price - 1)
@@ -142,7 +151,10 @@ class TradingEnv(gym.Env):
 
     def _get_obs(self):
         t = self.df.index[self.current_step]
-        return get_features(self.df, self.vp7_df, self.vp30_df, t)
+        obs = get_features(self.df, self.vp7_df, self.vp30_df, t)
+        if np.any(np.isnan(obs)) or np.any(np.isinf(obs)):
+            obs = np.zeros_like(obs)
+        return obs
 
     def render(self, mode='human'):
         pass
