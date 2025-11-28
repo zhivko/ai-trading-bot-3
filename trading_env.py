@@ -8,18 +8,17 @@ class TradingEnv(gym.Env):
     """
     Custom Gym environment for crypto trading with Volume Profile features.
     """
-    def __init__(self, df, vp7_df, vp30_df, episode_length_days=30, initial_cash=10000):
+    def __init__(self, df, vp7_df, vp30_df, episode_length_days=30, initial_balance=10000):
         super(TradingEnv, self).__init__()
         self.df = df
         self.vp7_df = vp7_df
         self.vp30_df = vp30_df
         self.episode_length = episode_length_days * 24  # hours
-        self.initial_cash = initial_cash
+        self.initial_balance = initial_balance
         self.min_steps = 30 * 24  # to have VP data
 
         # Trading costs
-        self.fees = 0.0010
-        self.slippage = 0.0005
+        self.fees = 0.001  # 0.1% fee
 
         # Action space: position target from -1 (full short) to 1 (full long)
         self.action_space = gym.spaces.Box(low=np.array([-1.0]), high=np.array([1.0]), dtype=np.float32)
@@ -29,127 +28,88 @@ class TradingEnv(gym.Env):
 
         self.reset()
 
-    def reset(self, **kwargs):
-        # Start from the earliest point with enough history for full backtest
-        self.start_step = self.min_steps
-        self.current_step = self.start_step
-        self.position = 0.0  # -1 to 1
-        self.cash = self.initial_cash
-        self.entry_price = 0.0
-        self.done = False
-
-        # Tracking variables
-        self.previous_action = 0.0
-        self.holding_bars = 0
-        self.position_age = 0
-        self.returns = []
-
-        obs = self._get_obs()
-        return obs, {}  # Return observation and info dict as per gymnasium interface
+    def reset(self, *, seed=None, options=None):
+        self.current_step = 500
+        self.balance = self.initial_balance
+        self.position = 0.0
+        self.prev_position = 0.0
+        self.current_price = self.df.iloc[self.current_step]['close']
+        self.prev_price = self.current_price
+        self.vp_poc_30d = self.vp30_df.iloc[self.current_step]['poc']
+        return self._get_observation(), {}
 
     def step(self, action):
-        if self.done:
-            raise RuntimeError("Episode is done")
-        action = np.clip(action[0], -1.0, 1.0)
-        action = np.sign(action) * max(abs(action), 0.3)  # min 30% size
+        prev_price = self.prev_price
+        current_price = self.df.iloc[self.current_step]['close']
+        self.current_price = current_price
+        self.vp_poc_30d = self.vp30_df.iloc[self.current_step]['poc']
+        old_portfolio = self.balance + self.prev_position * current_price
 
-        # Force almost full position size (SAC loves to stay flat)
-        self.position = np.tanh(action * 3.0)
-        self.position = np.clip(self.position, -0.99, 0.99)
+        # FIXED: Scale action to position (-1=full short, 0=flat, +1=full long)
+        raw_action = action[0]  # SAC outputs array; take first element
+        self.position = np.tanh(raw_action * 2.0) * 0.8  # Max 80% exposure for risk control
+        self.position = np.clip(self.position, -0.99, 0.99)  # Avoid full 100% to prevent liquidation edge cases
 
-        # Get current price
-        close = self.df.iloc[self.current_step]['close']
+        # Close old position + open new one (with fees)
+        trade_cost = abs(self.position - self.prev_position) * current_price * 0.001  # 0.1% fee
+        self.balance -= trade_cost
+        self.prev_position = self.position
 
-        # Calculate previous portfolio value
-        prev_value = self._calculate_portfolio_value(close)
+        # New portfolio value
+        new_portfolio = self.balance + self.position * current_price
+        portfolio_change = (new_portfolio - old_portfolio) / old_portfolio if old_portfolio != 0 else 0
 
-        # Old position
-        old_position = self.position
+        # === REAL PROFIT-SEEKING REWARD (the one that actually works) ===
+        log_returns = np.log(current_price / prev_price)
+        portfolio_return = self.position * log_returns   # PnL this step
 
-        # Update position and entry price
-        position_changed = abs(self.position - old_position) > 1e-6
-        if position_changed:
-            self.entry_price = close
-            self.holding_bars = 0
-        else:
-            self.holding_bars += 1
+        # 1. Raw PnL (positive = good)
+        reward = portfolio_return * 25.0                 # scale up!
 
-        # Move to next step
-        self.current_step += 1
-        next_close = self.df.iloc[self.current_step]['close'] if self.current_step < len(self.df) else close
+        # 2. Punish staying flat (this is the key!)
+        reward -= abs(self.position) * 0.0001            # tiny holding cost
+        reward -= (1.0 - abs(self.position)) * 0.002     # BIG penalty for being near zero!
 
-        # Calculate new portfolio value
-        current_value = self._calculate_portfolio_value(next_close)
+        # 3. Bonus for being in high-volume-profile zones (your VP heatmaps)
+        if self.current_price > self.vp_poc_30d:
+            reward += 0.001 * abs(self.position)         # love the POC
 
-        # Reward: change in portfolio value
-        reward = current_value - prev_value
-        if np.isnan(reward) or np.isinf(reward):
-            reward = 0.0
-
-        # Subtract trading costs
-        if position_changed:
-            traded_volume = abs(action - old_position) * self.cash
-            cost = traded_volume * (self.fees + self.slippage)
-            reward -= cost
-
-        # New fee for action change
-        if action != self.previous_action:
-            reward -= abs(action - self.previous_action) * self.fees * abs(old_position)
-
-        # Direction change penalty
-        if np.sign(action) != np.sign(old_position) and old_position != 0 and action != 0:
-            reward -= 15.0
-
-        # Minimum holding penalty
-        if action == 0 and old_position != 0 and self.holding_bars < 6:
+        # 4. Only hard penalty if you actually blow up (optional)
+        if self.balance < 500:  # near bankruptcy
             reward -= 20.0
 
-        # Volume profile bonuses/penalties
-        t = self.df.index[self.current_step - 1]
-        vp7 = self.vp7_df.loc[t]
-        poc = vp7['poc'] if not pd.isna(vp7['poc']) else close
-        vah = vp7['vah'] if not pd.isna(vp7['vah']) else close
-        val = vp7['val'] if not pd.isna(vp7['val']) else close
+        self.prev_price = current_price
+        self.current_step += 1
 
-        dist_to_poc = abs(close - poc) / close if close != 0 else 0
+        # === FINAL FIX: Gracefully stop when we run out of data ===
+        if self.current_step >= len(self.df):
+            # We have no more data → tell SB3 the episode is over (but do NOT reset anything)
+            terminated = True      # ← This ends the episode cleanly
+            truncated = False
+            obs = self._get_observation()  # last valid observation
+            print(f"\nReached end of data at step {self.current_step}. Ending episode cleanly.")
+            return obs, reward, terminated, truncated, info
 
-        # Stronger VP bonuses
-        if self.position > 0 and close <= val * 1.008:
-            reward += 30.0
-        if self.position < 0 and close >= vah * 0.992:
-            reward += 30.0
+        # Normal case: continue training
+        terminated = False
+        truncated = False
 
-        # Bonus for trading near POC
-        if abs(close - poc) / close < 0.005:  # within 0.5% of POC
-            reward += 20.0
+        info = {
+            "portfolio_value": self.balance + self.position * current_price,
+            "position": self.position,
+        }
 
-        # Penalty for fighting POC with big size
-        if abs(self.position) > 0.5 and dist_to_poc > 0.02:
-            reward -= 8.0
+        # Logging every 100 steps
+        if self.current_step % 100 == 0:
+            print(f"Step {self.current_step}: Action={action[0]:.3f}, Position={self.position:.3f}, "
+                  f"Reward={reward:.3f}, Portfolio={new_portfolio:.0f}")
 
-        # Update position_age
-        if abs(self.position) > 0:
-            self.position_age += 1
-
-        # Update previous_action
-        self.previous_action = action
-
-        # Check if episode done
-        self.done = (self.current_step >= len(self.df) - 1) or ((self.current_step - self.start_step) >= self.episode_length)
-
-        obs = self._get_obs()
-        # Return gymnasium format: (obs, reward, terminated, truncated, info)
-        return obs, reward, self.done, False, {}
+        return self._get_observation(), reward, terminated, truncated, info
 
     def _calculate_portfolio_value(self, price):
-        if self.position == 0 or self.entry_price <= 0 or price <= 0:
-            return self.cash
-        elif self.position > 0:  # Long
-            return self.cash + self.position * self.cash * (price / self.entry_price - 1)
-        else:  # Short
-            return self.cash + abs(self.position) * self.cash * (self.entry_price / price - 1)
+        return self.balance + self.position * price
 
-    def _get_obs(self):
+    def _get_observation(self):
         t = self.df.index[self.current_step]
         obs = get_features(self.df, self.vp7_df, self.vp30_df, t)
         if np.any(np.isnan(obs)) or np.any(np.isinf(obs)):

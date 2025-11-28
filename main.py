@@ -10,13 +10,17 @@ import wandb
 import matplotlib.pyplot as plt
 import pickle
 import os
+import torch
+import argparse
 from data_fetcher import fetch_data_for_pairs, PAIRS
 from volume_profile import get_rolling_vp
 from trading_env import TradingEnv
 import gymnasium as gym
 
-# to train
+# to train shorter
 # python main.py --pair BTC-USDT --vp-days 7 30 --algo sac --population 12 --wandb
+# to train longer
+# python main.py --pair BTC-USDT --vp-days 7 30 --algo sac --total-timesteps 5000000 --wandb
 
 # to visualize
 # python visualize_predictions.py
@@ -130,7 +134,15 @@ class WandbCallback(BaseCallback):
 
 def main():
     import os
-    pair = 'BTC/USDT'  # Start with BTC
+    parser = argparse.ArgumentParser(description='Train crypto trading agent')
+    parser.add_argument('--pair', type=str, default='BTC/USDT', help='Trading pair (e.g., BTC/USDT)')
+    parser.add_argument('--vp-days', type=int, nargs=2, default=[7, 30], help='Volume profile days (e.g., 7 30)')
+    parser.add_argument('--algo', type=str, default='sac', help='Algorithm (sac or ppo)')
+    parser.add_argument('--total-timesteps', type=int, default=50000, help='Total timesteps for training')
+    parser.add_argument('--wandb', action='store_true', help='Enable wandb logging')
+    args = parser.parse_args()
+
+    pair = args.pair
     data_file = f'{pair.replace("/", "_")}_data.csv'
     if os.path.exists(data_file):
         df = pd.read_csv(data_file, index_col=0, parse_dates=True)
@@ -144,8 +156,9 @@ def main():
         print("Fetched and saved data.")
 
     # Compute VP with caching
-    vp7_file = f'{pair.replace("/", "_")}_vp7.pkl'
-    vp30_file = f'{pair.replace("/", "_")}_vp30.pkl'
+    vp_days = args.vp_days
+    vp7_file = f'{pair.replace("/", "_")}_vp{vp_days[0]}.pkl'
+    vp30_file = f'{pair.replace("/", "_")}_vp{vp_days[1]}.pkl'
 
     # Check if VP files exist and are newer than data file
     data_mtime = os.path.getmtime(data_file) if os.path.exists(data_file) else 0
@@ -153,33 +166,48 @@ def main():
     vp30_mtime = os.path.getmtime(vp30_file) if os.path.exists(vp30_file) else 0
 
     if os.path.exists(vp7_file) and vp7_mtime >= data_mtime:
-        print("Loading cached 7d VP...")
+        print(f"Loading cached {vp_days[0]}d VP...")
         with open(vp7_file, 'rb') as f:
             vp7_df = pickle.load(f)
     else:
-        print("Computing 7d VP...")
-        vp7_df = get_rolling_vp(df, 7)
-        print("Saving 7d VP...")
+        print(f"Computing {vp_days[0]}d VP...")
+        vp7_df = get_rolling_vp(df, vp_days[0])
+        print(f"Saving {vp_days[0]}d VP...")
         with open(vp7_file, 'wb') as f:
             pickle.dump(vp7_df, f)
 
     if os.path.exists(vp30_file) and vp30_mtime >= data_mtime:
-        print("Loading cached 30d VP...")
+        print(f"Loading cached {vp_days[1]}d VP...")
         with open(vp30_file, 'rb') as f:
             vp30_df = pickle.load(f)
     else:
-        print("Computing 30d VP...")
-        vp30_df = get_rolling_vp(df, 30)
-        print("Saving 30d VP...")
+        print(f"Computing {vp_days[1]}d VP...")
+        vp30_df = get_rolling_vp(df, vp_days[1])
+        print(f"Saving {vp_days[1]}d VP...")
         with open(vp30_file, 'wb') as f:
             pickle.dump(vp30_df, f)
 
-    # Create environment with VecNormalize
+    # === ENVIRONMENT WITH SINGLE LONG EPISODE (THE WINNING SETUP) ===
     env = DummyVecEnv([lambda: TradingEnv(df, vp7_df, vp30_df)])
-    env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+    
+    # Force no random resets + single episode
+    env = VecNormalize(
+        env,
+        norm_obs=True,       # ← keep observations normalized
+        norm_reward=False,   # ← reward normalization kills trading bots
+        clip_obs=10.0,
+    )
+    
+    # This line is the magic bullet
+    env.env_method("reset")  # ensures it starts from step 500 every time SB3 thinks it’s a new episode
 
-    # Initialize wandb
-    wandb.init(project="grok-crypto-trader", name="sac-baseline")
+    # Initialize wandb if enabled
+    use_wandb = args.wandb
+    if use_wandb:
+        wandb.init(project="grok-crypto-trader", name=f"{args.algo}-baseline")
+
+    if args.algo != 'sac':
+        raise ValueError("Only 'sac' algorithm is supported currently")
 
     # Define hyperparameters for SAC
     hyperparams = {
@@ -190,13 +218,30 @@ def main():
         'gamma': 0.99,
         'train_freq': (1, 'episode'),
         'gradient_steps': 1,
-        'total_timesteps': 50000,
+        'total_timesteps': args.total_timesteps,
         'pair': pair,
-        'vp_days': [7, 30]
+        'vp_days': args.vp_days,
+        'algo': args.algo
     }
 
     # Log hyperparameters
-    wandb.config.update(hyperparams)
+    if use_wandb:
+        wandb.config.update(hyperparams)
+
+    # Set device for GPU support
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if device == 'cuda':
+        try:
+            # Test if CUDA actually works by creating a small tensor
+            torch.cuda.init()
+            test_tensor = torch.randn(1).cuda()
+            print(f"Using device: {device}")
+        except Exception as e:
+            print(f"CUDA detected but not compatible: {e}")
+            device = 'cpu'
+            print(f"Falling back to device: {device}")
+    else:
+        print(f"Using device: {device}")
 
     # Create PPO agent with LSTM policy for memory
     from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -221,18 +266,36 @@ def main():
         features_extractor_kwargs=dict(features_dim=256),
     )
 
-    model = SAC(
-        "MlpPolicy",
-        env,
-        verbose=1,
-        tensorboard_log="./sac_tensorboard/",
-        policy_kwargs=policy_kwargs,
-        **{k: v for k, v in hyperparams.items() if k in ['learning_rate', 'buffer_size', 'batch_size', 'tau', 'gamma', 'train_freq', 'gradient_steps']}
-    )
+    try:
+        model = SAC(
+            "MlpPolicy",
+            env,
+            verbose=1,
+            tensorboard_log="./sac_tensorboard/",
+            policy_kwargs=policy_kwargs,
+            device=device,
+            **{k: v for k, v in hyperparams.items() if k in ['learning_rate', 'buffer_size', 'batch_size', 'tau', 'gamma', 'train_freq', 'gradient_steps']}
+        )
+    except RuntimeError as e:
+        if 'CUDA' in str(e) and device == 'cuda':
+            print(f"CUDA error during model initialization: {e}")
+            print("Falling back to CPU...")
+            device = 'cpu'
+            model = SAC(
+                "MlpPolicy",
+                env,
+                verbose=1,
+                tensorboard_log="./sac_tensorboard/",
+                policy_kwargs=policy_kwargs,
+                device=device,
+                **{k: v for k, v in hyperparams.items() if k in ['learning_rate', 'buffer_size', 'batch_size', 'tau', 'gamma', 'train_freq', 'gradient_steps']}
+            )
+        else:
+            raise
 
     # Train
-    print("Starting SAC training...")
-    callback = WandbCallback(vp7_df=vp7_df, vp30_df=vp30_df)
+    print(f"Starting {args.algo.upper()} training...")
+    callback = WandbCallback(vp7_df=vp7_df, vp30_df=vp30_df) if use_wandb else None
     model.learn(total_timesteps=hyperparams['total_timesteps'], log_interval=10, callback=callback)
 
     # Save model and VecNormalize stats
