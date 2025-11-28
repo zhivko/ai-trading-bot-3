@@ -17,6 +17,7 @@ class TradingEnv(gym.Env):
         self.initial_balance = initial_balance
         self.min_steps = 30 * 24  # to have VP data
         self.verbose = verbose
+        self.last_bankrupt_step = -100  # Track last bankruptcy step for cooldown
 
         # Trading costs
         self.fees = 0.001  # 0.1% fee
@@ -53,6 +54,10 @@ class TradingEnv(gym.Env):
         raw_action = action[0]  # SAC outputs array; take first element
         new_target = np.tanh(raw_action * 2.0) * 0.8  # Max 80% exposure for risk control
         new_target = np.clip(new_target, -0.99, 0.99)
+
+        # Clamp actions based on training progress
+        max_fraction = min(0.5, 0.01 + 0.000001 * self.train_step)
+        new_target = np.clip(new_target, -max_fraction, max_fraction)
         
         # Calculate target holdings in BTC units based on portfolio value
         # target_position is fraction of portfolio to hold in BTC
@@ -74,15 +79,15 @@ class TradingEnv(gym.Env):
         # Calculate new portfolio value AFTER trades
         new_portfolio = self.balance + self.holdings * current_price
 
-        # Bankruptcy avoidance: floor portfolio at 2000 if below
+        # Bankruptcy avoidance: floor portfolio at 2500 if below
         bankruptcy_triggered = False
-        if new_portfolio < 2000:
+        if new_portfolio < 2500:
             bankruptcy_triggered = True
-            self.balance = 2000
+            self.balance = 2500
             self.holdings = 0.0
-            new_portfolio = 2000
+            new_portfolio = 2500
             if self.verbose:
-                print(f"Bankruptcy avoidance triggered at step {self.train_step}: Portfolio floored at 2000")
+                print(f"Bankruptcy avoidance triggered at step {self.train_step}: Portfolio floored at 2500")
 
         # Debug logging for low portfolio values
         if new_portfolio <= 10:
@@ -96,17 +101,23 @@ class TradingEnv(gym.Env):
         # 1. Raw PnL (positive = good)
         reward = portfolio_return * 25.0
 
-        # 2. Punish staying flat
-        reward -= abs(self.target_position) * 0.0001  # tiny holding cost
+        # Survival reward
+        reward += log_returns * 20
+
+        # 2. Position penalty every step
+        reward -= abs(self.target_position) * 0.01  # holding cost
+
+        # 3. Punish staying flat
         reward -= (1.0 - abs(self.target_position)) * 0.002  # penalty for being near zero
 
         # 3. Bonus for being in high-volume-profile zones
         if self.current_price > self.vp_poc_30d:
             reward += 0.001 * abs(self.target_position)
 
-        # 4. Penalty for bankruptcy avoidance trigger
-        if bankruptcy_triggered:
-            reward -= 5000
+        # 4. Penalty for bankruptcy avoidance trigger (one-time with 100-step cooldown)
+        if bankruptcy_triggered and self.train_step - self.last_bankrupt_step > 100:
+            reward -= 100
+            self.last_bankrupt_step = self.train_step
 
         # No bankruptcy termination
         terminated = False
