@@ -8,7 +8,7 @@ import os
 from sb3_contrib import RecurrentPPO
 import gymnasium as gym
 from trading_env import TradingEnv
-from volume_profile import get_rolling_vp
+from volume_profile import get_rolling_vp, compute_volume_profile
 
 # 1. Load the trained model
 model = RecurrentPPO.load("ppo_crypto_trader.zip")
@@ -66,9 +66,6 @@ episode_starts = torch.tensor([1.0], dtype=torch.float32)  # True as 1.0
 actions = []
 values = []       # critic value
 prices = []
-vp_poc = []       # Point of Control from volume profile
-vp_vah = []
-vp_val = []
 
 step = 0
 print("Starting simulation...")
@@ -88,13 +85,6 @@ while not done:
     actions.append(action[0])  # action is array
     values.append(value)
     prices.append(env.df.iloc[env.current_step]['close'])  # current price
-    # For VP, need to get from vp_df
-    t = env.df.index[env.current_step]
-    vp7 = vp7_df.loc[t]
-    vp30 = vp30_df.loc[t]
-    vp_poc.append(vp7['poc'] if not pd.isna(vp7['poc']) else env.df.iloc[env.current_step]['close'])
-    vp_vah.append(vp7['vah'] if not pd.isna(vp7['vah']) else env.df.iloc[env.current_step]['close'])
-    vp_val.append(vp7['val'] if not pd.isna(vp7['val']) else env.df.iloc[env.current_step]['close'])
 
     episode_starts = torch.tensor([0.0], dtype=torch.float32)  # False as 0.0
 
@@ -108,9 +98,25 @@ print("Generating plots...")
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 8), sharex=True)
 
 # Price + Volume Profile background
-ax1.plot(prices, label='Price', color='blue', linewidth=1.2)
-ax1.fill_between(range(len(prices)), vp_val, vp_vah, alpha=0.15, color='cyan', label='Value Area')
-ax1.plot(vp_poc, color='yellow', linewidth=1, alpha=0.8, label='POC')
+vp_window = 24  # Bars for rolling VP
+num_bins = 50
+ax1.plot(range(len(prices)), prices, label='Price', color='blue', linewidth=1.2)
+for i in range(vp_window, len(prices)):
+    window_data = df.iloc[i - vp_window : i]
+    vp = compute_volume_profile(window_data, num_bins=num_bins)
+    # POC
+    ax1.axhline(vp['poc'], xmin=i/len(prices), xmax=(i+1)/len(prices), color='yellow', lw=2, alpha=0.8, label='POC' if i==vp_window else '')
+    # VA
+    ax1.fill_between([i, i+1], vp['val'], vp['vah'], color='cyan', alpha=0.15, label='Value Area' if i==vp_window else '')
+    # HVN
+    threshold = np.percentile(vp['vp'], 75)
+    hvn_indices = np.where(vp['vp'] > threshold)[0]
+    if len(hvn_indices) > 0:
+        bin_size = (vp['bins'][1] - vp['bins'][0]) if len(vp['bins']) > 1 else 0
+        hvn_levels = vp['bins'][hvn_indices] + bin_size / 2
+        hvn_volumes = vp['vp'][hvn_indices]
+        for level, vol in zip(hvn_levels, hvn_volumes):
+            ax1.scatter(i, level, s=vol * 0.01, marker='^', c='green', alpha=0.6, label='HVN' if i==vp_window and level==hvn_levels[0] else '')
 # New version – works with continuous actions [-1, 1]
 long_entries  = [i for i, a in enumerate(actions) if a > 0.6]      # confident long
 short_entries = [i for i, a in enumerate(actions) if a < -0.6]     # confident short
