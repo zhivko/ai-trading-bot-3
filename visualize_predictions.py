@@ -115,8 +115,12 @@ for i in range(vp_window, len(prices)):
         bin_size = (vp['bins'][1] - vp['bins'][0]) if len(vp['bins']) > 1 else 0
         hvn_levels = vp['bins'][hvn_indices] + bin_size / 2
         hvn_volumes = vp['vp'][hvn_indices]
+        current_price = prices[i]
+        local_range = current_price * 0.15
         for level, vol in zip(hvn_levels, hvn_volumes):
-            ax1.scatter(i, level, s=vol * 0.01, marker='^', c='green', alpha=0.6, label='HVN' if i==vp_window and level==hvn_levels[0] else '')
+            if abs(level - current_price) > local_range:
+                continue
+            ax1.scatter(i, level, s=min(vol * 10, 150), marker='^', c='green', alpha=0.7, label='HVN' if i==vp_window and level==hvn_levels[0] else '')
 # New version – works with continuous actions [-1, 1]
 long_entries  = [i for i, a in enumerate(actions) if a > 0.6]      # confident long
 short_entries = [i for i, a in enumerate(actions) if a < -0.6]     # confident short
