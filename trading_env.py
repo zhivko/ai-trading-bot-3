@@ -1,161 +1,147 @@
 import gymnasium as gym
 import numpy as np
 import pandas as pd
-import wandb
-from features import get_features
+from gymnasium import spaces
 
 class TradingEnv(gym.Env):
-    """
-    Custom Gym environment for crypto trading with Volume Profile features.
-    """
-    def __init__(self, df, vp7_df, vp30_df, episode_length_days=30, initial_balance=10000, verbose=True):
+    def __init__(self, df, initial_balance=10000, lookback_window=30):
         super(TradingEnv, self).__init__()
-        self.df = df
-        self.vp7_df = vp7_df
-        self.vp30_df = vp30_df
-        self.episode_length = episode_length_days * 24  # hours
-        self.initial_balance = initial_balanceb
-        self.min_steps = 30 * 24  # to have VP data
-        self.verbose = verbose
-        self.last_bankrupt_step = -100  # Track last bankruptcy step for cooldown
 
-        # Trading costs
-        self.fees = 0.001  # 0.1% fee
+        # 1. Pre-process Data: Normalize immediately
+        # We don't want raw prices (e.g. 50000). We want % change (e.g. 0.01)
+        self.raw_df = df.reset_index(drop=True)
+        self.df = self.raw_df.copy()
+        
+        # Calculate log returns or pct_change for normalization
+        # This is crucial for the Neural Network to learn patterns
+        self.df['close_pct'] = self.df['close'].pct_change().fillna(0)
+        self.df['volume_norm'] = (self.df['volume'] - self.df['volume'].mean()) / (self.df['volume'].std() + 1e-8)
+        
+        # Define the features we will give the AI
+        self.features = ['close_pct', 'volume_norm'] 
+        # Add other technical indicators here if you have them (RSI, MACD, etc) normalized!
 
-        # Action space: position target from -1 (full short) to 1 (full long)
-        self.action_space = gym.spaces.Box(low=np.array([-1.0]), high=np.array([1.0]), dtype=np.float32)
+        self.initial_balance = initial_balance
+        self.lookback_window = lookback_window
+        
+        self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
 
-        # Observation space: features vector
-        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(234,), dtype=np.float32)
+        # Observation space shape depends on number of features
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, 
+            shape=(self.lookback_window, len(self.features) + 2), # +2 for balance/position info
+            dtype=np.float32
+        )
 
         self.reset()
 
-    def reset(self, *, seed=None, options=None):
-        self.current_step = 500  # Start at 500 for VP data availability
-        self.train_step = 0  # Track actual training steps (starts from 0)
+    def reset(self, seed=None):
+        super().reset(seed=seed)
         self.balance = self.initial_balance
-        self.holdings = 0.0  # Actual BTC units held (positive=long, negative=short)
-        self.target_position = 0.0  # Target position fraction (-1 to +1)
-        self.current_price = self.df.iloc[self.current_step]['close']
-        self.prev_price = self.current_price
-        self.vp_poc_30d = self.vp30_df.iloc[self.current_step]['poc']
-        return self._get_observation(), {}
+        self.net_worth = self.initial_balance
+        self.prev_net_worth = self.initial_balance # Track previous step for reward
+        self.shares_held = 0
+        self.current_step = self.lookback_window
+        
+        # Random start to prevent overfitting
+        if len(self.df) > 2000:
+            self.current_step = np.random.randint(self.lookback_window, len(self.df) - 1000)
+
+        return self._next_observation(), {}
+
+    def _next_observation(self):
+        # 1. Get Market Data Window
+        frame = self.df.iloc[self.current_step - self.lookback_window : self.current_step][self.features]
+        obs = frame.values
+        
+        # 2. Append Account Info (Normalized) to EACH timestamp in the window
+        # The bot needs to know: "Do I have money?" and "Do I have shares?"
+        # We normalize balance by dividing by initial_balance (approx)
+        balance_norm = self.balance / self.initial_balance
+        holdings_norm = (self.shares_held * self.raw_df.iloc[self.current_step]['close']) / self.initial_balance
+        
+        # Create a matching shape to stack
+        account_info = np.array([[balance_norm, holdings_norm]] * self.lookback_window)
+        
+        # Combine Market Data + Account Data
+        # Final shape: (30, features + 2)
+        full_obs = np.hstack((obs, account_info))
+        
+        return full_obs.astype(np.float32)
 
     def step(self, action):
-        prev_price = self.prev_price
-        current_price = self.df.iloc[self.current_step]['close']
-        self.current_price = current_price
-        self.vp_poc_30d = self.vp30_df.iloc[self.current_step]['poc']
-        
-        # Calculate current portfolio value BEFORE any trades
-        old_portfolio = self.balance + self.holdings * current_price
-
-        # Scale action to target position fraction (-1=full short, 0=flat, +1=full long)
-        raw_action = action[0]  # SAC outputs array; take first element
-        new_target = np.tanh(raw_action * 2.0) * 0.8  # Max 80% exposure for risk control
-        new_target = np.clip(new_target, -0.99, 0.99)
-
-        # Clamp actions based on training progress
-        max_fraction = min(0.5, 0.01 + 0.000001 * self.train_step)
-        new_target = np.clip(new_target, -max_fraction, max_fraction)
-        
-        # Calculate target holdings in BTC units based on portfolio value
-        # target_position is fraction of portfolio to hold in BTC
-        target_value = new_target * old_portfolio  # Dollar value to hold in BTC
-        target_holdings = target_value / current_price  # BTC units to hold
-        
-        # Calculate trade size and apply fees
-        trade_size = abs(target_holdings - self.holdings)  # BTC units traded
-        trade_value = trade_size * current_price  # Dollar value traded
-        trade_cost = trade_value * self.fees  # 0.1% fee
-        
-        # Execute trade: adjust balance for buying/selling BTC
-        btc_change = target_holdings - self.holdings
-        self.balance -= btc_change * current_price  # Pay for BTC (or receive cash if selling)
-        self.balance -= trade_cost  # Pay trading fees
-        self.holdings = target_holdings
-        self.target_position = new_target
-
-        # Calculate new portfolio value AFTER trades
-        new_portfolio = self.balance + self.holdings * current_price
-
-        # Bankruptcy avoidance: floor portfolio at 2500 if below
-        bankruptcy_triggered = False
-        if new_portfolio < 2500:
-            bankruptcy_triggered = True
-            self.balance = 2500
-            self.holdings = 0.0
-            new_portfolio = 2500
-            if self.verbose:
-                print(f"Bankruptcy avoidance triggered at step {self.train_step}: Portfolio floored at 2500")
-
-        # Debug logging for low portfolio values
-        if new_portfolio <= 10:
-            if self.verbose:
-                print(f"Portfolio <=10: {new_portfolio:.6f}, balance={self.balance:.6f}, holdings={self.holdings:.6f}, price={current_price:.2f}")
-
-        # === REWARD CALCULATION ===
-        log_returns = np.log(current_price / prev_price) if prev_price > 0 else 0
-        portfolio_return = self.target_position * log_returns  # PnL this step
-
-        # 1. Raw PnL (positive = good)
-        reward = portfolio_return * 25.0
-
-        # Survival reward
-        reward += log_returns * 20
-
-        # 2. Position penalty every step
-        reward -= abs(self.target_position) * 0.01  # holding cost
-
-        # 3. Punish staying flat
-        reward -= (1.0 - abs(self.target_position)) * 0.002  # penalty for being near zero
-
-        # 3. Bonus for being in high-volume-profile zones
-        if self.current_price > self.vp_poc_30d:
-            reward += 0.001 * abs(self.target_position)
-
-        if self.balance <= 0 or new_portfolio < 2500:
-            reward = -100
-            terminated = True
-            if self.current_step > 50:
-                print(f"Bankruptcy occurred at step {self.current_step}")
-
-        # No bankruptcy termination
-        terminated = False
-
-        self.prev_price = current_price
         self.current_step += 1
-        self.train_step += 1
+        
+        # Get Current Price from RAW data (for calculation)
+        current_price = self.raw_df.iloc[self.current_step]['close']
+        
+        action_val = float(action[0])
+        
+        # --- EXECUTE TRADE ---
+        # Logic: 
+        # Action > 0: Buy with X% of CASH
+        # Action < 0: Sell X% of SHARES
+        
+        trade_penalty = 0
+        
+        if action_val > 0.1: # Buy threshold
+            # Example: Action 0.5 = Buy with 50% of available cash
+            amount_to_invest = self.balance * action_val
+            if amount_to_invest > 10: # Minimum trade size
+                shares_bought = amount_to_invest / current_price
+                self.balance -= amount_to_invest
+                self.shares_held += shares_bought
+                trade_penalty = 0.0005 # Small fee simulation (0.05%)
+            else:
+                # Penalty for trying to buy with no money (Teaches it to hold or sell)
+                trade_penalty = 0.01 
+                
+        elif action_val < -0.1: # Sell threshold
+            # Example: Action -0.5 = Sell 50% of held shares
+            shares_to_sell = self.shares_held * abs(action_val)
+            if shares_to_sell * current_price > 10:
+                self.balance += shares_to_sell * current_price
+                self.shares_held -= shares_to_sell
+                trade_penalty = 0.0005
+            else:
+                 # Penalty for trying to sell nothing
+                trade_penalty = 0.01
 
-        # === WRAP AROUND DATA ===
-        truncated = False
-        if self.current_step >= len(self.df):
-            self.current_step = 500  # Reset to min_steps for VP data
-            self.prev_price = self.df.iloc[self.current_step]['close']
-            print(f"\n[Train step {self.train_step}] Data wrapped around. Portfolio: {new_portfolio:.0f}")
+        # Calculate Net Worth
+        self.net_worth = self.balance + (self.shares_held * current_price)
+        
+        # --- REWARD CALCULATION (CRITICAL CHANGE) ---
+        
+        # 1. Step Reward: Pure percentage change from LAST STEP
+        # This rewards "Making Money Now", not "Recovering from past losses"
+        step_reward = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
+        
+        # 2. Scale it up: RL works better with numbers like 1.0 or -1.0, not 0.0001
+        reward = step_reward * 100 
+        
+        # 3. Apply Penalties
+        reward -= trade_penalty
 
-        info = {
-            "portfolio_value": new_portfolio,
-            "position": self.target_position,
-            "holdings": self.holdings,
-            "balance": self.balance,
-        }
+        # 4. Update previous net worth
+        self.prev_net_worth = self.net_worth
 
-        # Logging
-        if self.train_step % 100 == 0:
-            print(f"Step {self.train_step}: Action={action[0]:.3f}, Position={self.target_position:.3f}, Holdings={self.holdings:.6f}, Reward={reward:.3f}, Portfolio={new_portfolio:.0f}")
+        # --- TERMINATION LOGIC ---
+        terminated = False
+        
+        # Stop if we ran out of data
+        if self.current_step >= len(self.df) - 1:
+            terminated = True
+            
+        # Stop if bankrupt (lose 50% of money) - Tighter leash
+        if self.net_worth < (self.initial_balance * 0.5):
+            reward = -10 # Big penalty
+            terminated = True
+            print(f"BANKRUPT at step {self.current_step}. Net Worth: {self.net_worth}")
 
-        return self._get_observation(), reward, terminated, truncated, info
-    
-    def _calculate_portfolio_value(self, price):
-        return self.balance + self.holdings * price
+        obs = self._next_observation()
+        info = {'net_worth': self.net_worth}
+        
+        if self.current_step % 1000 == 0:
+            print(f"Step {self.current_step}: Act={action_val:.2f}, Bal={self.balance:.0f}, Held={self.shares_held:.4f}, Net={self.net_worth:.0f}, Rwrd={reward:.4f}")
 
-    def _get_observation(self):
-        t = self.df.index[self.current_step]
-        obs = get_features(self.df, self.vp7_df, self.vp30_df, t)
-        if np.any(np.isnan(obs)) or np.any(np.isinf(obs)):
-            obs = np.zeros_like(obs)
-        return obs
-
-    def render(self, mode='human'):
-        pass
+        return obs, reward, terminated, False, info
