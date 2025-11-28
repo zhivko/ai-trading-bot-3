@@ -12,8 +12,11 @@ from trading_env import TradingEnv
 from volume_profile import get_rolling_vp
 import wandb
 
-# 1. Load the trained model
-model = SAC.load("sac_crypto_trader.zip")
+# from sb3_contrib import RecurrentPPO
+from stable_baselines3 import SAC
+
+# model = RecurrentPPO.load("ppo_crypto_trader.zip")
+model = SAC.load("ppo_crypto_trader.zip")
 
 # 2. Load data
 data_file = 'BTC_USDT_data.csv'
@@ -65,77 +68,57 @@ done = False
 
 # Initialize LSTM states for recurrent policy
 lstm_states = None
-episode_starts = torch.tensor([1.0], dtype=torch.float32)  # True as 1.0
+episode_starts = torch.tensor([1.0], dtype=torch.float32)  # True as 1.0 for first step
 
 actions = []
+values = []       # critic value
+prices = []
 portfolio_values = []
 rewards = []
-prices = []
 vp_poc = []
 vp_vah = []
 vp_val = []
 step = 0
-
+print("Starting simulation...")
 while not done:
     # Get action + internal tensors
     action, lstm_states = model.predict(obs, state=lstm_states, episode_start=episode_starts, deterministic=True)
-    # Convert lstm_states to tensor
-    lstm_states = (torch.tensor(lstm_states[0], dtype=torch.float32), torch.tensor(lstm_states[1], dtype=torch.float32))
-
-    # Filters to kill bad trades
-    lookback = 24
-    if len(prices) >= lookback:
-        recent_prices = prices[-lookback:]
-    else:
-        recent_prices = prices
-    current_val = vp_val[-1] if vp_val else prices[-1] if prices else env.df.iloc[env.current_step]['close']
-    current_vah = vp_vah[-1] if vp_vah else prices[-1] if prices else env.df.iloc[env.current_step]['close']
-    hours_below_val = sum(1 for p in recent_prices if p < current_val)
-    hours_above_vah = sum(1 for p in recent_prices if p > current_vah)
-    entering_long = action[0] > 0 and (len(actions) == 0 or actions[-1] <= 0)
-    entering_short = action[0] < 0 and (len(actions) == 0 or actions[-1] >= 0)
-    if entering_long and hours_below_val < 8:
-        action = np.array([0.0])
-    if entering_short and hours_above_vah < 8:
-        action = np.array([0.0])
-
-    # Volume profile filter
-    t = env.df.index[env.current_step]
-    vp7 = vp7_df.loc[t]
-    if not pd.isna(vp7['max_volume']) and vp7['max_volume'] > 0:
-        bins = vp7['bins']
-        vp = vp7['vp']
-        min_p = bins[0]
-        bin_size = bins[1] - bins[0] if len(bins) > 1 else 0
-        close = env.df.iloc[env.current_step]['close']
-        if bin_size > 0:
-            bin_idx = int((close - min_p) / bin_size)
-            if 0 <= bin_idx < len(vp):
-                volume_at_price = vp[bin_idx]
-                current_node_strength = volume_at_price / vp7['max_volume']
-                if current_node_strength < 0.2:
-                    action = np.array([0.0])
-
-    # Let the environment itself handle minimum position size
-    obs, reward, terminated, truncated, info = env.step(action)   # ← just pass raw action
+    
+    # FIXED: Only convert if lstm_states is not None (initial is None; first predict populates it)
+    if lstm_states is not None:
+        # Ensure it's tensors (SB3 returns numpy; convert to torch tensors)
+        lstm_states = (
+            torch.tensor(lstm_states[0], dtype=torch.float32),
+            torch.tensor(lstm_states[1], dtype=torch.float32)
+        )
+    # On first iter, lstm_states becomes the tuple after this predict—next iter uses it
+    
+    obs, reward, terminated, truncated, info = env.step(action)
     done = terminated or truncated
 
-    step += 1
-    if step % 1000 == 0:
-        print(f"Step {step}: Portfolio value {portfolio_values[-1]}")
+    # Extract value (use updated lstm_states)
+    with torch.no_grad():
+        obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+        value = model.policy.predict_values(obs_tensor, lstm_states, episode_starts).item()
 
     actions.append(action[0])  # action is array
+    values.append(value)
+    prices.append(env.df.iloc[env.current_step]['close'])  # current price
+    portfolio_values.append(env._calculate_portfolio_value(prices[-1]))
     rewards.append(reward)
-    portfolio_values.append(env._calculate_portfolio_value(env.df.iloc[env.current_step]['close']))
-
-    prices.append(env.df.iloc[env.current_step]['close'])
     t = env.df.index[env.current_step]
     vp7 = vp7_df.loc[t]
     vp_poc.append(vp7['poc'] if not pd.isna(vp7['poc']) else env.df.iloc[env.current_step]['close'])
     vp_vah.append(vp7['vah'] if not pd.isna(vp7['vah']) else env.df.iloc[env.current_step]['close'])
     vp_val.append(vp7['val'] if not pd.isna(vp7['val']) else env.df.iloc[env.current_step]['close'])
 
-    episode_starts = torch.tensor([0.0], dtype=torch.float32)  # False as 0.0
+    episode_starts = torch.tensor([0.0], dtype=torch.float32)  # False as 0.0 for subsequent steps
+
+    step += 1
+    if step % 1000 == 0:
+        print(f"Processed {step} steps")
+
+print(f"Simulation complete. Collected {len(actions)} steps")
 
 # 4. Compute backtest metrics
 initial_value = env.initial_cash
@@ -143,6 +126,7 @@ final_value = portfolio_values[-1] if portfolio_values else initial_value
 total_return = (final_value - initial_value) / initial_value * 100
 
 # Calculate returns
+portfolio_values = np.array(portfolio_values, dtype=float)
 returns = np.diff(portfolio_values) / portfolio_values[:-1] if len(portfolio_values) > 1 else []
 sharpe_ratio = np.mean(returns) / np.std(returns) * np.sqrt(365 * 24) if returns.size > 0 else 0  # Assuming hourly data
 
@@ -160,16 +144,6 @@ print(f"Total Return: {total_return:.2f}%")
 print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
 print(f"Max Drawdown: {max_drawdown:.2f}%")
 print(f"Final Portfolio Value: ${final_value:.2f}")
-
-# Log backtest metrics to wandb
-wandb.log({
-    'backtest_total_return_pct': total_return,
-    'backtest_sharpe_ratio': sharpe_ratio,
-    'backtest_max_drawdown_pct': max_drawdown,
-    'backtest_final_portfolio_value': final_value,
-    'backtest_num_trades': num_trades,
-    'backtest_initial_value': initial_value
-})
 
 # Log equity curve as a custom chart
 equity_returns = [(pv / initial_value - 1) * 100 for pv in portfolio_values]
@@ -192,6 +166,16 @@ short_entries = [i for i, a in enumerate(actions) if a < -0.85]     # confident 
 
 num_trades = len(long_entries) + len(short_entries)
 print(f"Number of Trades: {num_trades}")
+
+# Log backtest metrics to wandb
+wandb.log({
+    'backtest_total_return_pct': total_return,
+    'backtest_sharpe_ratio': sharpe_ratio,
+    'backtest_max_drawdown_pct': max_drawdown,
+    'backtest_final_portfolio_value': final_value,
+    'backtest_num_trades': num_trades,
+    'backtest_initial_value': initial_value
+})
 
 ax1.scatter(long_entries,  [prices[i] for i in long_entries],  marker='^', color='lime',  s=150, edgecolors='black', linewidth=1.5, label='Long Entry', zorder=10)
 ax1.scatter(short_entries, [prices[i] for i in short_entries], marker='v', color='red',   s=150, edgecolors='black', linewidth=1.5, label='Short Entry', zorder=10)
