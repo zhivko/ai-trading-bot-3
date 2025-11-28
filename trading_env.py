@@ -32,8 +32,8 @@ class TradingEnv(gym.Env):
         self.current_step = 500  # Start at 500 for VP data availability
         self.train_step = 0  # Track actual training steps (starts from 0)
         self.balance = self.initial_balance
-        self.position = 0.0
-        self.prev_position = 0.0
+        self.holdings = 0.0  # Actual BTC units held (positive=long, negative=short)
+        self.target_position = 0.0  # Target position fraction (-1 to +1)
         self.current_price = self.df.iloc[self.current_step]['close']
         self.prev_price = self.current_price
         self.vp_poc_30d = self.vp30_df.iloc[self.current_step]['poc']
@@ -44,69 +44,89 @@ class TradingEnv(gym.Env):
         current_price = self.df.iloc[self.current_step]['close']
         self.current_price = current_price
         self.vp_poc_30d = self.vp30_df.iloc[self.current_step]['poc']
-        old_portfolio = self.balance + self.prev_position * current_price
+        
+        # Calculate current portfolio value BEFORE any trades
+        old_portfolio = self.balance + self.holdings * current_price
 
-        # FIXED: Scale action to position (-1=full short, 0=flat, +1=full long)
+        # Scale action to target position fraction (-1=full short, 0=flat, +1=full long)
         raw_action = action[0]  # SAC outputs array; take first element
-        self.position = np.tanh(raw_action * 2.0) * 0.8  # Max 80% exposure for risk control
-        self.position = np.clip(self.position, -0.99, 0.99)  # Avoid full 100% to prevent liquidation edge cases
+        new_target = np.tanh(raw_action * 2.0) * 0.8  # Max 80% exposure for risk control
+        new_target = np.clip(new_target, -0.99, 0.99)
+        
+        # Calculate target holdings in BTC units based on portfolio value
+        # target_position is fraction of portfolio to hold in BTC
+        target_value = new_target * old_portfolio  # Dollar value to hold in BTC
+        target_holdings = target_value / current_price  # BTC units to hold
+        
+        # Calculate trade size and apply fees
+        trade_size = abs(target_holdings - self.holdings)  # BTC units traded
+        trade_value = trade_size * current_price  # Dollar value traded
+        trade_cost = trade_value * self.fees  # 0.1% fee
+        
+        # Execute trade: adjust balance for buying/selling BTC
+        btc_change = target_holdings - self.holdings
+        self.balance -= btc_change * current_price  # Pay for BTC (or receive cash if selling)
+        self.balance -= trade_cost  # Pay trading fees
+        self.holdings = target_holdings
+        self.target_position = new_target
 
-        # Close old position + open new one (with fees)
-        trade_cost = abs(self.position - self.prev_position) * current_price * 0.001  # 0.1% fee
-        self.balance -= trade_cost
-        self.prev_position = self.position
+        # Calculate new portfolio value AFTER trades
+        new_portfolio = self.balance + self.holdings * current_price
 
-        # New portfolio value
-        new_portfolio = self.balance + self.position * current_price
-        portfolio_change = (new_portfolio - old_portfolio) / old_portfolio if old_portfolio != 0 else 0
+        # Debug logging for low portfolio values
+        if new_portfolio <= 10:
+            print(f"Portfolio <=10: {new_portfolio:.6f}, balance={self.balance:.6f}, holdings={self.holdings:.6f}, price={current_price:.2f}")
 
-        # === REAL PROFIT-SEEKING REWARD (the one that actually works) ===
-        log_returns = np.log(current_price / prev_price)
-        portfolio_return = self.position * log_returns   # PnL this step
+        # === REWARD CALCULATION ===
+        log_returns = np.log(current_price / prev_price) if prev_price > 0 else 0
+        portfolio_return = self.target_position * log_returns  # PnL this step
 
         # 1. Raw PnL (positive = good)
-        reward = portfolio_return * 25.0                 # scale up!
+        reward = portfolio_return * 25.0
 
-        # 2. Punish staying flat (this is the key!)
-        reward -= abs(self.position) * 0.0001            # tiny holding cost
-        reward -= (1.0 - abs(self.position)) * 0.002     # BIG penalty for being near zero!
+        # 2. Punish staying flat
+        reward -= abs(self.target_position) * 0.0001  # tiny holding cost
+        reward -= (1.0 - abs(self.target_position)) * 0.002  # penalty for being near zero
 
-        # 3. Bonus for being in high-volume-profile zones (your VP heatmaps)
+        # 3. Bonus for being in high-volume-profile zones
         if self.current_price > self.vp_poc_30d:
-            reward += 0.001 * abs(self.position)         # love the POC
+            reward += 0.001 * abs(self.target_position)
 
-        # 4. Only hard penalty if you actually blow up (optional)
-        if self.balance < 500:  # near bankruptcy
-            reward -= 20.0
+        # 4. Check for bankruptcy
+        terminated = False
+        if new_portfolio <= 0.01:
+            reward -= 50.0  # Large penalty for going bankrupt
+            terminated = True
+            print(f"\n[BANKRUPT] Step {self.train_step}: Portfolio went to {new_portfolio:.2f}")
+        elif new_portfolio < self.initial_balance * 0.1:  # Below 10% of initial
+            reward -= 10.0  # Penalty for near-bankruptcy
 
         self.prev_price = current_price
         self.current_step += 1
         self.train_step += 1
 
-        # === WRAP AROUND DATA (ONE BIG EPISODE) ===
+        # === WRAP AROUND DATA ===
+        truncated = False
         if self.current_step >= len(self.df):
-            # Wrap back to start (keep portfolio state, just cycle data)
             self.current_step = 500  # Reset to min_steps for VP data
             self.prev_price = self.df.iloc[self.current_step]['close']
             print(f"\n[Train step {self.train_step}] Data wrapped around. Portfolio: {new_portfolio:.0f}")
 
-        # Never terminate - one big episode for full total-timesteps
-        terminated = False
-        truncated = False
-
         info = {
             "portfolio_value": new_portfolio,
-            "position": self.position,
+            "position": self.target_position,
+            "holdings": self.holdings,
+            "balance": self.balance,
         }
 
-        # Logging (use train_step for consistency with total-timesteps)
+        # Logging
         if self.train_step % 100 == 0:
-            print(f"Step {self.train_step}: Action={action[0]:.3f}, Position={self.position:.3f}, Reward={reward:.3f}, Portfolio={new_portfolio:.0f}")
+            print(f"Step {self.train_step}: Action={action[0]:.3f}, Position={self.target_position:.3f}, Holdings={self.holdings:.6f}, Reward={reward:.3f}, Portfolio={new_portfolio:.0f}")
 
         return self._get_observation(), reward, terminated, truncated, info
     
     def _calculate_portfolio_value(self, price):
-        return self.balance + self.position * price
+        return self.balance + self.holdings * price
 
     def _get_observation(self):
         t = self.df.index[self.current_step]

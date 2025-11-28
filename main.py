@@ -18,7 +18,7 @@ from trading_env import TradingEnv
 import gymnasium as gym
 
 # to train shorter
-# python main.py --pair BTC-USDT --vp-days 7 30 --algo sac --population 12 --wandb
+# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --population 12 --wandb
 # to train longer
 # python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --total-timesteps 5000000 --wandb
 
