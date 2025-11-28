@@ -8,7 +8,7 @@ class TradingEnv(gym.Env):
     """
     Custom Gym environment for crypto trading with Volume Profile features.
     """
-    def __init__(self, df, vp7_df, vp30_df, episode_length_days=30, initial_balance=10000):
+    def __init__(self, df, vp7_df, vp30_df, episode_length_days=30, initial_balance=10000, verbose=True):
         super(TradingEnv, self).__init__()
         self.df = df
         self.vp7_df = vp7_df
@@ -16,6 +16,7 @@ class TradingEnv(gym.Env):
         self.episode_length = episode_length_days * 24  # hours
         self.initial_balance = initial_balance
         self.min_steps = 30 * 24  # to have VP data
+        self.verbose = verbose
 
         # Trading costs
         self.fees = 0.001  # 0.1% fee
@@ -70,12 +71,24 @@ class TradingEnv(gym.Env):
         self.holdings = target_holdings
         self.target_position = new_target
 
+        # Stop-loss mechanism: force flat if portfolio below 20% of initial balance
+        temp_portfolio = self.balance + self.holdings * current_price
+        if temp_portfolio < self.initial_balance * 0.2:
+            # Force position to flat
+            btc_change = -self.holdings
+            self.balance -= btc_change * current_price
+            self.holdings = 0.0
+            self.target_position = 0.0
+            if self.verbose:
+                print(f"Stop-loss triggered at step {self.train_step}: Portfolio {temp_portfolio:.2f} < {self.initial_balance * 0.2:.2f}")
+
         # Calculate new portfolio value AFTER trades
         new_portfolio = self.balance + self.holdings * current_price
 
         # Debug logging for low portfolio values
         if new_portfolio <= 10:
-            print(f"Portfolio <=10: {new_portfolio:.6f}, balance={self.balance:.6f}, holdings={self.holdings:.6f}, price={current_price:.2f}")
+            if self.verbose:
+                print(f"Portfolio <=10: {new_portfolio:.6f}, balance={self.balance:.6f}, holdings={self.holdings:.6f}, price={current_price:.2f}")
 
         # === REWARD CALCULATION ===
         log_returns = np.log(current_price / prev_price) if prev_price > 0 else 0
@@ -92,14 +105,17 @@ class TradingEnv(gym.Env):
         if self.current_price > self.vp_poc_30d:
             reward += 0.001 * abs(self.target_position)
 
-        # 4. Check for bankruptcy
+        # 4. Check for bankruptcy (terminate episode on bankruptcy)
         terminated = False
         if new_portfolio <= 0.01:
-            reward -= 50.0  # Large penalty for going bankrupt
-            terminated = True
-            print(f"\n[BANKRUPT] Step {self.train_step}: Portfolio went to {new_portfolio:.2f}")
+            reward -= 100.0  # Large penalty for going bankrupt
+            terminated = True  # Terminate episode on bankruptcy
+            if self.verbose:
+                print(f"\n[BANKRUPT] Step {self.train_step}: Portfolio went to {new_portfolio:.2f}")
         elif new_portfolio < self.initial_balance * 0.1:  # Below 10% of initial
-            reward -= 10.0  # Penalty for near-bankruptcy
+            reward -= 20.0  # Penalty for near-bankruptcy
+            if self.verbose:
+                print(f"\n[NEAR-BANKRUPT] Step {self.train_step}: Portfolio {new_portfolio:.2f} < {self.initial_balance * 0.1:.2f}")
 
         self.prev_price = current_price
         self.current_step += 1

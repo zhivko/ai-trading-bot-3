@@ -7,8 +7,8 @@ from volume_profile import get_rolling_vp
 df = pd.read_csv('BTCUSDT_data.csv', index_col=0, parse_dates=True)
 
 # Load or compute VP
-vp7_file = 'BTC/USDT_vp7.pkl'
-vp30_file = 'BTC/USDT_vp30.pkl'
+vp7_file = 'BTCUSDT_vp7.pkl'
+vp30_file = 'BTCUSDT_vp30.pkl'
 
 try:
     with open(vp7_file, 'rb') as f:
