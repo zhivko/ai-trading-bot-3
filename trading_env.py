@@ -30,12 +30,8 @@ class TradingEnv(gym.Env):
         self.reset()
 
     def reset(self, **kwargs):
-        # Start from a random point with enough history
-        max_start = len(self.df) - self.episode_length - 1
-        if max_start > self.min_steps:
-            self.start_step = np.random.randint(self.min_steps, max_start)
-        else:
-            self.start_step = self.min_steps
+        # Start from the earliest point with enough history for full backtest
+        self.start_step = self.min_steps
         self.current_step = self.start_step
         self.position = 0.0  # -1 to 1
         self.cash = self.initial_cash
