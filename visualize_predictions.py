@@ -3,6 +3,8 @@ import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+import pickle
+import os
 from sb3_contrib import RecurrentPPO
 import gymnasium as gym
 from trading_env import TradingEnv
@@ -18,16 +20,43 @@ data_file = f'{pair.replace("/", "_")}_data.csv'
 df = pd.read_csv(data_file, index_col=0, parse_dates=True)
 print(f"Data loaded: {len(df)} rows")
 
-# Compute VP
-vp7_df = get_rolling_vp(df, 7)
-vp30_df = get_rolling_vp(df, 30)
-print("Volume profiles computed")
+# Compute VP with caching
+vp7_file = f'{pair.replace("/", "_")}_vp7.pkl'
+vp30_file = f'{pair.replace("/", "_")}_vp30.pkl'
+
+data_mtime = os.path.getmtime(data_file) if os.path.exists(data_file) else 0
+vp7_mtime = os.path.getmtime(vp7_file) if os.path.exists(vp7_file) else 0
+vp30_mtime = os.path.getmtime(vp30_file) if os.path.exists(vp30_file) else 0
+
+if os.path.exists(vp7_file) and vp7_mtime >= data_mtime:
+    print("Loading cached 7d VP...")
+    with open(vp7_file, 'rb') as f:
+        vp7_df = pickle.load(f)
+else:
+    print("Computing 7d VP...")
+    vp7_df = get_rolling_vp(df, 7)
+    print("Saving 7d VP...")
+    with open(vp7_file, 'wb') as f:
+        pickle.dump(vp7_df, f)
+
+if os.path.exists(vp30_file) and vp30_mtime >= data_mtime:
+    print("Loading cached 30d VP...")
+    with open(vp30_file, 'rb') as f:
+        vp30_df = pickle.load(f)
+else:
+    print("Computing 30d VP...")
+    vp30_df = get_rolling_vp(df, 30)
+    print("Saving 30d VP...")
+    with open(vp30_file, 'wb') as f:
+        pickle.dump(vp30_df, f)
+
+print("VP computation completed.")
 
 # Create env
 env = TradingEnv(df, vp7_df, vp30_df)
 
 # 3. Run a deterministic rollout and collect everything
-obs = env.reset()
+obs, info = env.reset()
 done = False
 
 # Initialize LSTM states for recurrent policy
@@ -48,7 +77,8 @@ while not done:
     action, lstm_states = model.predict(obs, state=lstm_states, episode_start=episode_starts, deterministic=True)
     # Convert lstm_states to tensor
     lstm_states = (torch.tensor(lstm_states[0], dtype=torch.float32), torch.tensor(lstm_states[1], dtype=torch.float32))
-    obs, reward, done, info = env.step(action)
+    obs, reward, terminated, truncated, info = env.step(action)
+    done = terminated or truncated
 
     # Extract value
     with torch.no_grad():

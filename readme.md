@@ -1,4 +1,4 @@
-\# Grok Crypto Trader – Unsupervised Self-Improving Bot  
+\# Crypto Trader – Unsupervised Self-Improving Bot  
 
 \*“Let the market teach the machine, not the human”\*
 
