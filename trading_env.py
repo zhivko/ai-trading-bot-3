@@ -71,19 +71,18 @@ class TradingEnv(gym.Env):
         self.holdings = target_holdings
         self.target_position = new_target
 
-        # Stop-loss mechanism: force flat if portfolio below 20% of initial balance
-        temp_portfolio = self.balance + self.holdings * current_price
-        if temp_portfolio < self.initial_balance * 0.2:
-            # Force position to flat
-            btc_change = -self.holdings
-            self.balance -= btc_change * current_price
-            self.holdings = 0.0
-            self.target_position = 0.0
-            if self.verbose:
-                print(f"Stop-loss triggered at step {self.train_step}: Portfolio {temp_portfolio:.2f} < {self.initial_balance * 0.2:.2f}")
-
         # Calculate new portfolio value AFTER trades
         new_portfolio = self.balance + self.holdings * current_price
+
+        # Bankruptcy avoidance: floor portfolio at 2000 if below
+        bankruptcy_triggered = False
+        if new_portfolio < 2000:
+            bankruptcy_triggered = True
+            self.balance = 2000
+            self.holdings = 0.0
+            new_portfolio = 2000
+            if self.verbose:
+                print(f"Bankruptcy avoidance triggered at step {self.train_step}: Portfolio floored at 2000")
 
         # Debug logging for low portfolio values
         if new_portfolio <= 10:
@@ -105,17 +104,12 @@ class TradingEnv(gym.Env):
         if self.current_price > self.vp_poc_30d:
             reward += 0.001 * abs(self.target_position)
 
-        # 4. Check for bankruptcy (terminate episode on bankruptcy)
+        # 4. Penalty for bankruptcy avoidance trigger
+        if bankruptcy_triggered:
+            reward -= 5000
+
+        # No bankruptcy termination
         terminated = False
-        if new_portfolio <= 0.01:
-            reward -= 100.0  # Large penalty for going bankrupt
-            terminated = True  # Terminate episode on bankruptcy
-            if self.verbose:
-                print(f"\n[BANKRUPT] Step {self.train_step}: Portfolio went to {new_portfolio:.2f}")
-        elif new_portfolio < self.initial_balance * 0.1:  # Below 10% of initial
-            reward -= 20.0  # Penalty for near-bankruptcy
-            if self.verbose:
-                print(f"\n[NEAR-BANKRUPT] Step {self.train_step}: Portfolio {new_portfolio:.2f} < {self.initial_balance * 0.1:.2f}")
 
         self.prev_price = current_price
         self.current_step += 1
