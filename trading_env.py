@@ -18,7 +18,45 @@ class TradingEnv(gym.Env):
         # 1. Standard Features
         self.df['close_pct'] = self.df['close'].pct_change().fillna(0)
         self.df['volume_norm'] = (self.df['volume'] - self.df['volume'].mean()) / (self.df['volume'].std() + 1e-8)
-        self.features = ['close_pct', 'volume_norm'] 
+
+        # 2. TECHNICAL INDICATORS (NEW) --------------------------------------
+        
+        # A. RSI (14)
+        delta = self.df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).ewm(span=14, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(span=14, adjust=False).mean()
+        rs = gain / (loss + 1e-8)
+        self.df['rsi'] = 100 - (100 / (1 + rs))
+        self.df['rsi_norm'] = self.df['rsi'] / 100.0
+
+        # B. Stochastic RSI (14)
+        min_rsi = self.df['rsi'].rolling(window=14).min()
+        max_rsi = self.df['rsi'].rolling(window=14).max()
+        self.df['stoch_rsi'] = (self.df['rsi'] - min_rsi) / (max_rsi - min_rsi + 1e-8)
+        self.df['stoch_rsi_norm'] = self.df['stoch_rsi'].fillna(0.5) 
+
+        # C. MACD (12, 26, 9)
+        ema12 = self.df['close'].ewm(span=12, adjust=False).mean()
+        ema26 = self.df['close'].ewm(span=26, adjust=False).mean()
+        self.df['macd'] = ema12 - ema26
+        self.df['macd_signal'] = self.df['macd'].ewm(span=9, adjust=False).mean()
+        
+        # Normalize MACD
+        self.df['macd_norm'] = self.df['macd'] / self.df['close']
+        self.df['macd_sig_norm'] = self.df['macd_signal'] / self.df['close']
+
+        # --------------------------------------------------------------------
+
+        self.features = [
+            'close_pct', 
+            'volume_norm', 
+            'rsi_norm', 
+            'stoch_rsi_norm', 
+            'macd_norm', 
+            'macd_sig_norm'
+        ]
+        
+        self.df.fillna(0, inplace=True)
         
         # Fast access to standard features
         self.market_features = self.df[self.features].values.astype(np.float32)
@@ -50,7 +88,8 @@ class TradingEnv(gym.Env):
             dtype=np.float32
         )
         
-        self.max_lookback = max([d * 24 for d in self.vp_days]) + self.lookback_window
+        # Adjust lookback to account for MACD warmup
+        self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
         
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -100,10 +139,7 @@ class TradingEnv(gym.Env):
             
         vp_features = np.array(vp_features_list, dtype=np.float32)
         
-        # OPTIONAL: Add Noise here if you want to further reduce overfitting
-        # noise = np.random.normal(0, 0.01, size=vp_features.shape)
-        # vp_features = vp_features + (vp_features * noise)
-
+        # Combine
         full_obs = np.concatenate((std_features, account_features, vp_features))
         return full_obs.astype(np.float32)
 
@@ -112,8 +148,8 @@ class TradingEnv(gym.Env):
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
         
-        # --- TRADE LOGIC (Higher Fee 0.1% to prevent overfitting) ---
-        REALISTIC_FEE = 0.001
+        # --- TRADE LOGIC (Higher Fee 0.15% to prevent overfitting) ---
+        REALISTIC_FEE = 0.0015
         trade_penalty = 0
         
         if action_val > 0.1: # Buy
@@ -161,6 +197,12 @@ class TradingEnv(gym.Env):
         raw_vah = self.vp_data[primary_day]['vah'][self.current_step]
         raw_val = self.vp_data[primary_day]['val'][self.current_step]
         
+        # EXTRACT INDICATORS
+        cur_rsi = self.df.iloc[self.current_step]['rsi']
+        cur_stoch = self.df.iloc[self.current_step]['stoch_rsi']
+        cur_macd = self.df.iloc[self.current_step]['macd']
+        cur_macd_sig = self.df.iloc[self.current_step]['macd_signal']
+        
         # Calculate Real Price Bins for WandB
         window_size = primary_day * 24
         start_idx = max(0, self.current_step - window_size)
@@ -187,6 +229,11 @@ class TradingEnv(gym.Env):
             "vah": raw_vah,
             "val": raw_val,
             
+            "rsi": cur_rsi,
+            "stoch_rsi": cur_stoch,
+            "macd": cur_macd,
+            "macd_sig": cur_macd_sig,
+            
             "vp_heatmap": heatmap,
             "vp_bins": price_bins 
         }
@@ -194,7 +241,6 @@ class TradingEnv(gym.Env):
         # Console Log with Date
         if self.current_step % 100 == 0:
             current_date = self.raw_df.iloc[self.current_step]['date']
-            
             dist_pct = ((current_price - raw_poc) / raw_poc) * 100 if raw_poc != 0 else 0
             
             print(f"Step {self.current_step} [{current_date}]: P={current_price:.0f} | POC={raw_poc:.0f} ({dist_pct:+.2f}%) | Port={self.net_worth:.0f}")
