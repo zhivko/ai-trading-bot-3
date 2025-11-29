@@ -98,7 +98,14 @@ class TradingEnv(gym.Env):
             
         vp_features = np.array(vp_features_list, dtype=np.float32)
         full_obs = np.concatenate((std_features, account_features, vp_features))
-        return full_obs
+
+        # --- ADD NOISE TO PREVENT OVERFITTING ---
+        # Add 1% random noise to the input features
+        # This makes every "replay" of the dataset slightly different
+        noise = np.random.normal(0, 0.01, size=full_obs.shape)
+        full_obs = full_obs + (full_obs * noise)
+
+        return full_obs.astype(np.float32)
 
     def step(self, action):
         self.current_step += 1
@@ -107,21 +114,22 @@ class TradingEnv(gym.Env):
         
         # Trade Logic
         trade_penalty = 0
+        REALISTIC_FEE = 0.0015  # 0.15% per trade
         if action_val > 0.1: # Buy
             amount_to_invest = self.balance * action_val
-            if amount_to_invest > 10: 
+            if amount_to_invest > 10:
                 shares_bought = amount_to_invest / current_price
                 self.balance -= amount_to_invest
                 self.shares_held += shares_bought
-                trade_penalty = 0.0005
+                trade_penalty = REALISTIC_FEE
             else:
-                trade_penalty = 0.01 
+                trade_penalty = 0.01
         elif action_val < -0.1: # Sell
             shares_to_sell = self.shares_held * abs(action_val)
             if shares_to_sell * current_price > 10:
                 self.balance += shares_to_sell * current_price
                 self.shares_held -= shares_to_sell
-                trade_penalty = 0.0005 
+                trade_penalty = REALISTIC_FEE
             else:
                 trade_penalty = 0.01
 

@@ -47,13 +47,12 @@ class RealTimeWandbCallback(BaseCallback):
                 "realtime/alpha_entropy": current_alpha,
                 "realtime/learning_rate": current_lr,
                 
-                # --- NEW: COMBINED PRICE & VP CHART ---
-                # This puts Price, POC, VAH, and VAL on the SAME graph
+                # --- FIX IS HERE: Use "poc", "vah", "val" (matching trading_env.py) ---
                 "realtime/market_context": {
                     "realtime/price_main": infos.get("price", 0),
-                    "realtime/price_poc": infos.get("vp_poc", 0),
-                    "realtime/price_vah": infos.get("vp_vah", 0),
-                    "realtime/price_val": infos.get("vp_val", 0),
+                    "realtime/price_poc": infos.get("poc", 0), 
+                    "realtime/price_vah": infos.get("vah", 0), 
+                    "realtime/price_val": infos.get("val", 0), 
                 },
                 
                 "global_step": self.num_timesteps
@@ -80,6 +79,7 @@ class RealTimeWandbCallback(BaseCallback):
             
         return True
     
+        
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pair", type=str, default="BTCUSDT")
@@ -129,7 +129,7 @@ def main():
     eval_env = DummyVecEnv([lambda df=test_df: Monitor(TradingEnv(df, vp_days=args.vp_days))])
 
     # --- 3. MODEL SETUP (Smart Resume) ---
-    policy_kwargs = dict(net_arch=[512, 512]) 
+    policy_kwargs = dict(net_arch=[256, 256])
     tensorboard_log = f"./{args.algo}_tb/"
     
     model_path_to_load = None
