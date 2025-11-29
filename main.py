@@ -71,13 +71,10 @@ def main():
     args = parser.parse_args()
 
     # Load Data
-    csv_file = args.data_path if args.data_path else f"data/{args.pair}.csv"
+    csv_file = args.data_path if args.data_path else f"{args.pair}_data.csv"
     if not os.path.exists(csv_file):
-        print("Error: File not found. Using Dummy Data.")
-        dates = pd.date_range(start='2020-01-01', periods=10000, freq='h')
-        df = pd.DataFrame({'close': [50000 + x for x in range(10000)], 'volume': [1000]*10000}, index=dates)
-        df['high'] = df['close'] * 1.01
-        df['low'] = df['close'] * 0.99
+        print(f"Error: File {csv_file} not found. Using Dummy Data.")
+        exit(1)
     else:
         print(f"Loading data: {csv_file}")
         df = pd.read_csv(csv_file)
