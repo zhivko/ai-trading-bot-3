@@ -76,6 +76,27 @@ def main():
     if not os.path.exists(csv_file):
         subprocess.run(['python', 'data_fetcher.py', '--pair', args.pair])
     
+    if os.path.exists(args.data_path):
+        df = pd.read_csv(args.data_path)
+        df.columns = df.columns.str.lower()
+        
+        # FIX: Handle 'timestamp' vs 'date'
+        if 'timestamp' in df.columns:
+            df.rename(columns={'timestamp': 'date'}, inplace=True)
+            
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+            
+        # DEBUG PRINTS
+        print(f"✅ Loaded {len(df)} rows.")
+        print(f"📅 Start Date: {df.index[0]}")
+        print(f"📅 End Date:   {df.index[-1]}")
+        
+        if len(df) < 5000:
+            print("⚠️ WARNING: The file seems suspiciously small for a 4-year dataset.")
+            print("   Please check if the CSV file on disk is truncated.")
+
     print(f"Loading data: {csv_file}")
     df = pd.read_csv(csv_file)
     df.columns = df.columns.str.lower()
