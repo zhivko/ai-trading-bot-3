@@ -2,8 +2,12 @@ import argparse
 import pandas as pd
 import os
 import numpy as np
+import warnings
 
-from stable_baselines3 import SAC
+warnings.filterwarnings("ignore")
+
+import gymnasium as gym
+from stable_baselines3 import SAC, PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor 
@@ -11,42 +15,47 @@ from stable_baselines3.common.monitor import Monitor
 import wandb
 from wandb.integration.sb3 import WandbCallback
 
-# --- FIXED IMPORT HERE ---
 from trading_env import TradingEnv 
 
-# --- REAL-TIME WANDB CALLBACK ---
 class RealTimeWandbCallback(BaseCallback):
-    """
-    Logs metrics to WandB every 100 steps, bypassing SB3's episode-end restriction.
-    """
     def __init__(self, verbose=0):
         super(RealTimeWandbCallback, self).__init__(verbose)
 
     def _on_step(self) -> bool:
-        # Get the 'info' from the environment
-        # self.locals['infos'] is a list (one per env). We assume 1 env.
+        if wandb.run is None: return True
+
         infos = self.locals["infos"][0]
         
-        # Log every 100 steps (adjust as needed)
+        # 1. Log Scalars every 100 steps
         if self.num_timesteps % 100 == 0:
-            
-            # Extract values safely
-            portfolio_value = infos.get("portfolio_value", 0)
-            balance = infos.get("balance", 0)
-            step_reward = infos.get("reward", 0)
-            action_val = infos.get("action", 0)
-            shares = infos.get("shares_held", 0)
-            price = infos.get("price", 0)
+            current_lr = 0.0
+            try: current_lr = self.model.policy.optimizer.param_groups[0]["lr"]
+            except: pass
 
-            # Send DIRECTLY to WandB
             wandb.log({
-                "realtime/portfolio_value": portfolio_value,
-                "realtime/balance": balance,
-                "realtime/step_reward": step_reward,
-                "realtime/action": action_val,
-                "realtime/shares_held": shares,
-                "realtime/price": price,
+                "realtime/portfolio_value": infos.get("portfolio_value", 0),
+                "realtime/balance": infos.get("balance", 0),
+                "realtime/step_reward": infos.get("reward", 0),
+                "realtime/action": infos.get("action", 0),
+                "realtime/learning_rate": current_lr,
                 "global_step": self.num_timesteps
+            })
+
+        # 2. Log Volume Profile Snapshot every 1000 steps
+        # We don't want to log this too often as it consumes bandwidth
+        if self.num_timesteps % 1000 == 0 and "vp_heatmap" in infos:
+            heatmap_data = infos["vp_heatmap"]
+            
+            # Create a Table for the Line Plot
+            # Columns: [Bin Index (0-99), Intensity]
+            data = [[x, y] for x, y in enumerate(heatmap_data)]
+            table = wandb.Table(data=data, columns=["bin_index", "volume"])
+            
+            wandb.log({
+                "realtime/vp_snapshot": wandb.plot.line(
+                    table, "bin_index", "volume", 
+                    title=f"Volume Profile Shape (Step {self.num_timesteps})"
+                )
             })
             
         return True
@@ -54,68 +63,51 @@ class RealTimeWandbCallback(BaseCallback):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pair", type=str, default="BTCUSDT")
+    parser.add_argument("--data-path", type=str, default=None)
+    parser.add_argument("--vp-days", nargs='+', type=int, default=[7, 30]) 
+    parser.add_argument("--algo", type=str, default="sac") 
     parser.add_argument("--total-timesteps", type=int, default=5000000)
-    parser.add_argument("--wandb", action="store_true") # Ensure this flag is used!
+    parser.add_argument("--wandb", action="store_true")
     args = parser.parse_args()
 
-    # 1. Load Data
-    data_path = f"data/{args.pair}.csv" 
-    if not os.path.exists(data_path):
-        print(f"Data not found at {data_path}. Generating dummy data for testing.")
-        dates = pd.date_range(start='2020-01-01', periods=10000, freq='H')
-        df = pd.DataFrame({'close': [50000 + x + np.sin(x/100)*1000 for x in range(10000)]}, index=dates)
-        df['open'] = df['close']
+    # Load Data
+    csv_file = args.data_path if args.data_path else f"data/{args.pair}.csv"
+    if not os.path.exists(csv_file):
+        print("Error: File not found. Using Dummy Data.")
+        dates = pd.date_range(start='2020-01-01', periods=10000, freq='h')
+        df = pd.DataFrame({'close': [50000 + x for x in range(10000)], 'volume': [1000]*10000}, index=dates)
         df['high'] = df['close'] * 1.01
         df['low'] = df['close'] * 0.99
-        df['volume'] = 1000 + np.random.rand(10000)*100
     else:
-        df = pd.read_csv(data_path)
+        print(f"Loading data: {csv_file}")
+        df = pd.read_csv(csv_file)
+        df.columns = df.columns.str.lower()
+        if 'date' in df.columns: 
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
 
-    # 2. Environment
-    # Wrap in Monitor to ensure SB3 tracks internal stats
-    env = DummyVecEnv([lambda: Monitor(TradingEnv(df))])
+    # Initialize Env
+    env = DummyVecEnv([lambda df=df: Monitor(TradingEnv(df, vp_days=args.vp_days))])
 
-    # 3. Model (SAC)
-    model = SAC(
-        "MlpPolicy", 
-        env, 
-        verbose=1, 
-        tensorboard_log=f"./sac_tensorboard/",
-        learning_rate=3e-4,
-        batch_size=256,
-        ent_coef='auto'
-    )
+    # Model
+    policy_kwargs = dict(net_arch=[512, 512]) 
+    if args.algo.lower() == 'sac':
+        model = SAC("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=f"./{args.algo}_tb/", learning_rate=3e-4)
+    else:
+        model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=f"./{args.algo}_tb/")
 
-    # 4. Callbacks
+    # Callbacks
     callbacks = []
-    
     if args.wandb:
-        wandb.init(
-            project="ai-trading-bot", 
-            config=vars(args),
-            sync_tensorboard=True,
-            monitor_gym=True,
-            save_code=True,
-        )
-        # Add the REAL-TIME callback
+        wandb.init(project="ai-trading-bot", config=vars(args), sync_tensorboard=True, monitor_gym=True)
         callbacks.append(RealTimeWandbCallback())
-        # Add standard WandB callback
         callbacks.append(WandbCallback(verbose=2))
 
-    # Save model every 50k steps
-    checkpoint_callback = CheckpointCallback(
-        save_freq=50000, 
-        save_path='./models/', 
-        name_prefix='sac'
-    )
-    callbacks.append(checkpoint_callback)
+    callbacks.append(CheckpointCallback(save_freq=50000, save_path=f'./models/{args.pair}'))
 
-    # 5. Train
-    print(f"Starting training for {args.total_timesteps} steps...")
+    print(f"Starting training...")
     model.learn(total_timesteps=args.total_timesteps, callback=callbacks)
-    
-    model.save("sac_final")
-    print("Training complete.")
+    model.save(f"{args.algo}_{args.pair}_final")
 
 if __name__ == "__main__":
     main()
