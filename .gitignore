@@ -45,3 +45,5 @@ coverage.xml
 Thumbs.db
 sac_tensorboard/
 
+sac_tb/
+vp_cache/
