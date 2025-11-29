@@ -27,7 +27,6 @@ class RealTimeWandbCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         if wandb.run is None: return True
-        
         infos = self.locals["infos"][0]
         
         if self.num_timesteps % 100 == 0:
@@ -47,6 +46,16 @@ class RealTimeWandbCallback(BaseCallback):
                 "realtime/action": infos.get("action", 0),
                 "realtime/alpha_entropy": current_alpha,
                 "realtime/learning_rate": current_lr,
+                
+                # --- NEW: COMBINED PRICE & VP CHART ---
+                # This puts Price, POC, VAH, and VAL on the SAME graph
+                "realtime/market_context": {
+                    "realtime/price_main": infos.get("price", 0),
+                    "realtime/price_poc": infos.get("vp_poc", 0),
+                    "realtime/price_vah": infos.get("vp_vah", 0),
+                    "realtime/price_val": infos.get("vp_val", 0),
+                },
+                
                 "global_step": self.num_timesteps
             })
             
@@ -70,7 +79,7 @@ class RealTimeWandbCallback(BaseCallback):
                 })
             
         return True
-
+    
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pair", type=str, default="BTCUSDT")
