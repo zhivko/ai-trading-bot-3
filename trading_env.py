@@ -146,7 +146,21 @@ class TradingEnv(gym.Env):
             "vp_heatmap": heatmap_snapshot # <--- ADDED THIS
         }
 
+        # --- ENHANCED LOGGING ---
         if self.current_step % 100 == 0:
-            print(f"Step {self.current_step}: P={current_price:.2f}, Act={action_val:.2f}, Rew={reward:.4f}, Port={self.net_worth:.0f}")
-
+            # Extract the 7-day POC for the current step to verify it's changing
+            # (Assuming 7 is in your vp_days list)
+            vp_day = self.vp_days[0] 
+            current_poc = self.vp_data[vp_day]['poc'][self.current_step]
+            
+            # Calculate how far we are from the POC
+            diff_pct = ((current_price - current_poc) / current_poc) * 100
+            
+            print(f"Step {self.current_step}: "
+                  f"Price={current_price:.0f} | "
+                  f"POC({vp_day}d)={current_poc:.0f} "
+                  f"({diff_pct:+.2f}%) | "
+                  f"Rew={reward:.4f} | "
+                  f"Port={self.net_worth:.0f}")
+            
         return obs, reward, terminated, truncated, info
