@@ -3,7 +3,6 @@ import numpy as np
 import pandas as pd
 from gymnasium import spaces
 
-# Import your helper
 from volume_profile import get_rolling_vp
 
 class TradingEnv(gym.Env):
@@ -11,7 +10,8 @@ class TradingEnv(gym.Env):
         super(TradingEnv, self).__init__()
 
         # --- DATA PREP ---
-        self.raw_df = df.reset_index(drop=True)
+        # FIX: drop=False keeps the 'date' index as a column instead of deleting it
+        self.raw_df = df.reset_index(drop=False) 
         self.df = self.raw_df.copy()
         
         # 1. Standard Features
@@ -32,15 +32,16 @@ class TradingEnv(gym.Env):
         
         print(f"--- Initializing Environment (VP Days: {self.vp_days}) ---")
         
-        # Calculate or Load from Cache
         for days in self.vp_days:
+            # Note: We pass the ORIGINAL df (with date index) if needed, 
+            # but here raw_df is fine as get_rolling_vp handles it.
             vp_result = get_rolling_vp(self.raw_df, days, bin_percent=0.005)
             self.vp_data[days] = vp_result
             
         # Define Observation Space
         market_obs_size = self.lookback_window * len(self.features)
         account_obs_size = 2
-        vp_obs_size = len(self.vp_days) * (3 + 100) # 3 scalars + 100 heatmap per VP
+        vp_obs_size = len(self.vp_days) * (3 + 100) 
         total_obs_size = market_obs_size + account_obs_size + vp_obs_size
         
         self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
@@ -60,7 +61,6 @@ class TradingEnv(gym.Env):
         self.prev_net_worth = self.initial_balance
         self.shares_held = 0
         
-        # Random start point
         if len(self.df) > self.max_lookback + 1000:
             self.current_step = self.np_random.integers(self.max_lookback, len(self.df) - 1000)
         else:
@@ -69,19 +69,15 @@ class TradingEnv(gym.Env):
         return self._next_observation(), {}
 
     def _next_observation(self):
-        # 1. Standard Window
         window_start = self.current_step - self.lookback_window
         std_features = self.market_features[window_start : self.current_step].flatten()
         
-        # 2. Account Data
         current_price = self.raw_prices[self.current_step]
         balance_norm = self.balance / self.initial_balance
         holdings_norm = (self.shares_held * current_price) / self.initial_balance
         account_features = np.array([balance_norm, holdings_norm], dtype=np.float32)
         
-        # 3. Volume Profile Data
         vp_features_list = []
-        
         for days in self.vp_days:
             data = self.vp_data[days]
             
@@ -101,7 +97,6 @@ class TradingEnv(gym.Env):
             vp_features_list.extend(heatmap)
             
         vp_features = np.array(vp_features_list, dtype=np.float32)
-        
         full_obs = np.concatenate((std_features, account_features, vp_features))
         return full_obs
 
@@ -110,7 +105,7 @@ class TradingEnv(gym.Env):
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
         
-        # --- TRADE EXECUTION ---
+        # Trade Logic
         trade_penalty = 0
         if action_val > 0.1: # Buy
             amount_to_invest = self.balance * action_val
@@ -132,44 +127,39 @@ class TradingEnv(gym.Env):
 
         self.net_worth = self.balance + (self.shares_held * current_price)
         
-        # --- REWARD ---
         step_reward = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
         reward = step_reward * 100 
         reward -= trade_penalty
         self.prev_net_worth = self.net_worth
 
-        # --- TERMINATION ---
         terminated = False
         truncated = False
-        if self.current_step >= len(self.df) - 1:
-            truncated = True
+        if self.current_step >= len(self.df) - 1: truncated = True
         if self.net_worth < (self.initial_balance * 0.5):
             terminated = True
             reward = -10 
 
         obs = self._next_observation()
         
-        # --- PREPARE LOGGING DATA ---
+        # VP Data for Logging
         primary_day = self.vp_days[0]
         heatmap = self.vp_data[primary_day]['heatmap'][self.current_step]
-        
-        # --- NEW: CALCULATE REAL PRICES FOR WANDB ---
+        poc = self.vp_data[primary_day]['poc'][self.current_step]
+        vah = self.vp_data[primary_day]['vah'][self.current_step]
+        val = self.vp_data[primary_day]['val'][self.current_step]
+
+        # Calculate Real Price Bins for WandB
         window_size = primary_day * 24
         start_idx = max(0, self.current_step - window_size)
-        # Handle edge cases where window is smaller than lookback at start
         window_prices = self.raw_prices[start_idx : self.current_step]
-        
+
         if len(window_prices) > 0:
-            min_p = np.min(window_prices)
-            max_p = np.max(window_prices)
+            min_p, max_p = np.min(window_prices), np.max(window_prices)
         else:
-            min_p = current_price
-            max_p = current_price
-        
-        if min_p == max_p:
-            price_bins = [min_p] * 100
-        else:
-            price_bins = np.linspace(min_p, max_p, 100).tolist()
+            min_p, max_p = current_price, current_price
+
+        if min_p == max_p: price_bins = [min_p] * 100
+        else: price_bins = np.linspace(min_p, max_p, 100).tolist()
 
         info = {
             "portfolio_value": self.net_worth,
@@ -179,19 +169,20 @@ class TradingEnv(gym.Env):
             "reward": reward,
             "price": current_price,
             "vp_heatmap": heatmap,
-            "vp_bins": price_bins 
+            "vp_bins": price_bins,
+            "poc": poc,
+            "vah": vah,
+            "val": val
         }
 
-        # Console Log
+        # Console Log with Date
         if self.current_step % 100 == 0:
+            # FIX: Access date from the restored column
+            current_date = self.raw_df.iloc[self.current_step]['date']
+            
             poc = self.vp_data[primary_day]['poc'][self.current_step]
-            # Avoid division by zero
             dist_pct = ((current_price - poc) / poc) * 100 if poc != 0 else 0
-
-            # Get current datetime
-            current_datetime = self.raw_df.loc[self.current_step, 'date']
-            datetime_str = current_datetime.strftime('%Y-%m-%d %H:%M:%S') if hasattr(current_datetime, 'strftime') else str(current_datetime)
-
-            print(f"Step {self.current_step} ({datetime_str}): Price={current_price:.0f} | POC={poc:.0f} ({dist_pct:+.2f}%) | NetWorth={self.net_worth:.0f}")
+            
+            print(f"Step {self.current_step} [{current_date}]: P={current_price:.0f} | POC={poc:.0f} ({dist_pct:+.2f}%) | Port={self.net_worth:.0f}")
 
         return obs, reward, terminated, truncated, info
