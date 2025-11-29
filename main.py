@@ -4,6 +4,7 @@ import os
 import numpy as np
 import warnings
 import torch
+import glob
 
 # --- SILENCE WARNINGS ---
 warnings.filterwarnings("ignore")
@@ -90,6 +91,7 @@ def main():
     parser.add_argument("--total-timesteps", type=int, default=5000000)
     # NEW: Date to split data
     parser.add_argument("--test-split", type=str, default="2024-01-01", help="Date to split Train/Test")
+    parser.add_argument("--resume", action="store_true", help="Resume training from the latest checkpoint")
     parser.add_argument("--wandb", action="store_true")
     args = parser.parse_args()
 
@@ -133,21 +135,38 @@ def main():
     print("-> Setting up Evaluation Env...")
     eval_env = DummyVecEnv([lambda test_df=test_df: Monitor(TradingEnv(test_df, vp_days=args.vp_days))])
 
-    # --- 3. MODEL SETUP ---
-    policy_kwargs = dict(net_arch=[512, 512]) 
-    
-    if args.algo.lower() == 'sac':
-        model = SAC(
-            "MlpPolicy", 
-            env, 
-            policy_kwargs=policy_kwargs, 
-            verbose=1, 
-            tensorboard_log=f"./{args.algo}_tb/", 
-            learning_rate=3e-4,
-            ent_coef='auto'
-        )
+    # --- 3. MODEL SETUP OR RESUME ---
+    if args.resume:
+        checkpoint_files = glob.glob(f'./models/{args.pair}/{args.algo}_*.zip')
+        if checkpoint_files:
+            # Find the latest checkpoint by step number
+            latest_checkpoint = max(checkpoint_files, key=lambda x: int(x.split('_')[-2]))
+            print(f"Resuming from checkpoint: {latest_checkpoint}")
+            if args.algo.lower() == 'sac':
+                model = SAC.load(latest_checkpoint, env=env)
+            else:
+                model = PPO.load(latest_checkpoint, env=env)
+        else:
+            print("No checkpoints found, starting fresh training")
+            model = None  # Will be set below
     else:
-        model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=f"./{args.algo}_tb/")
+        model = None
+
+    if model is None:
+        policy_kwargs = dict(net_arch=[512, 512])
+
+        if args.algo.lower() == 'sac':
+            model = SAC(
+                "MlpPolicy",
+                env,
+                policy_kwargs=policy_kwargs,
+                verbose=1,
+                tensorboard_log=f"./{args.algo}_tb/",
+                learning_rate=3e-4,
+                ent_coef='auto'
+            )
+        else:
+            model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=f"./{args.algo}_tb/")
 
     # --- 4. CALLBACKS ---
     callbacks = []
@@ -187,6 +206,7 @@ def main():
     model.save(f"{args.algo}_{args.pair}_final")
     print("Training complete.")
 
+# usage
+# python.exe c:/git/ai-tradig-bot-3/main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2024-01-01 --total-timesteps 1000000 --wandb
 if __name__ == "__main__":
     main()
-    

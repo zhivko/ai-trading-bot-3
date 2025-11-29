@@ -187,7 +187,11 @@ class TradingEnv(gym.Env):
             poc = self.vp_data[primary_day]['poc'][self.current_step]
             # Avoid division by zero
             dist_pct = ((current_price - poc) / poc) * 100 if poc != 0 else 0
-            
-            print(f"Step {self.current_step}: Price={current_price:.0f} | POC={poc:.0f} ({dist_pct:+.2f}%) | NetWorth={self.net_worth:.0f}")
+
+            # Get current datetime
+            current_datetime = self.raw_df.loc[self.current_step, 'date']
+            datetime_str = current_datetime.strftime('%Y-%m-%d %H:%M:%S') if hasattr(current_datetime, 'strftime') else str(current_datetime)
+
+            print(f"Step {self.current_step} ({datetime_str}): Price={current_price:.0f} | POC={poc:.0f} ({dist_pct:+.2f}%) | NetWorth={self.net_worth:.0f}")
 
         return obs, reward, terminated, truncated, info
