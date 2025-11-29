@@ -3,6 +3,8 @@ import pandas as pd
 import os
 import pickle
 import hashlib
+import concurrent.futures
+from functools import partial
 
 def generate_cache_filename(df, window_days, bin_percent, cache_dir="vp_cache"):
     """
@@ -108,8 +110,16 @@ def compute_volume_profile(df_window, bin_percent=0.005, num_bins=None):
         'poc': poc,
         'vah': vah,
         'val': val,
-        'heatmap': heatmap
+        'heatmap': heatmap,
+        'hvn': [bins[idx] + bin_size / 2 for idx in va_bins] if va_bins else [],
+        'lvn': []  # Low volume nodes, not computed
     }
+
+def compute_vp_for_window(window_df, bin_percent):
+    """
+    Helper function for multiprocessing: compute VP for a single window.
+    """
+    return compute_volume_profile(window_df, bin_percent)
 
 def get_rolling_vp(df, window_days, bin_percent=0.005, cache_dir="vp_cache"):
     """
@@ -134,31 +144,46 @@ def get_rolling_vp(df, window_days, bin_percent=0.005, cache_dir="vp_cache"):
     # 3. Calculate if no cache
     window_hours = window_days * 24
     total_iterations = len(df) - window_hours
-    
-    print(f"  [Calc] Calculating rolling VP for {window_days} Days ({total_iterations} steps)...")
-    
+
+    print(f"  [Calc] Calculating rolling VP for {window_days} Days ({total_iterations} steps) using multiprocessing...")
+
     pocs = np.zeros(len(df), dtype=np.float32)
     vahs = np.zeros(len(df), dtype=np.float32)
     vals = np.zeros(len(df), dtype=np.float32)
     heatmaps = np.zeros((len(df), 100), dtype=np.float32)
-    
-    for i in range(window_hours, len(df)):
-        if (i - window_hours) % 2000 == 0:
-            print(f"    Processed {i - window_hours}/{total_iterations}")
-            
-        window_df = df.iloc[i-window_hours:i]
-        vp_data = compute_volume_profile(window_df, bin_percent)
-        
-        pocs[i] = vp_data['poc']
-        vahs[i] = vp_data['vah']
-        vals[i] = vp_data['val']
-        heatmaps[i] = vp_data['heatmap']
+    hvns = [[] for _ in range(len(df))]  # List of lists for high volume nodes
+    lvns = [[] for _ in range(len(df))]  # List of lists for low volume nodes
+
+    # Prepare windows
+    windows = [df.iloc[i-window_hours:i] for i in range(window_hours, len(df))]
+
+    # Use multiprocessing to compute VP for each window
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        func = partial(compute_vp_for_window, bin_percent=bin_percent)
+        futures = {executor.submit(func, w): idx for idx, w in enumerate(windows)}
+        completed = 0
+        for future in concurrent.futures.as_completed(futures):
+            idx = futures[future]
+            vp_data = future.result()
+            i = window_hours + idx
+            pocs[i] = vp_data['poc']
+            vahs[i] = vp_data['vah']
+            vals[i] = vp_data['val']
+            heatmaps[i] = vp_data['heatmap']
+            hvns[i] = vp_data['hvn']
+            lvns[i] = vp_data['lvn']
+            completed += 1
+            if completed % 5000 == 0:
+                percent = 100 * completed / total_iterations
+                print(f"    Processed {completed}/{total_iterations} ({percent:.1f}%)")
 
     result = {
         'poc': pocs,
         'vah': vahs,
         'val': vals,
-        'heatmap': heatmaps
+        'heatmap': heatmaps,
+        'hvn': hvns,
+        'lvn': lvns
     }
     
     # 4. Save to Cache

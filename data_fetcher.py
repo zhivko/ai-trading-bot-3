@@ -66,8 +66,8 @@ if __name__ == "__main__":
     pair = args.pair
 
     # Fetch data from 2021 to 2025
-    start_date = '2021-01-01'
-    end_date = '2025-01-01'
+    start_date = '2016-01-01'
+    end_date = '2025-11-29'
     print(f"Fetching data for {pair} from {start_date} to {end_date}...")
     df = fetch_historical_ohlcv(pair, start_date, end_date)
     filename = f'{pair.replace("/", "_")}_data.csv'

@@ -23,17 +23,18 @@ from trading_env import TradingEnv
 class WandbEvalListener(BaseCallback):
     """
     This callback runs AFTER the EvalCallback finishes testing.
-    It grabs the results and logs them directly to WandB.
+    It grabs the results from the PARENT callback and logs them.
     """
     def __init__(self, verbose=0):
         super().__init__(verbose)
 
     def _on_step(self) -> bool:
-        # Check if this is called after evaluation
-        if hasattr(self, 'locals') and self.locals and 'episode_reward' in self.locals:
-            mean_reward = self.locals['episode_reward']
-            mean_len = self.locals.get('episode_length', 0)
-
+        # The parent is the EvalCallback
+        if self.parent is not None:
+            # Grab the metrics directly from the parent class
+            mean_reward = self.parent.last_mean_reward
+            mean_len = np.mean(self.parent.evaluations_length[-1])
+            
             print(f"📈 Sending Eval Metrics to WandB: {mean_reward}")
 
             wandb.log({
@@ -249,8 +250,8 @@ def main():
 
 
 # usage
-# python.exe c:/git/ai-tradig-bot-3/main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2024-01-01 --total-timesteps 1000000 --wandb
+# python.exe c:/git/ai-tradig-bot-3/main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 1000000 --wandb
 # or
-# python.exe c:/git/ai-tradig-bot-3/main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2024-01-01 --total-timesteps 1000000 --wandb --resume
+# python.exe c:/git/ai-tradig-bot-3/main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 1000000 --wandb --resume
 if __name__ == "__main__":
     main()

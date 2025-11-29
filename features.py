@@ -1,14 +1,38 @@
 import numpy as np
 import pandas as pd
+import ta
 
 def get_features(df, vp7_df, vp30_df, t):
     """
     Extract features for a given timestamp t.
     """
     if t not in df.index or pd.isna(df.loc[t, 'close']):
-        return np.zeros(200 + 24 + 8)  # Adjust size
+        return np.zeros(240)  # Updated size with indicators
 
     close = df.loc[t, 'close']
+
+    # Technical Indicators
+    data_up_to_t = df.loc[:t, 'close']
+    if len(data_up_to_t) >= 26:  # MACD needs at least 26
+        macd_indicator = ta.trend.MACD(data_up_to_t, window_slow=26, window_fast=12, window_sign=9)
+        macd_line = macd_indicator.macd().iloc[-1] if not pd.isna(macd_indicator.macd().iloc[-1]) else 0
+        macd_signal = macd_indicator.macd_signal().iloc[-1] if not pd.isna(macd_indicator.macd_signal().iloc[-1]) else 0
+        macd_hist = macd_indicator.macd_diff().iloc[-1] if not pd.isna(macd_indicator.macd_diff().iloc[-1]) else 0
+    else:
+        macd_line, macd_signal, macd_hist = 0, 0, 0
+
+    if len(data_up_to_t) >= 14:  # RSI needs at least 14
+        rsi_indicator = ta.momentum.RSIIndicator(data_up_to_t, window=14)
+        rsi = rsi_indicator.rsi().iloc[-1] if not pd.isna(rsi_indicator.rsi().iloc[-1]) else 50
+    else:
+        rsi = 50
+
+    if len(data_up_to_t) >= 14:  # Stoch RSI needs at least 14
+        stoch_rsi_indicator = ta.momentum.StochRSIIndicator(data_up_to_t, window=14, smooth1=3, smooth2=3)
+        stoch_k = stoch_rsi_indicator.stochrsi_k().iloc[-1] if not pd.isna(stoch_rsi_indicator.stochrsi_k().iloc[-1]) else 0.5
+        stoch_d = stoch_rsi_indicator.stochrsi_d().iloc[-1] if not pd.isna(stoch_rsi_indicator.stochrsi_d().iloc[-1]) else 0.5
+    else:
+        stoch_k, stoch_d = 0.5, 0.5
 
     # 7d VP
     vp7 = vp7_df.loc[t]
@@ -60,6 +84,7 @@ def get_features(df, vp7_df, vp30_df, t):
         [dist_hvn7, dist_lvn7, rel_poc7, in_va7,  # 4
          dist_hvn30, dist_lvn30, rel_poc30, in_va30,  # 4
          vol, imbalance],  # 2
+        [macd_line, macd_signal, macd_hist, rsi, stoch_k, stoch_d],  # 6
         session  # 24
     ])
     return features
