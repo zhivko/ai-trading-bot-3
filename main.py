@@ -61,6 +61,9 @@ class RealTimeWandbCallback(BaseCallback):
             
         return True
 
+
+# usage:
+# python.exe c:/git/ai-tradig-bot-3/main.py --pair BTCUSDT --vp-days 7 30 --algo sac --total-timesteps 1000000 --wandb 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pair", type=str, default="BTCUSDT")
@@ -76,8 +79,8 @@ def main():
     if not os.path.exists(csv_file):
         subprocess.run(['python', 'data_fetcher.py', '--pair', args.pair])
     
-    if os.path.exists(args.data_path):
-        df = pd.read_csv(args.data_path)
+    if os.path.exists(csv_file):
+        df = pd.read_csv(csv_file)
         df.columns = df.columns.str.lower()
         
         # FIX: Handle 'timestamp' vs 'date'

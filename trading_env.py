@@ -160,7 +160,7 @@ class TradingEnv(gym.Env):
                   f"Price={current_price:.0f} | "
                   f"POC({vp_day}d)={current_poc:.0f} "
                   f"({diff_pct:+.2f}%) | "
-                  f"Rew={reward:.4f} | "
-                  f"Port={self.net_worth:.0f}")
+                  f"Reward={reward:.4f} | "
+                  f"NetWorth={self.net_worth:.0f}")
             
         return obs, reward, terminated, truncated, info
