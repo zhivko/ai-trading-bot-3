@@ -19,8 +19,7 @@ class TradingEnv(gym.Env):
         self.df['close_pct'] = self.df['close'].pct_change().fillna(0)
         self.df['volume_norm'] = (self.df['volume'] - self.df['volume'].mean()) / (self.df['volume'].std() + 1e-8)
 
-        # 2. TECHNICAL INDICATORS (NEW) --------------------------------------
-        
+        # 2. TECHNICAL INDICATORS
         # A. RSI (14)
         delta = self.df['close'].diff()
         gain = (delta.where(delta > 0, 0)).ewm(span=14, adjust=False).mean()
@@ -99,6 +98,9 @@ class TradingEnv(gym.Env):
         self.prev_net_worth = self.initial_balance
         self.shares_held = 0
         
+        # --- PHASE 3: Track High Water Mark for Drawdown Penalty ---
+        self.max_net_worth = self.initial_balance
+        
         if len(self.df) > self.max_lookback + 1000:
             self.current_step = self.np_random.integers(self.max_lookback, len(self.df) - 1000)
         else:
@@ -172,10 +174,28 @@ class TradingEnv(gym.Env):
 
         self.net_worth = self.balance + (self.shares_held * current_price)
         
-        # --- REWARD ---
+        # --- PHASE 3: DRAWDOWN & REWARD CALCULATION ---
+        
+        # 1. Update High Water Mark (ATH)
+        if self.net_worth > self.max_net_worth:
+            self.max_net_worth = self.net_worth
+            
+        # 2. Base PnL Reward
         step_reward = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
         reward = step_reward * 100 
+        
+        # 3. Drawdown Penalty
+        # e.g. If 10% down from peak, drawdown = 0.1
+        drawdown = (self.max_net_worth - self.net_worth) / self.max_net_worth
+        
+        # Penalty Factor: 0.1
+        # This acts as "gravity". If you are in a hole, you get a small constant negative reward.
+        # It encourages the bot to get back to ATH quickly.
+        drawdown_penalty = drawdown * 0.1
+        
         reward -= trade_penalty
+        reward -= drawdown_penalty
+        
         self.prev_net_worth = self.net_worth
 
         # --- TERMINATION ---
@@ -223,6 +243,7 @@ class TradingEnv(gym.Env):
             "action": action_val,
             "reward": reward,
             "price": current_price,
+            "max_net_worth": self.max_net_worth, # Log ATH
             
             # Send raw values for charts
             "poc": raw_poc,
@@ -243,6 +264,6 @@ class TradingEnv(gym.Env):
             current_date = self.raw_df.iloc[self.current_step]['date']
             dist_pct = ((current_price - raw_poc) / raw_poc) * 100 if raw_poc != 0 else 0
             
-            print(f"Step {self.current_step} [{current_date}]: P={current_price:.0f} | POC={raw_poc:.0f} ({dist_pct:+.2f}%) | Port={self.net_worth:.0f}")
+            print(f"Step {self.current_step} [{current_date}]: P={current_price:.0f} | POC={raw_poc:.0f} ({dist_pct:+.2f}%) | Port={self.net_worth:.0f} | ATH={self.max_net_worth:.0f}")
 
         return obs, reward, terminated, truncated, info
