@@ -112,8 +112,8 @@ class TradingEnv(gym.Env):
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
         
-        # --- TRADE LOGIC (Higher Fee 0.15% to prevent overfitting) ---
-        REALISTIC_FEE = 0.0015
+        # --- TRADE LOGIC (Higher Fee 0.1% to prevent overfitting) ---
+        REALISTIC_FEE = 0.001
         trade_penalty = 0
         
         if action_val > 0.1: # Buy
