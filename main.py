@@ -232,11 +232,12 @@ def main():
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path=f'./models/{args.pair}_best_eval',
-        log_path=f'./sac_tb/', 
+        log_path=f'./sac_tb/',
         eval_freq=20000,
         n_eval_episodes=1,
         deterministic=True,
-        render=False
+        render=False,
+        callback_after_eval=eval_listener
     )
     callbacks.append(eval_callback)
 
