@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from gymnasium import spaces
 
+# Import your helper
 from volume_profile import get_rolling_vp
 
 class TradingEnv(gym.Env):
@@ -10,7 +11,7 @@ class TradingEnv(gym.Env):
         super(TradingEnv, self).__init__()
 
         # --- DATA PREP ---
-        # FIX: drop=False keeps the 'date' index as a column instead of deleting it
+        # Keep 'date' as a column so we can log it later
         self.raw_df = df.reset_index(drop=False) 
         self.df = self.raw_df.copy()
         
@@ -33,15 +34,13 @@ class TradingEnv(gym.Env):
         print(f"--- Initializing Environment (VP Days: {self.vp_days}) ---")
         
         for days in self.vp_days:
-            # Note: We pass the ORIGINAL df (with date index) if needed, 
-            # but here raw_df is fine as get_rolling_vp handles it.
             vp_result = get_rolling_vp(self.raw_df, days, bin_percent=0.005)
             self.vp_data[days] = vp_result
             
         # Define Observation Space
         market_obs_size = self.lookback_window * len(self.features)
         account_obs_size = 2
-        vp_obs_size = len(self.vp_days) * (3 + 100) 
+        vp_obs_size = len(self.vp_days) * (3 + 100) # 3 scalars + 100 heatmap per VP
         total_obs_size = market_obs_size + account_obs_size + vp_obs_size
         
         self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
@@ -69,14 +68,17 @@ class TradingEnv(gym.Env):
         return self._next_observation(), {}
 
     def _next_observation(self):
+        # 1. Standard Window
         window_start = self.current_step - self.lookback_window
         std_features = self.market_features[window_start : self.current_step].flatten()
         
+        # 2. Account Data
         current_price = self.raw_prices[self.current_step]
         balance_norm = self.balance / self.initial_balance
         holdings_norm = (self.shares_held * current_price) / self.initial_balance
         account_features = np.array([balance_norm, holdings_norm], dtype=np.float32)
         
+        # 3. Volume Profile Data
         vp_features_list = []
         for days in self.vp_days:
             data = self.vp_data[days]
@@ -97,23 +99,21 @@ class TradingEnv(gym.Env):
             vp_features_list.extend(heatmap)
             
         vp_features = np.array(vp_features_list, dtype=np.float32)
+        
+        # OPTIONAL: Add Noise here if you want to further reduce overfitting
+        # noise = np.random.normal(0, 0.01, size=vp_features.shape)
+        # vp_features = vp_features + (vp_features * noise)
+
         full_obs = np.concatenate((std_features, account_features, vp_features))
-
-        # --- ADD NOISE TO PREVENT OVERFITTING ---
-        # Add 1% random noise to the input features
-        # This makes every "replay" of the dataset slightly different
-        noise = np.random.normal(0, 0.01, size=full_obs.shape)
-        full_obs = full_obs + (full_obs * noise)
-
         return full_obs.astype(np.float32)
 
-def step(self, action):
+    def step(self, action):
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
         
-        # --- 1. TRADE LOGIC (With 0.15% Fee to stop overfitting) ---
-        REALISTIC_FEE = 0.0015  
+        # --- TRADE LOGIC (Higher Fee 0.15% to prevent overfitting) ---
+        REALISTIC_FEE = 0.0015
         trade_penalty = 0
         
         if action_val > 0.1: # Buy
@@ -136,13 +136,13 @@ def step(self, action):
 
         self.net_worth = self.balance + (self.shares_held * current_price)
         
-        # --- 2. REWARD ---
+        # --- REWARD ---
         step_reward = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
         reward = step_reward * 100 
         reward -= trade_penalty
         self.prev_net_worth = self.net_worth
 
-        # --- 3. TERMINATION ---
+        # --- TERMINATION ---
         terminated = False
         truncated = False
         if self.current_step >= len(self.df) - 1: truncated = True
@@ -152,17 +152,16 @@ def step(self, action):
 
         obs = self._next_observation()
         
-        # --- 4. EXTRACT RAW VP VALUES (The Missing Link) ---
-        # We need to pull the data from the pre-calculated self.vp_data
+        # --- PREPARE LOGGING DATA ---
         primary_day = self.vp_days[0]
+        heatmap = self.vp_data[primary_day]['heatmap'][self.current_step]
         
-        # HERE IS WHERE raw_poc IS CALCULATED:
+        # EXTRACT RAW VALUES FOR WANDB
         raw_poc = self.vp_data[primary_day]['poc'][self.current_step]
         raw_vah = self.vp_data[primary_day]['vah'][self.current_step]
         raw_val = self.vp_data[primary_day]['val'][self.current_step]
-        heatmap = self.vp_data[primary_day]['heatmap'][self.current_step]
         
-        # --- 5. CALCULATE PRICE BINS FOR WANDB ---
+        # Calculate Real Price Bins for WandB
         window_size = primary_day * 24
         start_idx = max(0, self.current_step - window_size)
         window_prices = self.raw_prices[start_idx : self.current_step]
@@ -175,7 +174,6 @@ def step(self, action):
         if min_p == max_p: price_bins = [min_p] * 100
         else: price_bins = np.linspace(min_p, max_p, 100).tolist()
 
-        # --- 6. INFO DICT ---
         info = {
             "portfolio_value": self.net_worth,
             "balance": self.balance,
@@ -184,8 +182,8 @@ def step(self, action):
             "reward": reward,
             "price": current_price,
             
-            # Now these variables are definitely defined:
-            "poc": raw_poc, 
+            # Send raw values for charts
+            "poc": raw_poc,
             "vah": raw_vah,
             "val": raw_val,
             
@@ -193,9 +191,12 @@ def step(self, action):
             "vp_bins": price_bins 
         }
 
-        # --- 7. CONSOLE LOG ---
+        # Console Log with Date
         if self.current_step % 100 == 0:
+            current_date = self.raw_df.iloc[self.current_step]['date']
+            
             dist_pct = ((current_price - raw_poc) / raw_poc) * 100 if raw_poc != 0 else 0
-            print(f"Step {self.current_step}: P={current_price:.0f} | POC={raw_poc:.0f} ({dist_pct:+.2f}%) | Port={self.net_worth:.0f}")
+            
+            print(f"Step {self.current_step} [{current_date}]: P={current_price:.0f} | POC={raw_poc:.0f} ({dist_pct:+.2f}%) | Port={self.net_worth:.0f}")
 
         return obs, reward, terminated, truncated, info

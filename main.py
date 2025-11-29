@@ -47,13 +47,14 @@ class RealTimeWandbCallback(BaseCallback):
                 "realtime/alpha_entropy": current_alpha,
                 "realtime/learning_rate": current_lr,
                 
-                # --- FIX IS HERE: Use "poc", "vah", "val" (matching trading_env.py) ---
+                # --- CHECK THIS BLOCK ---
                 "realtime/market_context": {
                     "realtime/price_main": infos.get("price", 0),
-                    "realtime/price_poc": infos.get("poc", 0), 
-                    "realtime/price_vah": infos.get("vah", 0), 
-                    "realtime/price_val": infos.get("val", 0), 
+                    "realtime/price_poc": infos.get("poc", 0),  # <--- MUST match trading_env keys
+                    "realtime/price_vah": infos.get("vah", 0),  # <--- MUST match trading_env keys
+                    "realtime/price_val": infos.get("val", 0),  # <--- MUST match trading_env keys
                 },
+                # ------------------------
                 
                 "global_step": self.num_timesteps
             })
