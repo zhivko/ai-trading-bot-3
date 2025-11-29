@@ -1,6 +1,7 @@
 import argparse
 import pandas as pd
 import os
+import subprocess
 import numpy as np
 import warnings
 
@@ -73,15 +74,14 @@ def main():
     # Load Data
     csv_file = args.data_path if args.data_path else f"{args.pair}_data.csv"
     if not os.path.exists(csv_file):
-        print(f"Error: File {csv_file} not found. Using Dummy Data.")
-        exit(1)
-    else:
-        print(f"Loading data: {csv_file}")
-        df = pd.read_csv(csv_file)
-        df.columns = df.columns.str.lower()
-        if 'date' in df.columns: 
-            df['date'] = pd.to_datetime(df['date'])
-            df.set_index('date', inplace=True)
+        subprocess.run(['python', 'data_fetcher.py', '--pair', args.pair])
+    
+    print(f"Loading data: {csv_file}")
+    df = pd.read_csv(csv_file)
+    df.columns = df.columns.str.lower()
+    if 'date' in df.columns:
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
 
     # Initialize Env
     env = DummyVecEnv([lambda df=df: Monitor(TradingEnv(df, vp_days=args.vp_days))])
