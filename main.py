@@ -250,8 +250,8 @@ def main():
 
 
 # usage
-# python.exe c:/git/ai-tradig-bot-3/main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 1000000 --wandb
+# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 1000000 --wandb
 # or
-# python.exe c:/git/ai-tradig-bot-3/main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 1000000 --wandb --resume
+# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 1000000 --wandb --resume
 if __name__ == "__main__":
     main()
