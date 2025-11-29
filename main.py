@@ -20,6 +20,32 @@ from wandb.integration.sb3 import WandbCallback
 
 from trading_env import TradingEnv 
 
+class WandbEvalListener(BaseCallback):
+    """
+    This callback runs AFTER the EvalCallback finishes testing.
+    It grabs the results and logs them directly to WandB.
+    """
+    def __init__(self, verbose=0):
+        super().__init__(verbose)
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_event(self) -> bool:
+        # This is triggered by EvalCallback when a test finishes
+        if self.parent is not None:
+            mean_reward = self.parent.last_mean_reward
+            mean_len = self.parent.last_mean_ep_length
+            
+            print(f"📈 Sending Eval Metrics to WandB: {mean_reward}")
+            
+            wandb.log({
+                "eval/mean_reward": mean_reward,
+                "eval/mean_ep_length": mean_len,
+                "global_step": self.num_timesteps
+            })
+        return True
+
 # --- REAL-TIME CALLBACK ---
 class RealTimeWandbCallback(BaseCallback):
     def __init__(self, verbose=0):
@@ -199,11 +225,14 @@ def main():
     # Checkpoint logic
     callbacks.append(CheckpointCallback(save_freq=50000, save_path=f'./models/{args.pair}', name_prefix=args.algo))
 
+    # Create the listener
+    eval_listener = WandbEvalListener()
+
     # Eval logic
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path=f'./models/{args.pair}_best_eval',
-        log_path=f'./logs/{args.pair}_eval',
+        log_path=f'./sac_tb/', 
         eval_freq=20000,
         n_eval_episodes=1,
         deterministic=True,
