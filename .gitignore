@@ -50,3 +50,7 @@ vp_cache/
 
 
 models/
+logs/
+checkpoints/
+__pycache__/
+
