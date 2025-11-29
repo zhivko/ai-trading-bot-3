@@ -29,16 +29,13 @@ class WandbEvalListener(BaseCallback):
         super().__init__(verbose)
 
     def _on_step(self) -> bool:
-        return True
+        # Check if this is called after evaluation
+        if hasattr(self, 'locals') and self.locals and 'episode_reward' in self.locals:
+            mean_reward = self.locals['episode_reward']
+            mean_len = self.locals.get('episode_length', 0)
 
-    def _on_event(self) -> bool:
-        # This is triggered by EvalCallback when a test finishes
-        if self.parent is not None:
-            mean_reward = self.parent.last_mean_reward
-            mean_len = self.parent.last_mean_ep_length
-            
             print(f"📈 Sending Eval Metrics to WandB: {mean_reward}")
-            
+
             wandb.log({
                 "eval/mean_reward": mean_reward,
                 "eval/mean_ep_length": mean_len,
