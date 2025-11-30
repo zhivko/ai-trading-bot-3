@@ -55,11 +55,10 @@ if __name__ == '__main__':
     truncated = False
     step_count = 0
 
-    while not terminated and not truncated and step_count < 1000:
+    while not terminated and not truncated and step_count < 10:
         action = env.action_space.sample()  # Random action
         obs, reward, terminated, truncated, info = env.step(action)
         step_count += 1
-        if step_count % 100 == 0:
-            print(f"Step {step_count}: portfolio={info['portfolio_value']:.2f}, terminated={terminated}")
+        print(f"Step {step_count}: portfolio={info['portfolio_value']:.2f}, reward={reward:.4f}, phase={info['current_phase']}, terminated={terminated}")
 
     print(f"Final: step {step_count}, portfolio={info['portfolio_value']:.2f}, terminated={terminated}, truncated={truncated}")
