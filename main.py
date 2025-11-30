@@ -62,7 +62,7 @@ class WandbEvalListener(BaseCallback):
             
             # Grab the metrics directly from the parent class
             mean_reward = self.parent.last_mean_reward
-            mean_len = np.mean(self.parent.evaluations_length[-1])
+            mean_len = self.parent.last_mean_ep_length
             
             # Try to extract portfolio value from evaluation monitor if available
             final_portfolio_value = 0
@@ -325,6 +325,38 @@ class RealTimeWandbCallback(BaseCallback):
             })
 
 
+class CurriculumCallback(BaseCallback):
+    def __init__(self, eval_env=None, verbose=0):
+        super().__init__(verbose)
+        self.eval_env = eval_env
+        self.current_phase = 1
+
+    def _on_step(self) -> bool:
+        num_timesteps = self.num_timesteps
+        if num_timesteps < 100000:
+            new_phase = 1
+        elif num_timesteps < 300000:
+            new_phase = 2
+        else:
+            new_phase = 3
+
+        if new_phase != self.current_phase:
+            self.current_phase = new_phase
+            # Set on training env
+            if hasattr(self.model.env, 'envs'):
+                for env_wrapper in self.model.env.envs:
+                    if hasattr(env_wrapper, 'env'):
+                        env_wrapper.env.set_phase(new_phase)
+            # Set on eval env if provided
+            if self.eval_env and hasattr(self.eval_env, 'envs'):
+                for env_wrapper in self.eval_env.envs:
+                    if hasattr(env_wrapper, 'env'):
+                        env_wrapper.env.set_phase(new_phase)
+            # Log to wandb
+            if wandb.run is not None:
+                wandb.log({"phase": new_phase, "global_step": num_timesteps})
+        return True
+
 def compute_sortino_ratio(portfolio_values):
     """
     Compute Sortino ratio from a list of portfolio values.
@@ -484,6 +516,9 @@ def main():
     )
     callbacks.append(eval_monitor)
     callbacks.append(eval_callback)
+
+    curriculum_callback = CurriculumCallback(eval_env=eval_env)
+    callbacks.append(curriculum_callback)
 
     # --- 5. TRAIN ---
     print(f"\n--- 3. STARTING TRAINING ({args.total_timesteps} steps) ---")

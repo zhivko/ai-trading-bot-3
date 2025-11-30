@@ -45,7 +45,7 @@ class TradingEnv(gym.Env):
         min_rsi = self.df['rsi'].rolling(window=14).min()
         max_rsi = self.df['rsi'].rolling(window=14).max()
         self.df['stoch_rsi'] = (self.df['rsi'] - min_rsi) / (max_rsi - min_rsi + 1e-8)
-        self.df['stoch_rsi_norm'] = self.df['stoch_rsi'].fillna(0.5) 
+        self.df['stoch_rsi_norm'] = self.df['stoch_rsi'].fillna(0.5)
 
         # C. MACD (12, 26, 9)
         ema12 = self.df['close'].ewm(span=12, adjust=False).mean()
@@ -67,6 +67,8 @@ class TradingEnv(gym.Env):
         self.lookback_window = lookback_window
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
+
+        self.phase = 1  # Start at Phase 1 (Simple PnL)
 
         # --- VOLUME PROFILE ---
         self.vp_days = vp_days if vp_days else [7, 30]
@@ -118,6 +120,11 @@ class TradingEnv(gym.Env):
         
         # Adjust lookback to account for MACD warmup
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
+
+    def set_phase(self, phase_number):
+        """Called by main.py to upgrade the level"""
+        self.phase = phase_number
+        print(f"⚠️ Environment upgraded to PHASE {self.phase}")
 
     def get_current_phase(self):
         """Determine current learning phase based on total training steps"""
@@ -172,7 +179,7 @@ class TradingEnv(gym.Env):
     def step(self, action):
         self.current_step += 1
         TradingEnv.total_steps += 1
-        current_phase = self.get_current_phase()
+        # current_phase = self.get_current_phase()
 
         current_price = self.raw_prices[self.current_step]
         action_val = action[0]
@@ -235,39 +242,16 @@ class TradingEnv(gym.Env):
         reward = step_reward * 100
 
         # 3. Phase-specific adjustments
-        if current_phase == 1:
-            # Phase 1: Raw PnL only
-            pass  # No penalties
-
-        elif current_phase == 2:
-            # Phase 2: Sortino (penalize downside vol)
-            if len(self.returns) > 10:
-                recent_returns = self.returns[-100:]  # Rolling window
-                downside_returns = [r for r in recent_returns if r < 0]
-                downside_std = np.std(downside_returns) if downside_returns else 0.0
-                sortino_penalty = downside_std * 50  # Scale factor
-                reward -= sortino_penalty
-
-        elif current_phase >= 3:
-            # Phase 3+: Sortino + Calmar (max drawdown)
-            # Sortino penalty
-            if len(self.returns) > 10:
-                recent_returns = self.returns[-100:]
-                downside_returns = [r for r in recent_returns if r < 0]
-                downside_std = np.std(downside_returns) if downside_returns else 0.0
-                sortino_penalty = downside_std * 50
-                reward -= sortino_penalty
-
-            # Drawdown Penalty (Calmar)
-            drawdown = (self.max_net_worth - self.net_worth) / self.max_net_worth
-            drawdown_penalty = drawdown * 0.1
-            reward -= drawdown_penalty
-
-        # Trade penalty always applies
         reward -= trade_penalty
+        if self.phase >= 2:
+            if step_reward < 0:
+                reward -= abs(step_reward) * 5.0
+        if self.phase >= 3:
+            drawdown = (self.max_net_worth - self.net_worth) / self.max_net_worth
+            reward -= (drawdown * 0.1)
 
         # Phase 4+: Volume Profile Alignment Bonus
-        if current_phase >= 4:
+        if self.phase >= 4:
             vp_bonus = self._calculate_vp_bonus(current_price, trade_happened, action_val > 0 if trade_happened else None)
             reward += vp_bonus
         
@@ -320,7 +304,7 @@ class TradingEnv(gym.Env):
             "macd_sig": cur_macd_sig,
 
             "last_10_trades": self.trade_history[-10:],
-            "current_phase": current_phase
+            "current_phase": self.phase
         }
 
         # Console Log with Date
