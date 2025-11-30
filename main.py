@@ -89,45 +89,52 @@ class RealTimeWandbCallback(BaseCallback):
             
         return True
 
-# --- EVALUATION LISTENER (UPDATED) ---
+# --- EVALUATION LISTENER (CRASH-PROOF VERSION) ---
 class WandbEvalListener(BaseCallback):
     def __init__(self, verbose=0):
         super().__init__(verbose)
 
     def _on_step(self) -> bool:
         if self.parent is not None:
-            mean_reward = self.parent.last_mean_reward
-            mean_len = self.parent.last_mean_ep_length
+            # FIX: Use getattr with a default value of 0 to prevent AttributeError crash
+            mean_reward = getattr(self.parent, 'last_mean_reward', -np.inf)
+            mean_len = getattr(self.parent, 'last_mean_ep_length', 0)
             
             # EXTRACT CUSTOM METRICS
             try:
                 # 1. Unwrap the env
-                eval_env = self.parent.eval_env.envs[0].unwrapped
-                
-                # 2. Get the metrics we saved in reset()
-                metrics = getattr(eval_env, 'episode_metrics', {})
-                
-                if metrics:
-                    print(f"\n📊 EVAL REPORT (Step {self.num_timesteps}): "
-                          f"ROI: {metrics['roi']:.2f}% | Drawdown: {metrics['max_drawdown']:.2f}% | Sharpe: {metrics['sharpe']:.2f}")
+                if hasattr(self.parent, 'eval_env') and self.parent.eval_env is not None:
+                    eval_env = self.parent.eval_env.envs[0].unwrapped
                     
-                    wandb.log({
-                        "eval/mean_reward": mean_reward,
-                        "eval/portfolio_value": metrics['final_balance'],
-                        "eval/roi_pct": metrics['roi'],
-                        "eval/buy_hold_roi_pct": metrics['bh_roi'],
-                        "eval/max_drawdown_pct": metrics['max_drawdown'],
-                        "eval/sharpe_ratio": metrics['sharpe'],
-                        "eval/trade_count": metrics['trades'],
-                        "global_step": self.num_timesteps
-                    })
-                elif mean_reward != -np.inf:
-                    # Fallback
-                    wandb.log({"eval/mean_reward": mean_reward, "global_step": self.num_timesteps})
+                    # 2. Get the metrics we saved in reset()
+                    metrics = getattr(eval_env, 'episode_metrics', {})
+                    
+                    if metrics:
+                        print(f"\n📊 EVAL REPORT (Step {self.num_timesteps}): "
+                              f"ROI: {metrics.get('roi', 0):.2f}% | "
+                              f"Drawdown: {metrics.get('max_drawdown', 0):.2f}%")
+                        
+                        wandb.log({
+                            "eval/mean_reward": mean_reward,
+                            "eval/portfolio_value": metrics.get('final_balance', 0),
+                            "eval/roi_pct": metrics.get('roi', 0),
+                            "eval/buy_hold_roi_pct": metrics.get('bh_roi', 0),
+                            "eval/max_drawdown_pct": metrics.get('max_drawdown', 0),
+                            "eval/sharpe_ratio": metrics.get('sharpe', 0),
+                            "eval/trade_count": metrics.get('trades', 0),
+                            "global_step": self.num_timesteps
+                        })
+                    elif mean_reward != -np.inf:
+                        # Fallback if metrics missing but reward exists
+                        wandb.log({
+                            "eval/mean_reward": mean_reward, 
+                            "eval/mean_ep_length": mean_len,
+                            "global_step": self.num_timesteps
+                        })
             except Exception as e:
-                pass
+                print(f"⚠️ Eval Log Error: {e}")
                 
-        return True
+        return True 
 
 # --- CURRICULUM MANAGER ---
 class CurriculumCallback(BaseCallback):
