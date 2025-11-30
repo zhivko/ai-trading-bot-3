@@ -5,6 +5,8 @@ import numpy as np
 import warnings
 import torch
 import glob # <--- Needed to find files
+from torch.distributions import Normal
+import matplotlib.pyplot as plt
 
 # --- SILENCE WARNINGS ---
 warnings.filterwarnings("ignore")
@@ -13,7 +15,7 @@ import gymnasium as gym
 from stable_baselines3 import SAC, PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
-from stable_baselines3.common.monitor import Monitor 
+from stable_baselines3.common.monitor import Monitor
 
 import wandb
 from wandb.integration.sb3 import WandbCallback
@@ -189,15 +191,71 @@ class EvalMonitorCallback(BaseCallback):
             return self.episode_results[-1]["portfolio_value"]
         return 0
 
+# Feature names list
+heatmap7 = [f'heatmap7_{i}' for i in range(100)]
+heatmap30 = [f'heatmap30_{i}' for i in range(100)]
+norms = ['norm_poc7', 'norm_vah7', 'norm_val7', 'norm_poc30', 'norm_vah30', 'norm_val30']
+hvns = ['hvn_count7', 'hvn_avg_dist7', 'hvn_nearest7', 'lvn_count7', 'lvn_avg_dist7', 'lvn_nearest7',
+        'hvn_count30', 'hvn_avg_dist30', 'hvn_nearest30', 'lvn_count30', 'lvn_avg_dist30', 'lvn_nearest30']
+dists = ['dist_hvn7', 'dist_lvn7', 'rel_poc7', 'in_va7', 'dist_hvn30', 'dist_lvn30', 'rel_poc30', 'in_va30', 'vol', 'imbalance']
+macds = ['macd_line', 'macd_signal', 'macd_hist', 'rsi', 'stoch_k', 'stoch_d', 'atr']
+sessions = [f'session_{i}' for i in range(24)]
+FEATURE_NAMES = heatmap7 + heatmap30 + norms + hvns + dists + macds + sessions
+
 # --- REAL-TIME CALLBACK ---
 class RealTimeWandbCallback(BaseCallback):
     def __init__(self, verbose=0):
         super(RealTimeWandbCallback, self).__init__(verbose)
+        self.portfolio_values = []
+        self.episode_count = 0
+        self.feature_names = FEATURE_NAMES
 
     def _on_step(self) -> bool:
         if wandb.run is None: return True
         infos = self.locals["infos"][0]
-        
+
+        # Track portfolio values
+        self.portfolio_values.append(infos.get("portfolio_value", 0))
+
+        # Check if episode ended
+        if self.locals["dones"][0]:
+            sortino = compute_sortino_ratio(self.portfolio_values)
+            self.episode_count += 1
+
+            if self.episode_count % 10 == 0:
+                # Perform gradient computation
+                obs = self.locals["obs"][0]
+                state = torch.tensor(obs, dtype=torch.float32, requires_grad=True)
+
+                # Forward through actor
+                mean_actions, log_std = self.model.policy.actor(state.unsqueeze(0))
+                std = log_std.exp()
+                dist = Normal(mean_actions, std)
+                action = torch.tensor(self.locals["actions"][0], dtype=torch.float32)
+                log_prob = dist.log_prob(action).sum()
+                loss = log_prob * sortino
+                loss.backward()
+
+                grads = state.grad.abs().detach().cpu().numpy()
+                # Normalize to 0-1
+                if grads.max() > grads.min():
+                    grads = (grads - grads.min()) / (grads.max() - grads.min())
+                else:
+                    grads = np.zeros_like(grads)
+
+                # Create plot
+                plt.figure(figsize=(20, 10))
+                plt.bar(range(len(grads)), grads)
+                plt.xticks(range(len(grads)), self.feature_names, rotation=90, fontsize=8)
+                plt.title(f'Feature Importance (Episode {self.episode_count})')
+                plt.tight_layout()
+                plt.savefig('feature_importance.png')
+                wandb.log({"feature_importance": wandb.Image('feature_importance.png')})
+                plt.close()
+
+            # Reset portfolio values for next episode
+            self.portfolio_values = []
+
         if self.num_timesteps % 100 == 0:
             current_lr = 0.0
             try: current_lr = self.model.policy.optimizer.param_groups[0]["lr"]
@@ -215,7 +273,8 @@ class RealTimeWandbCallback(BaseCallback):
                 "realtime/action": infos.get("action", 0),
                 "realtime/alpha_entropy": current_alpha,
                 "realtime/learning_rate": current_lr,
-                
+                "realtime/current_phase": infos.get("current_phase", 1),
+
                 # --- CHECK THIS BLOCK ---
                 "realtime/market_context": {
                     "realtime/price_main": infos.get("price", 0),
@@ -225,7 +284,7 @@ class RealTimeWandbCallback(BaseCallback):
                     "last_10_trades": infos.get("last_10_trades", []),
                 },
                 # ------------------------
-                
+
                 "global_step": self.num_timesteps
             })
             
@@ -265,6 +324,21 @@ class RealTimeWandbCallback(BaseCallback):
                 "trades_over_price": fig
             })
 
+
+def compute_sortino_ratio(portfolio_values):
+    """
+    Compute Sortino ratio from a list of portfolio values.
+    Sortino = mean_return / (downside_std + 1e-9)
+    """
+    if len(portfolio_values) < 2:
+        return 0.0
+
+    returns = np.diff(portfolio_values) / portfolio_values[:-1]
+    mean_return = np.mean(returns)
+    negative_returns = returns[returns < 0]
+    downside_std = np.std(negative_returns) if len(negative_returns) > 0 else 0.0
+    sortino = mean_return / (downside_std + 1e-9)
+    return sortino
 
 def main():
     parser = argparse.ArgumentParser()

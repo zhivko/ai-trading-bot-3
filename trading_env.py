@@ -8,10 +8,13 @@ from volume_profile import get_rolling_vp
 from features import get_features
 
 class TradingEnv(gym.Env):
+    total_steps = 0  # Global step counter across all episodes
+
     def __init__(self, df, vp7_df=None, vp30_df=None, initial_balance=10000, lookback_window=30, vp_days=None, buy_threshold=0.1, sell_threshold=-0.1):
         super(TradingEnv, self).__init__()
 
         self.trade_history = []
+        self.returns = []  # Track returns for Sortino calculation
 
         # --- DATA PREP ---
         # Keep 'date' as a column so we can log it later
@@ -115,17 +118,34 @@ class TradingEnv(gym.Env):
         
         # Adjust lookback to account for MACD warmup
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
+
+    def get_current_phase(self):
+        """Determine current learning phase based on total training steps"""
+        steps = TradingEnv.total_steps
+        if steps < 1000000:  # Phase 1: 0-1M steps
+            return 1
+        elif steps < 2000000:  # Phase 2: 1M-2M
+            return 2
+        elif steps < 3000000:  # Phase 3: 2M-3M
+            return 3
+        elif steps < 4000000:  # Phase 4: 3M-4M
+            return 4
+        else:  # Phase 5: 4M+
+            return 5
         
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        
+
         self.balance = self.initial_balance
         self.net_worth = self.initial_balance
         self.prev_net_worth = self.initial_balance
         self.shares_held = 0
-        
+
         # --- PHASE 3: Track High Water Mark for Drawdown Penalty ---
         self.max_net_worth = self.initial_balance
+
+        # Reset returns for Sortino tracking
+        self.returns = []
         
         if len(self.df) > self.max_lookback + 1000:
             self.current_step = self.np_random.integers(self.max_lookback, len(self.df) - 1000)
@@ -151,6 +171,9 @@ class TradingEnv(gym.Env):
 
     def step(self, action):
         self.current_step += 1
+        TradingEnv.total_steps += 1
+        current_phase = self.get_current_phase()
+
         current_price = self.raw_prices[self.current_step]
         action_val = action[0]
         dynamic_buy_threshold = abs(action[1])
@@ -197,28 +220,56 @@ class TradingEnv(gym.Env):
 
         self.net_worth = self.balance + (self.shares_held * current_price)
         # print(f"DEBUG: Updated net_worth={self.net_worth:.2f}")
-        
-        # --- PHASE 3: DRAWDOWN & REWARD CALCULATION ---
-        
+
+        # Track returns for Sortino
+        step_reward = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
+        self.returns.append(step_reward)
+
+        # --- PHASE-BASED REWARD CALCULATION ---
+
         # 1. Update High Water Mark (ATH)
         if self.net_worth > self.max_net_worth:
             self.max_net_worth = self.net_worth
-            
+
         # 2. Base PnL Reward
-        step_reward = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
-        reward = step_reward * 100 
-        
-        # 3. Drawdown Penalty
-        # e.g. If 10% down from peak, drawdown = 0.1
-        drawdown = (self.max_net_worth - self.net_worth) / self.max_net_worth
-        
-        # Penalty Factor: 0.1
-        # This acts as "gravity". If you are in a hole, you get a small constant negative reward.
-        # It encourages the bot to get back to ATH quickly.
-        drawdown_penalty = drawdown * 0.1
-        
+        reward = step_reward * 100
+
+        # 3. Phase-specific adjustments
+        if current_phase == 1:
+            # Phase 1: Raw PnL only
+            pass  # No penalties
+
+        elif current_phase == 2:
+            # Phase 2: Sortino (penalize downside vol)
+            if len(self.returns) > 10:
+                recent_returns = self.returns[-100:]  # Rolling window
+                downside_returns = [r for r in recent_returns if r < 0]
+                downside_std = np.std(downside_returns) if downside_returns else 0.0
+                sortino_penalty = downside_std * 50  # Scale factor
+                reward -= sortino_penalty
+
+        elif current_phase >= 3:
+            # Phase 3+: Sortino + Calmar (max drawdown)
+            # Sortino penalty
+            if len(self.returns) > 10:
+                recent_returns = self.returns[-100:]
+                downside_returns = [r for r in recent_returns if r < 0]
+                downside_std = np.std(downside_returns) if downside_returns else 0.0
+                sortino_penalty = downside_std * 50
+                reward -= sortino_penalty
+
+            # Drawdown Penalty (Calmar)
+            drawdown = (self.max_net_worth - self.net_worth) / self.max_net_worth
+            drawdown_penalty = drawdown * 0.1
+            reward -= drawdown_penalty
+
+        # Trade penalty always applies
         reward -= trade_penalty
-        reward -= drawdown_penalty
+
+        # Phase 4+: Volume Profile Alignment Bonus
+        if current_phase >= 4:
+            vp_bonus = self._calculate_vp_bonus(current_price, trade_happened, action_val > 0 if trade_happened else None)
+            reward += vp_bonus
         
         self.prev_net_worth = self.net_worth
 
@@ -268,7 +319,8 @@ class TradingEnv(gym.Env):
             "macd": cur_macd,
             "macd_sig": cur_macd_sig,
 
-            "last_10_trades": self.trade_history[-10:]
+            "last_10_trades": self.trade_history[-10:],
+            "current_phase": current_phase
         }
 
         # Console Log with Date
@@ -279,3 +331,36 @@ class TradingEnv(gym.Env):
             print(f"Step {self.current_step} [{current_date}]: Price={current_price:.0f} | POC={raw_poc:.0f} ({dist_pct:+.2f}%) | NetWorth={self.net_worth:.0f} | MaxNetWorth={self.max_net_worth:.0f}")
 
         return obs, reward, terminated, truncated, info
+
+    def _calculate_vp_bonus(self, current_price, trade_happened, is_buy):
+        """Calculate Volume Profile alignment bonus for Phase 4+"""
+        bonus = 0.0
+        λ1, λ2, λ3 = 0.1, 0.1, 0.1  # Weights
+
+        t = self.df.index[self.current_step]
+        poc = self.vp7_df.loc[t, 'poc']
+        hvn = self.vp7_df.loc[t, 'hvn'] if isinstance(self.vp7_df.loc[t, 'hvn'], list) else []
+        lvn = self.vp7_df.loc[t, 'lvn'] if isinstance(self.vp7_df.loc[t, 'lvn'], list) else []
+
+        threshold = 0.01  # 1% proximity
+
+        if trade_happened:
+            if is_buy:
+                # Entry near LVN fade (buying low)
+                if any(abs(current_price - lv) / current_price < threshold for lv in lvn):
+                    bonus += λ1
+                # Fighting POC: buying above POC
+                if current_price > poc:
+                    bonus -= λ3
+            else:
+                # Entry near HVN fade (selling high)
+                if any(abs(current_price - hv) / current_price < threshold for hv in hvn):
+                    bonus += λ1
+                # Exit near HVN
+                if any(abs(current_price - hv) / current_price < threshold for hv in hvn):
+                    bonus += λ2
+                # Fighting POC: selling below POC
+                if current_price < poc:
+                    bonus -= λ3
+
+        return bonus
