@@ -174,62 +174,88 @@ class TradingEnv(gym.Env):
         full_obs = np.concatenate((std_features, account_features, vp_features))
         return full_obs.astype(np.float32)
 
-    def step(self, action):
+def step(self, action):
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
         
-        # --- TRADE LOGIC ---
+        # --- 1. CALCULATE FRICTION (New) ---
+        # Calculate how much the bot changed its mind since the last hour
+        # Range: 0.0 (No change) to 2.0 (Full flip from Buy to Sell)
+        action_delta = abs(action_val - self.prev_action)
+        
+        # Determine Trade execution based on thresholds
+        # We increase friction: moving 0.1 is free, moving >0.1 counts as a trade
+        is_trade = action_delta > 0.1
+        
+        if is_trade:
+            self.trade_count += 1
+            
+        # Update prev_action for next step
+        self.prev_action = action_val
+        
+        # --- 2. EXECUTE TRADE ---
         REALISTIC_FEE = 0.0015
         trade_penalty = 0
         
-        # Track Trades (Change in conviction > 0.1)
-        if abs(action_val - self.prev_action) > 0.1:
-            self.trade_count += 1
-        self.prev_action = action_val
-        
-        if action_val > 0.1: # Buy
+        if action_val > 0.1: # Buy Zone
             amount_to_invest = self.balance * action_val
             if amount_to_invest > 10: 
                 shares_bought = amount_to_invest / current_price
                 self.balance -= amount_to_invest
                 self.shares_held += shares_bought
-                trade_penalty = REALISTIC_FEE
+                if is_trade: trade_penalty = REALISTIC_FEE # Only charge fee if action changed significantly
             else:
-                trade_penalty = 0.01 
-        elif action_val < -0.1: # Sell
+                trade_penalty = 0.01 # Penalty for illegal move
+                
+        elif action_val < -0.1: # Sell Zone
             shares_to_sell = self.shares_held * abs(action_val)
             if shares_to_sell * current_price > 10:
                 self.balance += shares_to_sell * current_price
                 self.shares_held -= shares_to_sell
-                trade_penalty = REALISTIC_FEE 
+                if is_trade: trade_penalty = REALISTIC_FEE
             else:
                 trade_penalty = 0.01
 
         self.net_worth = self.balance + (self.shares_held * current_price)
-        
-        # Track for Metrics
         self.history_net_worth.append(self.net_worth)
         
-        # --- CURRICULUM REWARD ---
         if self.net_worth > self.max_net_worth:
             self.max_net_worth = self.net_worth
             
+        # --- 3. REWARD CALCULATION (Updated) ---
+        
+        # Base PnL
         step_reward = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
         reward = step_reward * 100 
+        
+        # A. Apply Trade Fee
         reward -= trade_penalty
         
-        # Phase 2: Volatility
+        # B. NEW: Smoothness/Inertia Penalty
+        # If the bot flips (delta=2.0), it gets -0.1 penalty (equivalent to a 0.1% loss)
+        # This discourages jittery behavior.
+        smoothness_penalty = action_delta * 0.05 
+        reward -= smoothness_penalty
+        
+        # C. NEW: "Let Winners Run" Bonus
+        # If we are making money (step_reward > 0) AND holding a position (abs(action) > 0.5)
+        # We boost the reward by 10%. This makes holding profitable trades "feel" better to the bot.
+        if step_reward > 0 and abs(action_val) > 0.5:
+            reward *= 1.10
+            
+        # Phase 2: Volatility Penalty
         if self.phase >= 2 and step_reward < 0:
             reward -= abs(step_reward) * 5.0
             
-        # Phase 3: Drawdown
+        # Phase 3: Drawdown Penalty
         if self.phase >= 3:
             drawdown = (self.max_net_worth - self.net_worth) / self.max_net_worth
             reward -= (drawdown * 0.1)
 
         self.prev_net_worth = self.net_worth
 
+        # --- TERMINATION ---
         terminated = False
         truncated = False
         if self.current_step >= len(self.df) - 1: truncated = True
@@ -239,20 +265,21 @@ class TradingEnv(gym.Env):
 
         obs = self._next_observation()
         
-        # Info for Logging
+        # ... (Logging logic remains the same) ...
+        # (Copy your existing logging block here)
+        
+        # --- RE-INSERT LOGGING BLOCK FROM PREVIOUS STEPS ---
         primary_day = self.vp_days[0]
         heatmap = self.vp_data[primary_day]['heatmap'][self.current_step]
         raw_poc = self.vp_data[primary_day]['poc'][self.current_step]
         raw_vah = self.vp_data[primary_day]['vah'][self.current_step]
         raw_val = self.vp_data[primary_day]['val'][self.current_step]
         
-        # Indicators
         cur_rsi = self.df.iloc[self.current_step]['rsi']
         cur_stoch = self.df.iloc[self.current_step]['stoch_rsi']
         cur_macd = self.df.iloc[self.current_step]['macd']
         cur_macd_sig = self.df.iloc[self.current_step]['macd_signal']
         
-        # WandB Prices
         window_size = primary_day * 24
         start_idx = max(0, self.current_step - window_size)
         window_prices = self.raw_prices[start_idx : self.current_step]
