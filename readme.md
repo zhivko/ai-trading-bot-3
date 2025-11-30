@@ -186,3 +186,19 @@ Milestones & Logging
 MilestoneTarget SortinoNotesRandom baseline~0.0Pure noiseBeats B&H>0.8First sign of lifeVP-aware profitable>1.5Real edgeOutperforms 2021 bull run>3.0Ready for small live capital
 
 Log everything to Weights & Biases (wandb) – rewards, VP heatmaps, equity curve, hyperparams.
+
+# training on GPU RTX5090 within nvidia docker
+
+'''
+docker pull nvcr.io/nvidia/pytorch:25.11-py3
+25.11-py3: Pulling from nvidia/pytorch
+Digest: sha256:417cbf33f87b5378849df37983552cd1f8bc8b62fe1ceabe004de816a55dff21
+Status: Image is up to date for nvcr.io/nvidia/pytorch:25.11-py3
+nvcr.io/nvidia/pytorch:25.11-py3
+'''
+
+'''
+docker run --gpus all -it --rm --ipc=host -v "C:\git\ai-trading-bot-3:/workspace/bot" nvcr.io/nvidia/pytorch:25.11-py3
+'''
+
+

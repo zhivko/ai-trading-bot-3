@@ -4,16 +4,12 @@ stable-baselines3==2.3.2
 sb3-contrib==2.3.0
 shimmy>=0.2.1
 pandas==2.2.2
-numpy==1.26.4
+#numpy==1.26.4
 wandb==0.17.5
 tensorboard==2.16.2
 matplotlib==3.9.0
 scipy==1.14.0
 scikit-learn==1.5.0
-torch==2.9.1
-torchvision==0.24.1
-torchaudio==2.9.1
 tqdm==4.66.4
 ta==0.11.0
 plotly==5.18.0
-# pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
