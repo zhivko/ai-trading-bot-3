@@ -259,6 +259,7 @@ def main():
     parser.add_argument("--total-timesteps", type=int, default=5000000)
     parser.add_argument("--test-split", type=str, default="2024-01-01")
     parser.add_argument("--resume", nargs='?', const='LATEST', default=None)
+    parser.add_argument("--batch-size", type=int, default=2048, help="Batch size for gradient updates")
     
     # --- NEW DEVICE ARGUMENT ---
     parser.add_argument("--device", type=str, default="auto", help="Device to use: 'auto', 'cuda', or 'cpu'")
@@ -360,10 +361,11 @@ def main():
                 tensorboard_log=tensorboard_log, 
                 learning_rate=3e-4, 
                 ent_coef='auto',
-                device=args.device # <--- Explicit device
+                device=args.device, # <--- Explicit device
+                batch_size=args.batch_size 
             )
         else:
-            model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=tensorboard_log, device=args.device)
+            model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=tensorboard_log, device=args.device, batch_size=args.batch_size)
 
     # --- 6. CALLBACKS ---
     callbacks = []
@@ -398,9 +400,9 @@ def main():
     print("Training complete.")
 
 # usage example:
-# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 1000000 --wandb --device cpu
+# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device gpu --batch-size 4096
 # or with resume if you berak leaarning
-# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 1000000 --wandb --device cpu --resume
+# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cpu --resume --batch-size 2048
 if __name__ == "__main__":
     multiprocessing.freeze_support() 
     main()
