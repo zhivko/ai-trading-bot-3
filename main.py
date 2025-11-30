@@ -400,9 +400,9 @@ def main():
     print("Training complete.")
 
 # usage example:
-# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device gpu --batch-size 4096
+# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 4096
 # or with resume if you berak leaarning
-# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cpu --resume --batch-size 2048
+# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cuda --resume --batch-size 2048
 if __name__ == "__main__":
     multiprocessing.freeze_support() 
     main()
