@@ -25,24 +25,152 @@ class WandbEvalListener(BaseCallback):
     This callback runs AFTER the EvalCallback finishes testing.
     It grabs the results from the PARENT callback and logs them.
     """
-    def __init__(self, verbose=0):
+    def __init__(self, eval_monitor=None, verbose=0):
         super().__init__(verbose)
+        self.eval_portfolio_values = []
+        self.eval_env = None
+        self.eval_monitor = eval_monitor
+
+    def __call__(self, locals_, globals_):
+        """Make the callback callable for EvalCallback"""
+        self._on_step()
 
     def _on_step(self) -> bool:
         # The parent is the EvalCallback
         if self.parent is not None:
+            # Store reference to eval environment on first call
+            if self.eval_env is None:
+                self.eval_env = getattr(self.parent, 'eval_env', None)
+            
             # Grab the metrics directly from the parent class
             mean_reward = self.parent.last_mean_reward
             mean_len = np.mean(self.parent.evaluations_length[-1])
             
-            print(f"📈 Sending Eval Metrics to WandB: {mean_reward}")
+            # Try to extract portfolio value from evaluation monitor if available
+            final_portfolio_value = 0
+            if self.eval_monitor is not None:
+                final_portfolio_value = self.eval_monitor.get_final_portfolio_value()
+                print(f"DEBUG: Extracted portfolio_value from eval_monitor: {final_portfolio_value}")
+            else:
+                # Fallback to old method
+                if self.eval_env is not None:
+                    try:
+                        # Access the wrapped environment to get net_worth
+                        # The eval_env is a VecEnv, so we need to access the first env
+                        if hasattr(self.eval_env, 'envs') and len(self.eval_env.envs) > 0:
+                            first_env = self.eval_env.envs[0]
+                            # The Monitor wraps the TradingEnv, so we need to access the inner env
+                            if hasattr(first_env, 'env') and hasattr(first_env.env, 'net_worth'):
+                                final_portfolio_value = first_env.env.net_worth
+                                print(f"DEBUG: Extracted net_worth from first_env.env: {final_portfolio_value}")
+                            elif hasattr(first_env, 'net_worth'):
+                                final_portfolio_value = first_env.net_worth
+                                print(f"DEBUG: Extracted net_worth from first_env: {final_portfolio_value}")
+                            else:
+                                print("DEBUG: No net_worth attribute found in eval env")
+                        else:
+                            print("DEBUG: No envs in eval_env")
+                    except Exception as e:
+                        print(f"Warning: Could not extract portfolio value: {e}")
+                        final_portfolio_value = 0
+                else:
+                    print("DEBUG: eval_env is None")
+            
+            self.eval_portfolio_values.append(final_portfolio_value)
+            
+            # Calculate metrics for logging
+            mean_portfolio_value = np.mean(self.eval_portfolio_values) if self.eval_portfolio_values else 0
+            
+            print(f"📈 Sending Eval Metrics to WandB: Reward={mean_reward:.2f}, Portfolio=${final_portfolio_value:.2f}")
 
             wandb.log({
                 "eval/mean_reward": mean_reward,
                 "eval/mean_ep_length": mean_len,
+                "eval/portfolio_value": final_portfolio_value,
+                "eval/mean_portfolio_value": mean_portfolio_value,
                 "global_step": self.num_timesteps
             })
         return True
+
+# --- CUSTOM EVAL CALLBACK WITH EARLY STOPPING ---
+class CustomEvalCallback(EvalCallback):
+    """
+    Extends EvalCallback to add early stopping based on evaluation portfolio value.
+    Stops training if portfolio value doesn't improve for 5 consecutive evaluations.
+    """
+    def __init__(self, eval_env, callback_after_eval=None, **kwargs):
+        super().__init__(eval_env, callback_after_eval=callback_after_eval, **kwargs)
+        # Ensure callback_after_eval is set, as EvalCallback may not set it
+        self.callback_after_eval = callback_after_eval
+        self.best_portfolio = float('-inf')
+        self.no_improve_count = 0
+        self.last_eval_count = 0
+
+    def _on_step(self) -> bool:
+        # Call parent _on_step to perform evaluation
+        continue_training = super()._on_step()
+
+        if not continue_training:
+            return False
+
+        # Check if a new evaluation was performed
+        current_eval_count = len(self.callback_after_eval.eval_portfolio_values)
+        if current_eval_count > self.last_eval_count:
+            # Get the latest portfolio value
+            latest_portfolio = self.callback_after_eval.eval_portfolio_values[-1]
+
+            if latest_portfolio > self.best_portfolio:
+                self.best_portfolio = latest_portfolio
+                self.no_improve_count = 0
+                print(f"New best portfolio value: ${latest_portfolio:.2f}")
+            else:
+                self.no_improve_count += 1
+                print(f"No improvement in portfolio value. Count: {self.no_improve_count}/5")
+
+                if self.no_improve_count >= 5:
+                    print("Early stopping triggered: portfolio value hasn't improved for 5 consecutive evaluations.")
+                    return False
+
+            self.last_eval_count = current_eval_count
+
+        return True
+
+# --- EVALUATION MONITORING CALLBACK ---
+class EvalMonitorCallback(BaseCallback):
+    """
+    This callback monitors the evaluation environment during EvalCallback execution
+    to capture portfolio metrics that aren't available in the standard EvalCallback.
+    """
+    def __init__(self, eval_env, verbose=0):
+        super().__init__(verbose)
+        self.eval_env = eval_env
+        self.current_episode_rewards = []
+        self.current_episode_portfolio_values = []
+        self.episode_results = []
+        
+    def _on_step(self) -> bool:
+        # This callback runs during each step of evaluation
+        if self.locals.get("dones", [False])[0]:  # Episode finished
+            # Extract final portfolio value from info
+            infos = self.locals.get("infos", [{}])
+            if infos and len(infos) > 0:
+                final_info = infos[0]
+                portfolio_value = final_info.get("portfolio_value", 0)
+                final_reward = final_info.get("reward", 0)
+                
+                self.current_episode_portfolio_values.append(portfolio_value)
+                self.episode_results.append({
+                    "portfolio_value": portfolio_value,
+                    "final_reward": final_reward
+                })
+                
+        return True
+        
+    def get_final_portfolio_value(self):
+        """Get the final portfolio value from the last evaluation episode"""
+        if self.episode_results:
+            return self.episode_results[-1]["portfolio_value"]
+        return 0
 
 # --- REAL-TIME CALLBACK ---
 class RealTimeWandbCallback(BaseCallback):
@@ -140,7 +268,7 @@ def main():
         test_df = df[df.index >= args.test_split].copy()
         
         print(f"   📘 Training: {len(train_df)} rows")
-        print(f"   qh Testing:  {len(test_df)} rows")
+        print(f"   📙 Testing:  {len(test_df)} rows")
     else:
         print("❌ Error: File not found.")
         return
@@ -154,7 +282,7 @@ def main():
     eval_env = DummyVecEnv([lambda df=test_df: Monitor(TradingEnv(df, vp_days=args.vp_days))])
 
     # --- 3. MODEL SETUP (Smart Resume) ---
-    policy_kwargs = dict(net_arch=[256, 256])
+    policy_kwargs = dict(net_arch=[256, 256], optimizer_kwargs={})
     tensorboard_log = f"./{args.algo}_tb/"
     
     model_path_to_load = None
@@ -194,13 +322,13 @@ def main():
         print(f"\n✨ INITIALIZING NEW MODEL ({args.algo.upper()})")
         if args.algo.lower() == 'sac':
             model = SAC(
-                "MlpPolicy", 
-                env, 
-                policy_kwargs=policy_kwargs, 
-                verbose=1, 
-                tensorboard_log=tensorboard_log, 
+                "MlpPolicy",
+                env,
+                policy_kwargs=policy_kwargs,
+                verbose=1,
+                tensorboard_log=tensorboard_log,
                 learning_rate=3e-4,
-                ent_coef='auto'
+                ent_coef=0.1
             )
         else:
             model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=tensorboard_log)
@@ -223,20 +351,24 @@ def main():
     # Checkpoint logic
     callbacks.append(CheckpointCallback(save_freq=50000, save_path=f'./models/{args.pair}', name_prefix=args.algo))
 
+    # Create evaluation monitoring callback for reliable portfolio tracking
+    eval_monitor = EvalMonitorCallback(eval_env)
+
     # Create the listener
-    eval_listener = WandbEvalListener()
+    eval_listener = WandbEvalListener(eval_monitor=eval_monitor)
 
     # Eval logic
-    eval_callback = EvalCallback(
+    eval_callback = CustomEvalCallback(
         eval_env,
         best_model_save_path=f'./models/{args.pair}_best_eval',
         log_path=f'./sac_tb/',
-        eval_freq=20000,
-        n_eval_episodes=1,
+        eval_freq=10000,
+        n_eval_episodes=3,
         deterministic=True,
         render=False,
         callback_after_eval=eval_listener
     )
+    callbacks.append(eval_monitor)
     callbacks.append(eval_callback)
 
     # --- 5. TRAIN ---

@@ -138,30 +138,40 @@ class TradingEnv(gym.Env):
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
-        
+
+        # DEBUG: Log action and trades
+        # print(f"DEBUG STEP: action_val={action_val:.4f}, balance={self.balance:.2f}, shares={self.shares_held:.6f}, net_worth={self.net_worth:.2f}")
+
         # --- TRADE LOGIC (Higher Fee 0.15% to prevent overfitting) ---
         REALISTIC_FEE = 0.0015
         trade_penalty = 0
-        
+        trade_happened = False
+
         if action_val > 0.1: # Buy
             amount_to_invest = self.balance * action_val
-            if amount_to_invest > 10: 
+            if amount_to_invest > 10:
                 shares_bought = amount_to_invest / current_price
                 self.balance -= amount_to_invest
                 self.shares_held += shares_bought
                 trade_penalty = REALISTIC_FEE
+                trade_happened = True
+                # print(f"DEBUG: BUY {shares_bought:.6f} shares at {current_price:.2f}")
             else:
-                trade_penalty = 0.01 
+                trade_penalty = 0.01
         elif action_val < -0.1: # Sell
             shares_to_sell = self.shares_held * abs(action_val)
             if shares_to_sell * current_price > 10:
                 self.balance += shares_to_sell * current_price
                 self.shares_held -= shares_to_sell
-                trade_penalty = REALISTIC_FEE 
+                trade_penalty = REALISTIC_FEE
+                trade_happened = True
+                # print(f"DEBUG: SELL {shares_to_sell:.6f} shares at {current_price:.2f}")
             else:
                 trade_penalty = 0.01
 
+
         self.net_worth = self.balance + (self.shares_held * current_price)
+        # print(f"DEBUG: Updated net_worth={self.net_worth:.2f}")
         
         # --- PHASE 3: DRAWDOWN & REWARD CALCULATION ---
         
