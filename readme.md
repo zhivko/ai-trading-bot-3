@@ -1,215 +1,79 @@
-# Crypto Trader – Unsupervised Self-Improving Bot
+# 🤖 AI Trading Bot 3: Deep Reinforcement Learning for Crypto
 
-*"Let the market teach the machine, not the human"*
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![PyTorch](https://img.shields.io/badge/PyTorch-CUDA-orange) ![Stable-Baselines3](https://img.shields.io/badge/RL-Stable--Baselines3-green) ![WandB](https://img.shields.io/badge/Logging-WandB-yellow)
 
+An advanced, high-performance algorithmic trading agent trained to trade **Bitcoin (BTC/USDT)** using **Soft Actor-Critic (SAC)**.
 
+Unlike basic bots that use simple indicators, this agent "sees" the market structure through **Volume Profiles**, identifying high-value support/resistance zones (POC, VAH, VAL) combined with momentum indicators. It utilizes **Curriculum Learning** to evolve from aggressive profit-seeking to professional risk management.
 
-## Goal
+---
 
-Build a fully unsupervised reinforcement-learning agent that discovers profitable crypto trading strategies by itself, with heavy emphasis on **volume profile** as the core market-structure signal.
+## 🚀 Key Features
 
+### 🧠 The Brain
+*   **Algorithm:** Soft Actor-Critic (SAC) - An off-policy algorithm optimized for continuous action spaces.
+*   **Network Architecture:** Deep MLP (Multi-Layer Perceptron) with `[512, 512]` neurons.
+*   **Parallel Processing:** Uses `SubprocVecEnv` to run **14+ parallel traders** simultaneously on the CPU, feeding a GPU for massive throughput (1,000+ FPS).
 
+### 👀 The Vision (Observation Space)
+The bot receives a flattened vector containing:
+1.  **Market Structure:** 7-Day and 30-Day **Volume Profiles** (Point of Control, Value Area High/Low) relative to current price.
+2.  **Volume Heatmap:** A 100-bin normalized distribution of volume history.
+3.  **Momentum:** RSI (14), Stochastic RSI (14).
+4.  **Trend:** MACD Line + Signal Line.
+5.  **State:** Current Portfolio Balance and Holdings.
 
-Zero manual labeling. Zero "expert trades". The only teacher is realized PnL + risk-adjusted metrics over rolling windows.
+### 🎓 The Education (Curriculum Learning)
+The reward function evolves over **5,000,000 steps** to shape behavior:
+*   **Phase 1 (0 - 1M Steps):** **Pure Profit.** Learn market mechanics and accumulate capital.
+*   **Phase 2 (1M - 2M Steps):** **Sortino Ratio.** Penalize downside volatility. Learn to enter cleaner trades.
+*   **Phase 3 (2M+ Steps):** **Drawdown & Wealth Preservation.** Heavily penalize dropping below All-Time High (ATH). Learn to protect gains.
 
+### 🛡️ Robustness
+*   **Train/Test Split:** Trains on historical data (e.g., 2017-2021) and rigorously evaluates on unseen future data (2022-2025) every 50k steps.
+*   **Reality Simulation:** Includes **0.15% trading fees** and an "Inertia Penalty" to prevent spam-trading/scalping noise.
 
+---
 
-## Core Philosophy
+## 🛠️ Installation
 
-\- Volume Profile = institutional memory of price levels
+### Prerequisites
+*   Python 3.10+ (or Docker)
+*   NVIDIA GPU (Recommended for speed)
 
-\- High-volume nodes (HVN) = attraction zones
+### Option A: Local Install (Windows/Linux)
+1.  **Clone the repo:**
+    ```bash
+    git clone https://github.com/zhivko/ai-trading-bot-3.git
+    cd ai-trading-bot-3
+    ```
+2.  **Create venv:**
+    ```bash
+    python -m venv .venv
+    source .venv/bin/activate  # or .venv\Scripts\Activate.ps1 on Windows
+    ```
+3.  **Install Dependencies:**
+    *   *Note: For RTX 30/40/50 series, install PyTorch manually first to get CUDA support.*
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-\- Low-volume nodes (LVN) = acceleration zones
+### Option B: Docker (Recommended for RTX 5090 / Newer Hardware)
+If you have driver compatibility issues, run inside NVIDIA's optimized container.
 
-\- The agent must rediscover these truths from raw data → true unsupervised learning
-
-
-
-## Data Pipeline (Binance → Volume Profile Features)
-
-
-
-```python
-
-Timeframe:          1h candles (UTC sessions)
-
-Pairs:              BTC-USDT, ETH-USDT, SOL-USDT (start with these)
-
-Lookback for VP:    Rolling 7-day & 30-day profiles
-
-Price bins:         Dynamic 0.5% bins (or fixed $25/$50 for BTC, 1% for alts)
-
-Features per step:
-
-   - Current VP heatmap (7d & 30d) → flattened or 2D CNN input
-
-   - Distance of price to nearest HVN / LVN
-
-   - Value Area High/Low (VAH/VAL) & Point of Control (POC)
-
-   - Order-book imbalance (last 5 min)
-
-   - Recent realized volatility
-
-   - Time-of-day / session encoding (one-hot Asian/EU/US overlap)
-
-Unsupervised Training Loop (Pure RL – no imitation phase)
-
-Environment
-
-
-
-Gym-style trading env (ccxt + custom)
-
-Actions: Long / Short / Flat (position sizing 0–100%)
-
-
-Episode length: 30–90 days rolling
-
-
-
-Reward Function (multi-objective, evolves over time)
-
-Start simple → get sophisticated:
-
-textPhase 1 (weeks 1-4): Raw PnL only
-
-Phase 2: Sortino Ratio (penalize downside vol)
-
-Phase 3: Sortino + Calmar (max drawdown killer)
-
-Phase 4: Add "Volume Profile Alignment Bonus"
-
-       +λ₁ × (entry near HVN or LVN fade)
-
-       +λ₂ × (exit near next HVN)
-
-       -λ₃ × (fighting strong POC with size)
-
-Phase 5 (final): Curriculum – λ weights self-tuned by meta-RL
-
-## Current Implementation
-
-The bot implements a Soft Actor-Critic (SAC) reinforcement learning agent with an MLP policy trained on a custom TradingEnv environment. The optimization objective is to maximize cumulative reward through profitable trading decisions.
-
-The TradingEnv is a Gym-style environment simulating crypto trading with continuous action space. Actions are represented as a single float in [-1, 1], where positive values indicate buying (long positions) and negative values indicate selling (short positions), with magnitude controlling position size.
-
-State observations include:
-- Market features over a 30-bar lookback window: close price percentage change, normalized volume, normalized RSI, normalized Stochastic RSI, normalized MACD, and normalized MACD signal.
-- Account features: normalized balance and holdings.
-- Volume profile features for 7-day and 30-day rolling periods: normalized distances to POC, VAH, and VAL, plus 100-bin volume heatmaps.
-
-The reward function incentivizes portfolio value growth while penalizing trading costs:
-- Primary reward: Percentage change in net worth multiplied by 100.
-- Trading penalties: 0.15% fee on executed trades, or 0.01 penalty for insignificant actions.
-- Termination conditions: Episode ends if net worth drops below 50% of initial balance (bankruptcy) or reaches the end of available data.
-
-Training occurs in an unsupervised manner, with the agent learning directly from market data and volume profile signals without any labeled examples or imitation learning. Episodes are sampled randomly from the dataset after sufficient warmup for volume profile calculation. The SAC algorithm uses entropy regularization to encourage exploration in the continuous action space, with an MLP policy network (256x256 hidden layers) and automatic entropy coefficient tuning.
+```bash
+docker pull nvcr.io/nvidia/pytorch:25.01-py3
+docker run --gpus all -it --rm --ipc=host -v "c:\git\ai-trading-bot-3:/workspace/bot" nvcr.io/nvidia/pytorch:25.01-py3
+```
 
 ## Usage
-
-### Training
+Usage example:
 ```bash
-python main.py
-```
-Trains the SAC agent on BTC/USDT data with default settings.
-
-### Backtesting
-```bash
-python backtest.py
-```
-Runs a backtest using the trained model and plots results.
-
-### Visualization
-```bash
-python visualize_predictions.py
-```
-Visualizes the model's predictions and performance.
-
-Algorithm Choice
-
-
-
-SAC (Soft Actor-Critic) → optimized for continuous action spaces with entropy regularization
-
-MLP policy network → processes state features without recurrence
-
-Optional: PPO as alternative algorithm
-
-## Reinforcement Learning Algorithms
-
-### Soft Actor-Critic (SAC)
-SAC is an off-policy actor-critic algorithm that maximizes both expected return and entropy (exploration). It uses two Q-networks for stable learning, automatic entropy coefficient tuning, and replay buffer for sample efficiency. Particularly effective for continuous action spaces like position sizing in trading.
-
-### Proximal Policy Optimization (PPO)
-PPO is an on-policy policy gradient method that uses clipped surrogate objectives to ensure stable updates. It balances exploration and exploitation through advantage estimation and is widely used for its robustness and ease of tuning across various environments.
-
-Self-Improvement Mechanisms (no human in the loop)
-
-
-
-Population-Based Training (PBT)
-
-8–16 agents running in parallel, periodically copy weights + hyperparameters from best Sortino performer.
-
-Automatic Reward Shaping
-
-Every 7 days evaluate which VP features correlate with top-decile trades → increase their λ bonus automatically.
-
-Risk Regime Detection
-
-Unsupervised clustering of market states (GMM or VAE) → separate policies per regime (trending, mean-reverting, chop).
-
-Walk-Forward Validation Only
-
-Never train and test on same period. Fixed 30-day train → 7-day validation → deploy → repeat.
-
-
-
-
-
-Milestones & Logging
-
-
-
-
-
-  
-
-
-
-
-
-
-
-MilestoneTarget SortinoNotesRandom baseline~0.0Pure noiseBeats B&H>0.8First sign of lifeVP-aware profitable>1.5Real edgeOutperforms 2021 bull run>3.0Ready for small live capital
-
-Log everything to Weights & Biases (wandb) – rewards, VP heatmaps, equity curve, hyperparams.
-
-# Usage example:
-
-'''
 python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 4096
-'''
+```
 
-or with --resume if you break learning in the middle
-'''
+or with resume if you break leaarning
+
+```bash
 python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cuda --resume --batch-size 2048
-'''
-
-# Training on GPU RTX5090 within nvidia docker
-
-'''
-docker pull nvcr.io/nvidia/pytorch:25.11-py3
-25.11-py3: Pulling from nvidia/pytorch
-Digest: sha256:417cbf33f87b5378849df37983552cd1f8bc8b62fe1ceabe004de816a55dff21
-Status: Image is up to date for nvcr.io/nvidia/pytorch:25.11-py3
-nvcr.io/nvidia/pytorch:25.11-py3
-'''
-
-'''
-docker run --gpus all -it --rm --ipc=host -v "C:\git\ai-trading-bot-3:/workspace/bot" nvcr.io/nvidia/pytorch:25.11-py3
-'''
-
-
+```
