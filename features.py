@@ -1,13 +1,15 @@
 import numpy as np
 import pandas as pd
 import ta
+import scipy.stats
 
 def get_features(df, vp7_df, vp30_df, t):
     """
     Extract features for a given timestamp t.
     """
     if t not in df.index or pd.isna(df.loc[t, 'close']):
-        return np.zeros(240)  # Updated size with indicators
+        return np.zeros(259)  # Updated size with heatmap features added
+
 
     close = df.loc[t, 'close']
 
@@ -34,6 +36,15 @@ def get_features(df, vp7_df, vp30_df, t):
     else:
         stoch_k, stoch_d = 0.5, 0.5
 
+    if len(data_up_to_t) >= 14:  # ATR needs at least 14
+        high_up_to_t = df.loc[:t, 'high']
+        low_up_to_t = df.loc[:t, 'low']
+        close_up_to_t = df.loc[:t, 'close']
+        atr_indicator = ta.volatility.AverageTrueRange(high_up_to_t, low_up_to_t, close_up_to_t, window=14)
+        atr = atr_indicator.average_true_range().iloc[-1] if not pd.isna(atr_indicator.average_true_range().iloc[-1]) else 0
+    else:
+        atr = 0
+
     # 7d VP
     vp7 = vp7_df.loc[t]
     poc7 = vp7['poc'] if not pd.isna(vp7['poc']) else close
@@ -43,8 +54,21 @@ def get_features(df, vp7_df, vp30_df, t):
     lvn7 = vp7['lvn'] if isinstance(vp7['lvn'], list) else []
     heatmap7 = vp7['heatmap'] if isinstance(vp7['heatmap'], np.ndarray) else np.zeros(100)
 
-    dist_hvn7 = min(abs(close - h) for h in hvn7) / close if hvn7 else 0
-    dist_lvn7 = min(abs(close - l) for l in lvn7) / close if lvn7 else 0
+    # Normalized POC, VAH, VAL
+    norm_poc7 = (poc7 / close) - 1
+    norm_vah7 = (vah7 / close) - 1
+    norm_val7 = (val7 / close) - 1
+
+    # HVN/LVN statistics
+    hvn_count7 = len(hvn7)
+    lvn_count7 = len(lvn7)
+    hvn_avg_dist7 = np.mean([abs(close - h) / close for h in hvn7]) if hvn7 else 0
+    lvn_avg_dist7 = np.mean([abs(close - l) / close for l in lvn7]) if lvn7 else 0
+    hvn_nearest7 = min(abs(close - h) / close for h in hvn7) if hvn7 else 0
+    lvn_nearest7 = min(abs(close - l) / close for l in lvn7) if lvn7 else 0
+
+    dist_hvn7 = hvn_nearest7  # Keep existing
+    dist_lvn7 = lvn_nearest7  # Keep existing
     rel_poc7 = (close - poc7) / poc7 if poc7 != 0 else 0
     in_va7 = 1 if val7 <= close <= vah7 else 0
 
@@ -57,8 +81,21 @@ def get_features(df, vp7_df, vp30_df, t):
     lvn30 = vp30['lvn'] if isinstance(vp30['lvn'], list) else []
     heatmap30 = vp30['heatmap'] if isinstance(vp30['heatmap'], np.ndarray) else np.zeros(100)
 
-    dist_hvn30 = min(abs(close - h) for h in hvn30) / close if hvn30 else 0
-    dist_lvn30 = min(abs(close - l) for l in lvn30) / close if lvn30 else 0
+    # Normalized POC, VAH, VAL
+    norm_poc30 = (poc30 / close) - 1
+    norm_vah30 = (vah30 / close) - 1
+    norm_val30 = (val30 / close) - 1
+
+    # HVN/LVN statistics
+    hvn_count30 = len(hvn30)
+    lvn_count30 = len(lvn30)
+    hvn_avg_dist30 = np.mean([abs(close - h) / close for h in hvn30]) if hvn30 else 0
+    lvn_avg_dist30 = np.mean([abs(close - l) / close for l in lvn30]) if lvn30 else 0
+    hvn_nearest30 = min(abs(close - h) / close for h in hvn30) if hvn30 else 0
+    lvn_nearest30 = min(abs(close - l) / close for l in lvn30) if lvn30 else 0
+
+    dist_hvn30 = hvn_nearest30  # Keep existing
+    dist_lvn30 = lvn_nearest30  # Keep existing
     rel_poc30 = (close - poc30) / poc30 if poc30 != 0 else 0
     in_va30 = 1 if val30 <= close <= vah30 else 0
 
@@ -79,12 +116,18 @@ def get_features(df, vp7_df, vp30_df, t):
 
     # Combine features
     features = np.concatenate([
-        heatmap7,  # 100
-        heatmap30,  # 100
-        [dist_hvn7, dist_lvn7, rel_poc7, in_va7,  # 4
-         dist_hvn30, dist_lvn30, rel_poc30, in_va30,  # 4
-         vol, imbalance],  # 2
-        [macd_line, macd_signal, macd_hist, rsi, stoch_k, stoch_d],  # 6
-        session  # 24
-    ])
+           heatmap7,  # 100
+           heatmap30,  # 100
+           [norm_poc7, norm_vah7, norm_val7],  # 3
+           [norm_poc30, norm_vah30, norm_val30],  # 3
+           [hvn_count7, hvn_avg_dist7, hvn_nearest7, lvn_count7, lvn_avg_dist7, lvn_nearest7],  # 6
+           [hvn_count30, hvn_avg_dist30, hvn_nearest30, lvn_count30, lvn_avg_dist30, lvn_nearest30],  # 6
+           [dist_hvn7, dist_lvn7, rel_poc7, in_va7,  # 4
+            dist_hvn30, dist_lvn30, rel_poc30, in_va30,  # 4
+            vol, imbalance],  # 2
+           [macd_line, macd_signal, macd_hist, rsi, stoch_k, stoch_d, atr],  # 7
+           session  # 24
+       ])
+
+
     return features

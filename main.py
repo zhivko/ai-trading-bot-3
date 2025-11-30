@@ -32,7 +32,7 @@ class CustomCheckpointCallback(BaseCallback):
     def _on_step(self) -> bool:
         if self.num_timesteps % self.save_freq == 0:
             path = os.path.join(self.save_path, f"{self.name_prefix}_{self.num_timesteps}")
-            self.model.save(path + ".zip")
+            self.model.save(path)
             print(f"Checkpoint saved: {path}.zip")
         return True
 

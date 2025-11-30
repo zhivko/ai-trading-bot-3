@@ -8,7 +8,7 @@ from volume_profile import get_rolling_vp
 from features import get_features
 
 class TradingEnv(gym.Env):
-    def __init__(self, df, initial_balance=10000, lookback_window=30, vp_days=None):
+    def __init__(self, df, vp7_df=None, vp30_df=None, initial_balance=10000, lookback_window=30, vp_days=None, buy_threshold=0.1, sell_threshold=-0.1):
         super(TradingEnv, self).__init__()
 
         self.trade_history = []
@@ -16,7 +16,13 @@ class TradingEnv(gym.Env):
         # --- DATA PREP ---
         # Keep 'date' as a column so we can log it later
         self.raw_df = df.reset_index(drop=False)
+        print(f"DEBUG: raw_df columns after reset_index: {list(self.raw_df.columns)}")
+        # Rename 'timestamp' to 'date' if present
+        if 'timestamp' in self.raw_df.columns:
+            self.raw_df.rename(columns={'timestamp': 'date'}, inplace=True)
+            print("DEBUG: Renamed 'timestamp' to 'date'")
         self.df = self.raw_df.copy()
+        print(f"DEBUG: Attempting to set index on column: 'date', available columns: {list(self.df.columns)}")
         self.df.set_index('date', inplace=True)
         
         # 1. Standard Features
@@ -53,47 +59,54 @@ class TradingEnv(gym.Env):
         self.df.fillna(0, inplace=True)
 
         self.raw_prices = self.df['close'].values.astype(np.float32)
-        
+
         self.initial_balance = initial_balance
         self.lookback_window = lookback_window
-        
-        # --- VOLUME PROFILE PRE-CALCULATION ---
+        self.buy_threshold = buy_threshold
+        self.sell_threshold = sell_threshold
+
+        # --- VOLUME PROFILE ---
         self.vp_days = vp_days if vp_days else [7, 30]
-        self.vp_data = {}
-        
-        print(f"--- Initializing Environment (VP Days: {self.vp_days}) ---")
-        
-        for days in self.vp_days:
-            vp_result = get_rolling_vp(self.raw_df, days, bin_percent=0.005)
-            self.vp_data[days] = vp_result
 
-        # Create DataFrames for features.py
-        vp7_dict = self.vp_data[7]
-        self.vp7_df = pd.DataFrame({
-            'poc': vp7_dict['poc'],
-            'vah': vp7_dict['vah'],
-            'val': vp7_dict['val'],
-            'hvn': vp7_dict['hvn'],
-            'lvn': vp7_dict['lvn'],
-            'heatmap': list(vp7_dict['heatmap'])
-        }, index=self.df.index)
+        if vp7_df is not None and vp30_df is not None:
+            self.vp7_df = vp7_df.set_index(self.df.index)
+            self.vp30_df = vp30_df.set_index(self.df.index)
+            print("--- Using provided VP DataFrames ---")
+        else:
+            self.vp_data = {}
+            print(f"--- Initializing Environment (VP Days: {self.vp_days}) ---")
 
-        vp30_dict = self.vp_data[30]
-        self.vp30_df = pd.DataFrame({
-            'poc': vp30_dict['poc'],
-            'vah': vp30_dict['vah'],
-            'val': vp30_dict['val'],
-            'hvn': vp30_dict['hvn'],
-            'lvn': vp30_dict['lvn'],
-            'heatmap': list(vp30_dict['heatmap'])
-        }, index=self.df.index)
+            for days in self.vp_days:
+                vp_result = get_rolling_vp(self.raw_df, days, bin_percent=0.005)
+                self.vp_data[days] = vp_result
+
+            # Create DataFrames for features.py
+            vp7_dict = self.vp_data[7]
+            self.vp7_df = pd.DataFrame({
+                'poc': vp7_dict['poc'],
+                'vah': vp7_dict['vah'],
+                'val': vp7_dict['val'],
+                'hvn': vp7_dict['hvn'],
+                'lvn': vp7_dict['lvn'],
+                'heatmap': [row for row in vp7_dict['heatmap']]
+            }, index=self.df.index)
+
+            vp30_dict = self.vp_data[30]
+            self.vp30_df = pd.DataFrame({
+                'poc': vp30_dict['poc'],
+                'vah': vp30_dict['vah'],
+                'val': vp30_dict['val'],
+                'hvn': vp30_dict['hvn'],
+                'lvn': vp30_dict['lvn'],
+                'heatmap': [row for row in vp30_dict['heatmap']]
+            }, index=self.df.index)
             
         # Define Observation Space
-        features_obs_size = 240  # from get_features
+        features_obs_size = 259  # from get_features
         account_obs_size = 2
         total_obs_size = features_obs_size + account_obs_size
         
-        self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
+        self.action_space = spaces.Box(low=-1, high=1, shape=(3,), dtype=np.float32)
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, 
             shape=(total_obs_size,), 
@@ -139,7 +152,15 @@ class TradingEnv(gym.Env):
     def step(self, action):
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
-        action_val = float(action[0])
+        action_val = action[0]
+        dynamic_buy_threshold = abs(action[1])
+        dynamic_sell_threshold = -abs(action[2])
+
+        # Validation to prevent invalid thresholds
+        if dynamic_buy_threshold <= 0:
+            dynamic_buy_threshold = 0.01
+        if dynamic_sell_threshold >= 0:
+            dynamic_sell_threshold = -0.01
 
         # DEBUG: Log action and trades
         # print(f"DEBUG STEP: action_val={action_val:.4f}, balance={self.balance:.2f}, shares={self.shares_held:.6f}, net_worth={self.net_worth:.2f}")
@@ -149,7 +170,7 @@ class TradingEnv(gym.Env):
         trade_penalty = 0
         trade_happened = False
 
-        if action_val > 0.1: # Buy
+        if action_val > dynamic_buy_threshold: # Buy
             amount_to_invest = self.balance * action_val
             if amount_to_invest > 10:
                 shares_bought = amount_to_invest / current_price
@@ -161,7 +182,7 @@ class TradingEnv(gym.Env):
                 # print(f"DEBUG: BUY {shares_bought:.6f} shares at {current_price:.2f}")
             else:
                 trade_penalty = 0.01
-        elif action_val < -0.1: # Sell
+        elif action_val < dynamic_sell_threshold: # Sell
             shares_to_sell = self.shares_held * abs(action_val)
             if shares_to_sell * current_price > 10:
                 self.balance += shares_to_sell * current_price
@@ -213,53 +234,40 @@ class TradingEnv(gym.Env):
         
         # --- PREPARE LOGGING DATA ---
         primary_day = self.vp_days[0]
-        heatmap = self.vp_data[primary_day]['heatmap'][self.current_step]
-        
+        t = self.df.index[self.current_step]
+
         # EXTRACT RAW VALUES FOR WANDB
-        raw_poc = self.vp_data[primary_day]['poc'][self.current_step]
-        raw_vah = self.vp_data[primary_day]['vah'][self.current_step]
-        raw_val = self.vp_data[primary_day]['val'][self.current_step]
-        
+        raw_poc = self.vp7_df.loc[t, 'poc'] if primary_day == 7 else self.vp30_df.loc[t, 'poc']
+        raw_vah = self.vp7_df.loc[t, 'vah'] if primary_day == 7 else self.vp30_df.loc[t, 'vah']
+        raw_val = self.vp7_df.loc[t, 'val'] if primary_day == 7 else self.vp30_df.loc[t, 'val']
+
         # EXTRACT INDICATORS
         cur_rsi = self.df.iloc[self.current_step]['rsi']
         cur_stoch = self.df.iloc[self.current_step]['stoch_rsi']
         cur_macd = self.df.iloc[self.current_step]['macd']
         cur_macd_sig = self.df.iloc[self.current_step]['macd_signal']
-        
-        # Calculate Real Price Bins for WandB
-        window_size = primary_day * 24
-        start_idx = max(0, self.current_step - window_size)
-        window_prices = self.raw_prices[start_idx : self.current_step]
-        
-        if len(window_prices) > 0:
-            min_p, max_p = np.min(window_prices), np.max(window_prices)
-        else:
-            min_p, max_p = current_price, current_price
-            
-        if min_p == max_p: price_bins = [min_p] * 100
-        else: price_bins = np.linspace(min_p, max_p, 100).tolist()
 
         info = {
             "portfolio_value": self.net_worth,
             "balance": self.balance,
             "shares_held": self.shares_held,
             "action": action_val,
+            "buy_threshold": dynamic_buy_threshold,
+            "sell_threshold": dynamic_sell_threshold,
             "reward": reward,
             "price": current_price,
             "max_net_worth": self.max_net_worth, # Log ATH
-            
+
             # Send raw values for charts
             "poc": raw_poc,
             "vah": raw_vah,
             "val": raw_val,
-            
+
             "rsi": cur_rsi,
             "stoch_rsi": cur_stoch,
             "macd": cur_macd,
             "macd_sig": cur_macd_sig,
-            
-            "vp_heatmap": heatmap,
-            "vp_bins": price_bins,
+
             "last_10_trades": self.trade_history[-10:]
         }
 
@@ -267,7 +275,7 @@ class TradingEnv(gym.Env):
         if self.current_step % 100 == 0:
             current_date = self.raw_df.iloc[self.current_step]['date']
             dist_pct = ((current_price - raw_poc) / raw_poc) * 100 if raw_poc != 0 else 0
-            
+
             print(f"Step {self.current_step} [{current_date}]: Price={current_price:.0f} | POC={raw_poc:.0f} ({dist_pct:+.2f}%) | NetWorth={self.net_worth:.0f} | MaxNetWorth={self.max_net_worth:.0f}")
 
         return obs, reward, terminated, truncated, info
