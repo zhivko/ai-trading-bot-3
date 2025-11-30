@@ -6,7 +6,7 @@ import warnings
 import torch
 import glob
 import multiprocessing
-import shutil # <--- NEW IMPORT FOR DELETING FILES
+import shutil
 
 # --- SILENCE WARNINGS ---
 warnings.filterwarnings("ignore")
@@ -31,10 +31,8 @@ class RealTimeWandbCallback(BaseCallback):
         if wandb.run is None: return True
         
         # In Parallel Envs, 'infos' is a list of N dicts (one per CPU)
-        # We just log the first one to avoid spam
         infos = self.locals["infos"][0]
         
-        # Log less frequently (every 1000 steps) to save CPU
         if self.num_timesteps % 1000 == 0:
             current_lr = 0.0
             try: current_lr = self.model.policy.optimizer.param_groups[0]["lr"]
@@ -73,7 +71,6 @@ class RealTimeWandbCallback(BaseCallback):
                 "global_step": self.num_timesteps
             })
             
-        # Snapshot Heatmap every 10,000 steps
         if self.num_timesteps % 10000 == 0 and "vp_heatmap" in infos:
             heatmap = infos["vp_heatmap"]
             price_bins = infos.get("vp_bins", []) 
@@ -105,7 +102,6 @@ class WandbEvalListener(BaseCallback):
             mean_reward = self.parent.last_mean_reward
             mean_len = self.parent.last_mean_ep_length
             
-            # Log only if we have a valid result
             if mean_reward != -np.inf:
                 wandb.log({
                     "eval/mean_reward": mean_reward,
@@ -144,21 +140,24 @@ def main():
     parser.add_argument("--total-timesteps", type=int, default=5000000)
     parser.add_argument("--test-split", type=str, default="2024-01-01")
     parser.add_argument("--resume", nargs='?', const='LATEST', default=None)
+    
+    # --- NEW DEVICE ARGUMENT ---
+    parser.add_argument("--device", type=str, default="auto", help="Device to use: 'auto', 'cuda', or 'cpu'")
+    
     parser.add_argument("--wandb", action="store_true")
     args = parser.parse_args()
 
-    # --- 0. CLEANUP OLD MODELS IF NOT RESUMING ---
+    # --- 0. CLEANUP OLD MODELS ---
     models_dir = f"./models/{args.pair}"
     
     if args.resume is None:
-        # User wants a fresh start
         if os.path.exists(models_dir):
             print(f"\n🧹 Fresh Start detected: Deleting old models in {models_dir}...")
-            shutil.rmtree(models_dir) # Deletes the folder and all files
-            os.makedirs(models_dir)   # Recreates empty folder
+            shutil.rmtree(models_dir) 
+            os.makedirs(models_dir)
             print("✅ Old models deleted.")
     else:
-        print(f"\n🔄 Resume detected: Keeping existing models in {models_dir}.")
+        print(f"\n🔄 Resume detected: Keeping existing models.")
 
     # --- 1. LOAD DATA ---
     csv_file = args.data_path if args.data_path else "BTCUSDT_data.csv"
@@ -209,18 +208,28 @@ def main():
         else:
             model_path_to_load = args.resume
 
+    # --- Pass the 'device' argument here ---
     if model_path_to_load and os.path.exists(model_path_to_load):
         print(f"📥 Loading model: {model_path_to_load}")
         if args.algo.lower() == 'sac':
-            model = SAC.load(model_path_to_load, env=env, tensorboard_log=tensorboard_log)
+            model = SAC.load(model_path_to_load, env=env, tensorboard_log=tensorboard_log, device=args.device)
         else:
-            model = PPO.load(model_path_to_load, env=env, tensorboard_log=tensorboard_log)
+            model = PPO.load(model_path_to_load, env=env, tensorboard_log=tensorboard_log, device=args.device)
     else:
-        print(f"✨ Creating NEW {args.algo.upper()} Model")
+        print(f"✨ Creating NEW {args.algo.upper()} Model on {args.device.upper()}")
         if args.algo.lower() == 'sac':
-            model = SAC("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=tensorboard_log, learning_rate=3e-4, ent_coef='auto')
+            model = SAC(
+                "MlpPolicy", 
+                env, 
+                policy_kwargs=policy_kwargs, 
+                verbose=1, 
+                tensorboard_log=tensorboard_log, 
+                learning_rate=3e-4, 
+                ent_coef='auto',
+                device=args.device # <--- Explicit device
+            )
         else:
-            model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=tensorboard_log)
+            model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=tensorboard_log, device=args.device)
 
     # --- 6. CALLBACKS ---
     callbacks = []
@@ -252,9 +261,10 @@ def main():
     print("Training complete.")
 
 # usage example:
-# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 1000000 --wandb
+# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 1000000 --wandb --device cpu
 # or with resume if you berak leaarning
-# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 1000000 --wandb --resume
+# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 1000000 --wandb --device cpu --resume
 if __name__ == "__main__":
     multiprocessing.freeze_support() 
     main()
+
