@@ -21,6 +21,8 @@ from wandb.integration.sb3 import WandbCallback
 
 from trading_env import TradingEnv 
 
+wandb.require("core")
+
 # --- REAL-TIME CALLBACK ---
 class RealTimeWandbCallback(BaseCallback):
     def __init__(self, verbose=0):
