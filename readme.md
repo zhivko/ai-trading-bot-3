@@ -187,7 +187,18 @@ MilestoneTarget SortinoNotesRandom baseline~0.0Pure noiseBeats B&H>0.8First sign
 
 Log everything to Weights & Biases (wandb) – rewards, VP heatmaps, equity curve, hyperparams.
 
-# training on GPU RTX5090 within nvidia docker
+# Usage example:
+
+'''
+python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 4096
+'''
+
+or with --resume if you break learning in the middle
+'''
+python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cuda --resume --batch-size 2048
+'''
+
+# Training on GPU RTX5090 within nvidia docker
 
 '''
 docker pull nvcr.io/nvidia/pytorch:25.11-py3
