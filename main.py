@@ -136,7 +136,6 @@ class WandbEvalListener(BaseCallback):
                 
         return True 
 
-# --- CURRICULUM MANAGER ---
 class CurriculumCallback(BaseCallback):
     def __init__(self, verbose=0):
         super().__init__(verbose)
@@ -144,17 +143,25 @@ class CurriculumCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         new_phase = 1
-        if self.num_timesteps > 500000:
-            new_phase = 3
-        elif self.num_timesteps > 200000:
-            new_phase = 2
+        
+        # Scale curriculum for 5,000,000 steps
+        if self.num_timesteps > 2000000:  # After 2M steps (40% progress)
+            new_phase = 3 # Hard Mode (Drawdown Penalty)
+        elif self.num_timesteps > 1000000: # After 1M steps (20% progress)
+            new_phase = 2 # Medium Mode (Volatility Penalty)
+            
+        # Default is Phase 1 (Pure Profit)
             
         if new_phase != self.current_phase:
             self.current_phase = new_phase
             print(f"\n🚀 UPGRADING TO PHASE {new_phase} at step {self.num_timesteps}")
+            
+            # Apply to environment
             self.training_env.env_method("set_phase", new_phase)
+            
             if wandb.run is not None:
                 wandb.log({"train/curriculum_phase": new_phase, "global_step": self.num_timesteps})
+                
         return True
 
 def main():
