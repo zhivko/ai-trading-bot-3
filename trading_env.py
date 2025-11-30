@@ -11,6 +11,8 @@ class TradingEnv(gym.Env):
     def __init__(self, df, initial_balance=10000, lookback_window=30, vp_days=None):
         super(TradingEnv, self).__init__()
 
+        self.trade_history = []
+
         # --- DATA PREP ---
         # Keep 'date' as a column so we can log it later
         self.raw_df = df.reset_index(drop=False)
@@ -155,6 +157,7 @@ class TradingEnv(gym.Env):
                 self.shares_held += shares_bought
                 trade_penalty = REALISTIC_FEE
                 trade_happened = True
+                self.trade_history.append({'step': self.current_step, 'type': 'buy', 'shares': shares_bought, 'price': current_price})
                 # print(f"DEBUG: BUY {shares_bought:.6f} shares at {current_price:.2f}")
             else:
                 trade_penalty = 0.01
@@ -165,6 +168,7 @@ class TradingEnv(gym.Env):
                 self.shares_held -= shares_to_sell
                 trade_penalty = REALISTIC_FEE
                 trade_happened = True
+                self.trade_history.append({'step': self.current_step, 'type': 'sell', 'shares': shares_to_sell, 'price': current_price})
                 # print(f"DEBUG: SELL {shares_to_sell:.6f} shares at {current_price:.2f}")
             else:
                 trade_penalty = 0.01
@@ -255,7 +259,8 @@ class TradingEnv(gym.Env):
             "macd_sig": cur_macd_sig,
             
             "vp_heatmap": heatmap,
-            "vp_bins": price_bins 
+            "vp_bins": price_bins,
+            "last_10_trades": self.trade_history[-10:]
         }
 
         # Console Log with Date

@@ -12,13 +12,29 @@ warnings.filterwarnings("ignore")
 import gymnasium as gym
 from stable_baselines3 import SAC, PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor 
 
 import wandb
 from wandb.integration.sb3 import WandbCallback
+import plotly.express as px
 
-from trading_env import TradingEnv 
+from trading_env import TradingEnv
+
+# --- CUSTOM CHECKPOINT CALLBACK WITH LOGGING ---
+class CustomCheckpointCallback(BaseCallback):
+    def __init__(self, save_freq, save_path, name_prefix, verbose=0):
+        super().__init__(verbose)
+        self.save_freq = save_freq
+        self.save_path = save_path
+        self.name_prefix = name_prefix
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps % self.save_freq == 0:
+            path = os.path.join(self.save_path, f"{self.name_prefix}_{self.num_timesteps}")
+            self.model.save(path + ".zip")
+            print(f"Checkpoint saved: {path}.zip")
+        return True
 
 class WandbEvalListener(BaseCallback):
     """
@@ -88,6 +104,7 @@ class WandbEvalListener(BaseCallback):
                 "eval/mean_ep_length": mean_len,
                 "eval/portfolio_value": final_portfolio_value,
                 "eval/mean_portfolio_value": mean_portfolio_value,
+                "eval/last_10_trades": self.eval_env.envs[0].trade_history[-10:],
                 "global_step": self.num_timesteps
             })
         return True
@@ -205,6 +222,7 @@ class RealTimeWandbCallback(BaseCallback):
                     "realtime/price_poc": infos.get("poc", 0),  # <--- MUST match trading_env keys
                     "realtime/price_vah": infos.get("vah", 0),  # <--- MUST match trading_env keys
                     "realtime/price_val": infos.get("val", 0),  # <--- MUST match trading_env keys
+                    "last_10_trades": infos.get("last_10_trades", []),
                 },
                 # ------------------------
                 
@@ -213,7 +231,7 @@ class RealTimeWandbCallback(BaseCallback):
             
         if self.num_timesteps % 2000 == 0 and "vp_heatmap" in infos:
             heatmap = infos["vp_heatmap"]
-            price_bins = infos.get("vp_bins", []) 
+            price_bins = infos.get("vp_bins", [])
             current_price = infos.get("price", 0)
 
             if len(price_bins) == len(heatmap):
@@ -221,18 +239,33 @@ class RealTimeWandbCallback(BaseCallback):
                 for p, vol in zip(price_bins, heatmap):
                     is_current = 0.04 if abs(p - current_price) < (price_bins[1]-price_bins[0]) else 0
                     data.append([p, vol, is_current])
-                
+
                 table = wandb.Table(data=data, columns=["price", "volume", "curr_marker"])
                 wandb.log({
                     "realtime/vp_snapshot": wandb.plot.line(
-                        table, "price", "volume", 
+                        table, "price", "volume",
                         title=f"Volume Profile @ ${current_price:.0f}"
                     )
                 })
-            
+
+            # Log trades chart
+            self._log_trades_chart()
+
         return True
-    
-        
+
+    def _log_trades_chart(self):
+        """Log a scatter plot of all trades over price"""
+        if wandb.run is None: return
+        trades = self.locals["env"].envs[0].trade_history
+        if len(trades) > 0:
+            data = [[t['step'], t['price'], t['type']] for t in trades]
+            df = pd.DataFrame(data, columns=["step", "price", "type"])
+            fig = px.scatter(df, x="step", y="price", color="type", color_discrete_map={"buy": "green", "sell": "red"})
+            wandb.log({
+                "trades_over_price": fig
+            })
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pair", type=str, default="BTCUSDT")
@@ -298,12 +331,13 @@ def main():
             # Get all zip files
             list_of_files = glob.glob(f"{models_dir}/*.zip")
             if not list_of_files:
-                raise FileNotFoundError(f"Cannot resume: No .zip files found in {models_dir}")
-            
-            # Find the one with the latest modification time
-            latest_file = max(list_of_files, key=os.path.getmtime)
-            model_path_to_load = latest_file
-            print(f"\n🔄 Auto-detected latest checkpoint: {model_path_to_load}")
+                print(f"⚠️ No .zip files found in {models_dir}, starting new training instead of resuming.")
+                model_path_to_load = None
+            else:
+                # Find the one with the latest modification time
+                latest_file = max(list_of_files, key=os.path.getmtime)
+                model_path_to_load = latest_file
+                print(f"\n🔄 Auto-detected latest checkpoint: {model_path_to_load}")
         else:
             # User provided a specific path
             model_path_to_load = args.resume
@@ -333,6 +367,8 @@ def main():
         else:
             model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=tensorboard_log)
 
+    print(f"Initial num_timesteps: {model.num_timesteps}")
+
     # --- 4. CALLBACKS ---
     callbacks = []
     
@@ -349,7 +385,9 @@ def main():
         callbacks.append(WandbCallback(verbose=2))
 
     # Checkpoint logic
-    callbacks.append(CheckpointCallback(save_freq=50000, save_path=f'./models/{args.pair}', name_prefix=args.algo))
+    checkpoint_save_path = f'./models/{args.pair}'
+    os.makedirs(checkpoint_save_path, exist_ok=True)
+    callbacks.append(CustomCheckpointCallback(save_freq=50000, save_path=checkpoint_save_path, name_prefix=args.algo))
 
     # Create evaluation monitoring callback for reliable portfolio tracking
     eval_monitor = EvalMonitorCallback(eval_env)
@@ -358,9 +396,11 @@ def main():
     eval_listener = WandbEvalListener(eval_monitor=eval_monitor)
 
     # Eval logic
+    best_model_save_path = f'./models/{args.pair}_best_eval'
+    os.makedirs(best_model_save_path, exist_ok=True)
     eval_callback = CustomEvalCallback(
         eval_env,
-        best_model_save_path=f'./models/{args.pair}_best_eval',
+        best_model_save_path=best_model_save_path,
         log_path=f'./sac_tb/',
         eval_freq=10000,
         n_eval_episodes=3,
