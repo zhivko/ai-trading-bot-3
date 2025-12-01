@@ -22,7 +22,8 @@ from wandb.integration.sb3 import WandbCallback
 
 from trading_env import TradingEnv 
 from enhanced_trading_env import EnhancedTradingEnv as TradingEnv
-from volume_profile import compute_volume_profile   # ← your existing file
+from volume_profile import get_rolling_vp  # Your new wrapper
+
 
 wandb.require("core")
 
@@ -180,6 +181,8 @@ def main():
     parser.add_argument("--resume", nargs='?', const='LATEST', default=None)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--batch-size", type=int, default=4096)
+    parser.add_argument("--rsi-bonus-lambda", type=float, default=0.02)
+    parser.add_argument("--stoch-bonus-lambda", type=float, default=0.01)
     parser.add_argument("--wandb", action="store_true")
     args = parser.parse_args()
 
@@ -223,7 +226,17 @@ def main():
     # --- 3. WARMUP ---
     print("🔥 Warming up cache on Main Process...")
     print("Warming up cache on Main Process...")
-    vp_data = compute_volume_profile(train_df, vp_days=args.vp_days)   # ← this already returns {'vp7': df, 'vp30': df}
+
+    # Call it twice — once for 7 days, once for 30 days
+    vp7  = get_rolling_vp(train_df, window_days=7, num_bins=40)
+    vp30 = get_rolling_vp(train_df, window_days=30, num_bins=40)
+
+    # Build the dict your features.py and TradingEnv expect
+    vp_data = {
+        'vp7':  vp7,
+        'vp30': vp30
+    }
+
     print("Volume Profile cache ready.")
     warmup_env = TradingEnv(
         train_df,

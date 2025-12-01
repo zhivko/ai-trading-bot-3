@@ -42,7 +42,7 @@ class EnhancedTradingEnv(gym.Env):
         self.deadzone = deadzone
 
         self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
-        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(259,), dtype=np.float32)  # adjust if you changed features
+        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(139,), dtype=np.float32)  # adjust if you changed features
 
         self.seed(seed)
 

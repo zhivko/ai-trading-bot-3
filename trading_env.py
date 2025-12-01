@@ -97,16 +97,8 @@ class TradingEnv(gym.Env):
             
             if loaded_data is None:
                 print(f"⚙️ Calculating VP for {days} days (Bins: {self.vp_bins})...")
-                # Pass bins to your calculator function
-                # Note: If get_rolling_vp does not accept 'bins', we might need to modify volume_profile.py
-                # But typically this function supports it.
-                try:
-                    loaded_data = get_rolling_vp(self.raw_df, days, bins=self.vp_bins)
-                except TypeError:
-                    # Fallback if get_rolling_vp doesn't take bins arg (resizes manually)
-                    print("⚠️ get_rolling_vp doesn't accept 'bins', resizing output manually...")
-                    raw_data = get_rolling_vp(self.raw_df, days)
-                    loaded_data = self._resize_vp_data(raw_data, self.vp_bins)
+                # Pass num_bins to your calculator function
+                loaded_data = get_rolling_vp(self.raw_df, days, num_bins=self.vp_bins)
 
                 # Save new cache
                 with open(filepath, 'wb') as f:
@@ -131,20 +123,6 @@ class TradingEnv(gym.Env):
         
         self.phase = 1
         self.reset()
-
-    def _resize_vp_data(self, data, target_bins):
-        """Helper to resize heatmap if the source function is hardcoded."""
-        resized_heatmaps = []
-        for hm in data['heatmap']:
-            resized = np.interp(
-                np.linspace(0, len(hm), target_bins),
-                np.arange(len(hm)),
-                hm
-            )
-            resized_heatmaps.append(resized)
-        
-        data['heatmap'] = np.array(resized_heatmaps)
-        return data
 
     def set_phase(self, new_phase):
         self.phase = new_phase
@@ -185,7 +163,7 @@ class TradingEnv(gym.Env):
             poc = data['poc'][self.current_step]
             vah = data['vah'][self.current_step]
             val = data['val'][self.current_step]
-            heatmap = data['heatmap'][self.current_step] # Is now guaranteed to be vp_bins length
+            heatmap = data['heatmap'][self.current_step] # Always vp_bins length
             
             if current_price > 0 and poc > 0:
                 dist_poc = (poc - current_price) / current_price

@@ -8,7 +8,7 @@ def get_features(df, vp7_df, vp30_df, t):
     Extract features for a given timestamp t.
     """
     if t not in df.index or pd.isna(df.loc[t, 'close']):
-        return np.zeros(259)  # Updated size with heatmap features added
+        return np.zeros(219)  # Updated size with heatmap features added
 
 
     close = df.loc[t, 'close']
@@ -52,7 +52,7 @@ def get_features(df, vp7_df, vp30_df, t):
     val7 = vp7['val'] if not pd.isna(vp7['val']) else close
     hvn7 = vp7['hvn'] if isinstance(vp7['hvn'], list) else []
     lvn7 = vp7['lvn'] if isinstance(vp7['lvn'], list) else []
-    heatmap7 = vp7['heatmap'] if isinstance(vp7['heatmap'], np.ndarray) else np.zeros(100)
+    heatmap7 = vp7['heatmap'] if isinstance(vp7['heatmap'], np.ndarray) else np.zeros(40)
 
     # Normalized POC, VAH, VAL
     norm_poc7 = (poc7 / close) - 1
@@ -79,7 +79,7 @@ def get_features(df, vp7_df, vp30_df, t):
     val30 = vp30['val'] if not pd.isna(vp30['val']) else close
     hvn30 = vp30['hvn'] if isinstance(vp30['hvn'], list) else []
     lvn30 = vp30['lvn'] if isinstance(vp30['lvn'], list) else []
-    heatmap30 = vp30['heatmap'] if isinstance(vp30['heatmap'], np.ndarray) else np.zeros(100)
+    heatmap30 = vp30['heatmap'] if isinstance(vp30['heatmap'], np.ndarray) else np.zeros(40)
 
     # Normalized POC, VAH, VAL
     norm_poc30 = (poc30 / close) - 1
@@ -116,8 +116,8 @@ def get_features(df, vp7_df, vp30_df, t):
 
     # Combine features
     features = np.concatenate([
-           heatmap7,  # 100
-           heatmap30,  # 100
+           heatmap7,  # 40
+           heatmap30,  # 40
            [norm_poc7, norm_vah7, norm_val7],  # 3
            [norm_poc30, norm_vah30, norm_val30],  # 3
            [hvn_count7, hvn_avg_dist7, hvn_nearest7, lvn_count7, lvn_avg_dist7, lvn_nearest7],  # 6
