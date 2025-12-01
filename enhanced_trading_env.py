@@ -83,7 +83,7 @@ class EnhancedTradingEnv(gym.Env):
         window = self.df.iloc[start:end].copy()
         window.index = self.df.index[start:end]  # ← CRITICAL: restores datetime index
 
-        features = get_features(window, self.vp_data)
+        features = get_features(window, self.vp_data['vp7'], self.vp_data['vp30'], self.df.index[self.current_step])
         obs = np.array(features, dtype=np.float32)
         return np.clip(obs, 0.0, 1.0)
 
