@@ -5,7 +5,7 @@
 import gymnasium as gym
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 
 try:
     import wandb
@@ -13,6 +13,7 @@ except ImportError:
     wandb = None
 
 from features import get_features
+from volume_profile import get_rolling_vp
 
 
 class EnhancedTradingEnv(gym.Env):
@@ -21,7 +22,7 @@ class EnhancedTradingEnv(gym.Env):
     def __init__(
         self,
         df: pd.DataFrame,
-        vp_data: Dict[str, pd.DataFrame],
+        vp_days: List[int],
         initial_balance: float = 1000.0,
         fee_rate: float = 0.0015,
         rsi_bonus_lambda: float = 0.02,
@@ -32,7 +33,21 @@ class EnhancedTradingEnv(gym.Env):
     ):
         super().__init__()
 
+        self.timestamps = df.index
         self.df = df.reset_index(drop=True)
+
+        # Compute vp_data internally
+        vp_data = {}
+        for days in vp_days:
+            vp = get_rolling_vp(df, window_days=days, num_bins=40)
+            vp_df = pd.DataFrame(index=df.index)
+            vp_df['poc'] = vp['poc']
+            vp_df['vah'] = vp['vah']
+            vp_df['val'] = vp['val']
+            vp_df['heatmap'] = list(vp['heatmap'])
+            vp_df['hvn'] = vp['hvn']
+            vp_df['lvn'] = vp['lvn']
+            vp_data[f'vp{days}'] = vp_df
         self.vp_data = vp_data
         self.initial_balance = initial_balance
         self.fee_rate = fee_rate
@@ -81,16 +96,16 @@ class EnhancedTradingEnv(gym.Env):
         end = self.current_step + 1
         start = max(0, end - 100)
         window = self.df.iloc[start:end].copy()
-        window.index = self.df.index[start:end]  # ← CRITICAL: restores datetime index
+        window.index = self.timestamps[start:end]  # ← CRITICAL: restores datetime index
 
-        features = get_features(window, self.vp_data['vp7'], self.vp_data['vp30'], self.df.index[self.current_step])
+        features = get_features(window, self.vp_data['vp7'], self.vp_data['vp30'], self.timestamps[self.current_step])
         obs = np.array(features, dtype=np.float32)
         return np.clip(obs, 0.0, 1.0)
 
     def step(self, action: np.ndarray):
         action_val = float(action[0])
         price = float(self.df.iloc[self.current_step]["close"])
-        timestamp = self.df.index[self.current_step]
+        timestamp = self.timestamps[self.current_step]
 
         info = {}
         reward = 0.0
