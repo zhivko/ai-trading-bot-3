@@ -1,95 +1,147 @@
-# callbacks/feature_saliency.py   ← new file
 import numpy as np
 import torch
 import wandb
 import matplotlib.pyplot as plt
 from stable_baselines3.common.callbacks import BaseCallback
 
-# These are the exact 23 features in the order your features.py returns them
-FEATURE_NAMES = [
-    "rsi_14",
-    "stoch_rsi_k",
-    "stoch_rsi_d",
-    "macd_line",
-    "macd_signal",
-    "macd_hist",
-    "dist_to_poc_7d",
-    "dist_to_vah_7d",
-    "dist_to_val_7d",
-    "hvn_ratio_7d",
-    "lvn_ratio_7d",
-    "dist_to_poc_30d",
-    "dist_to_vah_30d",
-    "dist_to_val_30d",
-    "hvn_ratio_30d",
-    "lvn_ratio_30d",
-    "price_zscore_24h",
-    "volume_zscore_24h",
-    "session_asia",
-    "session_eu",
-    "session_us",
-    "hour_sin",
-    "hour_cos",
-]
-
 class FeatureSaliencyCallback(BaseCallback):
     """
-    Logs a clean bar chart to W&B showing which of your 23 features
-    actually drives the policy the most.
-    Fully compatible with your current VecEnv + features.py
+    Analyzes which inputs drive the bot's decisions.
+    Adapted for High-Dimensional Observation Spaces (Time Series + Heatmaps).
     """
 
-    def __init__(self, log_freq: int = 25000, verbose: int = 0):
+    def __init__(self, vp_days, verbose=0):
         super().__init__(verbose)
-        self.log_freq = log_freq
+        self.vp_days = vp_days
+        self.log_freq = 20000 # Check every 20k steps
 
     def _on_step(self) -> bool:
-        if self.num_timesteps < 150_000:        # wait until policy is decent
+        # 1. Skip early training or non-logging steps
+        if self.num_timesteps < 50000 or self.num_timesteps % self.log_freq != 0:
             return True
-
-        if self.num_timesteps % self.log_freq != 0:
+        
+        if wandb.run is None:
             return True
 
         try:
-            # Get the very latest observation from any environment (they're all synced)
-            obs = self.training_env.envs[0].last_obs  # numpy array (23,)
-            if obs is None:
-                return True
-
-            obs_tensor = torch.FloatTensor(obs).to(self.model.device).unsqueeze(0)
+            # 2. Get the current observation (Batch size 1)
+            # We grab from locals because SubprocVecEnv doesn't expose .last_obs easily
+            obs = self.locals['new_obs'][0] # Take first env
+            
+            # Convert to Tensor
+            device = self.model.device
+            obs_tensor = torch.as_tensor(obs, device=device).unsqueeze(0).float()
             obs_tensor.requires_grad_(True)
 
-            # Forward through actor
-            distribution = self.model.policy.get_distribution(obs_tensor)
-            action = distribution.rsample()
-            log_prob = distribution.log_prob(action).sum(-1)
+            # 3. Forward Pass (Get Action Distribution)
+            # We want to know: "Which input changed the Action Probability the most?"
+            actor = self.model.policy.actor
+            dist = actor.get_action_dist_params(obs_tensor)
+            
+            # For SAC, we usually look at the Mean (mu) of the action distribution
+            # Summing output allows backward pass
+            action_mean = dist[0] # [mean, log_std]
+            target = action_mean.sum() 
 
-            # Use episode return (or Sortino if you log it) as scalar multiplier
-            info = self.locals["infos"][0]
-            episode_return = info.get("episode", {}).get("r", 1.0)
-            sortino = info.get("sortino", episode_return)  # fallback
-            scalar = max(sortino, 0.1)
+            # 4. Backward Pass (Calculate Gradients)
+            actor.zero_grad()
+            target.backward()
+            
+            # Get Saliency (Absolute value of gradients)
+            # Shape: [Total_Features]
+            grads = obs_tensor.grad.data.abs().cpu().numpy().flatten()
+            
+            # 5. AGGREGATE FEATURES (The Logic Fix)
+            # Your env has: [Window(6*30)] + [Account(2)] + [VP(3+100)*N]
+            # We need to map these thousands of numbers into readable groups.
+            
+            # A. Define Group Names
+            std_features = ['Close %', 'Vol Norm', 'RSI', 'Stoch', 'MACD', 'Signal']
+            feature_scores = {name: [] for name in std_features}
+            feature_scores['Balance'] = []
+            feature_scores['Shares'] = []
+            
+            # B. Parse the Gradient Array
+            cursor = 0
+            
+            # -- Parse Time Series Window --
+            # Assuming Lookback=30, Feats=6
+            # Sequence in env: [Step1_Feat1, Step1_Feat2... Step2_Feat1...]
+            # We just iterate and assign to buckets
+            # Note: We need to know lookback_window size. 
+            # We infer it based on standard feature count (6)
+            
+            # Simple heuristic: The first chunk is the window.
+            # Account is 2. VP is rest.
+            
+            # Identify indices for Account (2 features)
+            # They are usually after the window. 
+            # Let's assume standard layout from trading_env.py
+            
+            num_std_features = 6
+            # Calculate dynamic lookback based on array size
+            # Formula: Total = (Lookback*6) + 2 + (VP_Days * 103)
+            # This is hard to reverse, so we approximate or use hardcoded if standard.
+            
+            # LET'S USE A ROBUST GROUPING LOGIC
+            grouped_saliency = {}
+            
+            # 1. Market Window (Approximate first 80% of array usually)
+            # We will just group standard features by name
+            # Since we flattened the window, every 6th element is the same feature type
+            limit_window = len(grads) - 2 - (len(self.vp_days) * 103)
+            window_grads = grads[:limit_window]
+            
+            for i, name in enumerate(std_features):
+                # Slice every 6th element starting at i
+                # e.g. indices 0, 6, 12... correspond to 'Close %'
+                grouped_saliency[name] = np.mean(window_grads[i::num_std_features])
 
-            # Backprop
-            (log_prob * scalar).backward()
-            saliency = obs_tensor.grad.abs().cpu().numpy().flatten()
-            saliency = saliency / (saliency.sum() + 1e-12)
+            cursor = limit_window
+            
+            # 2. Account
+            grouped_saliency['Balance'] = grads[cursor]
+            grouped_saliency['Shares'] = grads[cursor+1]
+            cursor += 2
+            
+            # 3. Volume Profiles
+            for days in self.vp_days:
+                prefix = f"VP {days}d"
+                # POC, VAH, VAL (3 scalars)
+                grouped_saliency[f"{prefix} Levels"] = np.mean(grads[cursor:cursor+3])
+                cursor += 3
+                # Heatmap (100 scalars)
+                grouped_saliency[f"{prefix} Heatmap"] = np.mean(grads[cursor:cursor+100])
+                cursor += 100
 
-            # Plot
-            plt.figure(figsize=(14, 5))
-            colors = ['orange' if x > np.percentile(saliency, 85) else '#1f77b4' for x in saliency]
-            bars = plt.bar(FEATURE_NAMES, saliency, color=colors, edgecolor='black', linewidth=0.5)
+            # 6. Plotting
+            names = list(grouped_saliency.keys())
+            values = list(grouped_saliency.values())
+            
+            # Normalize for chart
+            total_importance = sum(values) + 1e-12
+            values = [v / total_importance for v in values]
+            
+            # Sort by importance
+            sorted_indices = np.argsort(values)[::-1]
+            sorted_names = [names[i] for i in sorted_indices]
+            sorted_values = [values[i] for i in sorted_indices]
+
+            plt.figure(figsize=(12, 6))
+            colors = ['orange' if x > 0.1 else '#1f77b4' for x in sorted_values]
+            plt.bar(sorted_names, sorted_values, color=colors, edgecolor='black', alpha=0.8)
+            plt.title(f"Brain Scan: Feature Importance (Step {self.num_timesteps})")
+            plt.ylabel("Influence on Action")
             plt.xticks(rotation=45, ha='right')
-            plt.ylabel("Normalized |∇_obs| (influence)")
-            plt.title(f"Feature Saliency — Step {self.num_timesteps:,} | Ep.Return ≈ {episode_return:.1f}")
             plt.grid(axis='y', alpha=0.3)
             plt.tight_layout()
 
-            wandb.log({"feature_saliency": wandb.Image(plt)})
+            wandb.log({"analysis/feature_saliency": wandb.Image(plt)})
             plt.close()
 
         except Exception as e:
+            # Don't crash training if visualization fails
             if self.verbose > 0:
-                print(f"[Saliency] {e}")
+                print(f"[Saliency Error] {e}")
 
         return True
