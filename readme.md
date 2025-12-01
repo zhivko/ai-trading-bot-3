@@ -78,6 +78,27 @@ or with resume if you break leaarning
 python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cuda --resume --batch-size 2048
 ```
 
+## Results
+
+EVAL REPORT (Step 4900000): ROI: 260.57% | Drawdown: 22.21%
+| Section  | Metric          | Value     |
+|----------|-----------------|-----------|
+| rollout/ | ep_len_mean     | 1.95e+04  |
+| rollout/ | ep_rew_mean     | 451       |
+| time/    | episodes        | 252       |
+| time/    | fps             | 1090      |
+| time/    | time_elapsed    | 4520      |
+| time/    | total_timesteps | 4930212   |
+| train/   | actor_loss      | 4.76      |
+| train/   | critic_loss     | 0.254     |
+| train/   | ent_coef        | 0.00294   |
+| train/   | ent_coef_loss   | 0.762     |
+| train/   | learning_rate   | 0.0003    |
+| train/   | n_updates       | 352150    |
+
+
+![alt text](image.png)
+
 ## Build pytorch on windows
 
 1. Open Visual Studio Installer
@@ -437,41 +458,21 @@ Episode length: 29187.00 +/- 0.00
 2025-12-01 01:06:08
 
 2025-12-01 01:06:08
-📊 EVAL REPORT (Step 4900000): ROI: 260.57% | Drawdown: 22.21%
-2025-12-01 01:06:34
----------------------------------
-2025-12-01 01:06:34
-| rollout/           |          |
-2025-12-01 01:06:34
-|    ep_len_mean     | 1.95e+04 |
-2025-12-01 01:06:34
-|    ep_rew_mean     | 451      |
-2025-12-01 01:06:34
-| time/              |          |
-2025-12-01 01:06:34
-|    episodes        | 252      |
-2025-12-01 01:06:34
-|    fps             | 1090     |
-2025-12-01 01:06:34
-|    time_elapsed    | 4520     |
-2025-12-01 01:06:34
-|    total_timesteps | 4930212  |
-2025-12-01 01:06:34
-| train/             |          |
-2025-12-01 01:06:34
-|    actor_loss      | 4.76     |
-2025-12-01 01:06:34
-|    critic_loss     | 0.254    |
-2025-12-01 01:06:34
-|    ent_coef        | 0.00294  |
-2025-12-01 01:06:34
-|    ent_coef_loss   | 0.762    |
-2025-12-01 01:06:34
-|    learning_rate   | 0.0003   |
-2025-12-01 01:06:34
-|    n_updates       | 352150   |
-2025-12-01 01:06:34
----------------------------------
+EVAL REPORT (Step 4900000): ROI: 260.57% | Drawdown: 22.21%
+| Section  | Metric          | Value     |
+|----------|-----------------|-----------|
+| rollout/ | ep_len_mean     | 1.95e+04  |
+| rollout/ | ep_rew_mean     | 451       |
+| time/    | episodes        | 252       |
+| time/    | fps             | 1090      |
+| time/    | time_elapsed    | 4520      |
+| time/    | total_timesteps | 4930212   |
+| train/   | actor_loss      | 4.76      |
+| train/   | critic_loss     | 0.254     |
+| train/   | ent_coef        | 0.00294   |
+| train/   | ent_coef_loss   | 0.762     |
+| train/   | learning_rate   | 0.0003    |
+| train/   | n_updates       | 352150    |
 2025-12-01 01:07:35
 Training complete.
 ```
