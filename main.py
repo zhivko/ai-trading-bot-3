@@ -229,12 +229,14 @@ def main():
 
     # Call it twice — once for 7 days, once for 30 days
     vp7  = get_rolling_vp(train_df, window_days=7, num_bins=40)
+    vp7_df = pd.DataFrame(vp7, index=train_df.index)
     vp30 = get_rolling_vp(train_df, window_days=30, num_bins=40)
+    vp30_df = pd.DataFrame(vp30, index=train_df.index)
 
     # Build the dict your features.py and TradingEnv expect
     vp_data = {
-        'vp7':  vp7,
-        'vp30': vp30
+        'vp7': vp7_df,
+        'vp30': vp30_df
     }
 
     print("Volume Profile cache ready.")
