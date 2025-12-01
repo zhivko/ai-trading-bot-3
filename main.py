@@ -293,7 +293,7 @@ def main():
     eval_listener = WandbEvalListener()
     eval_callback = EvalCallback(
         eval_env,
-        best_model_save_path=f'./models/{args.pair}_best_eval',
+        best_model_save_path=f'./models/best_eval/{args.algo.lower()}_{args.pair}_best.zip',
         log_path=tensorboard_log,
         eval_freq=50000, 
         n_eval_episodes=1,

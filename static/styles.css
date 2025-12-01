@@ -1,0 +1,60 @@
+/* Chart container styles */
+#chart {
+  width: 100%;
+  height: 500px;
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+@media (max-width: 768px) {
+  #chart {
+    height: 300px;
+  }
+}
+
+/* Right panel: Shape properties section */
+#shape-properties-section {
+  margin-top: 10px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+#shape-properties-section h4 {
+  margin-top: 0;
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+
+#shape-properties-content {
+  font-size: 12px;
+}
+
+#shape-properties-status {
+  margin: 0 0 4px 0;
+  font-style: italic;
+  color: #555;
+}
+
+#shape-coordinates p {
+  margin: 2px 0;
+}
+
+#shape-line-options {
+  margin-top: 6px;
+}
+
+#shape-line-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+#shape-send-email-checkbox:disabled + span,
+#shape-line-options input[disabled] + span {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Placeholder for styles.css */

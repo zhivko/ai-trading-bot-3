@@ -14,6 +14,7 @@ scikit-learn==1.5.0
 tqdm==4.66.4
 ta==0.11.0
 plotly==5.18.0
-
 flask
+flask-socketio
+python-socketio
 
