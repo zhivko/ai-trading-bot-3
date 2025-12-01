@@ -21,6 +21,8 @@ import wandb
 from wandb.integration.sb3 import WandbCallback
 
 from trading_env import TradingEnv 
+from enhanced_trading_env import EnhancedTradingEnv as TradingEnv
+from volume_profile import compute_volume_profile   # ← your existing file
 
 wandb.require("core")
 
@@ -220,7 +222,17 @@ def main():
 
     # --- 3. WARMUP ---
     print("🔥 Warming up cache on Main Process...")
-    warmup_env = TradingEnv(train_df, vp_days=args.vp_days)
+    print("Warming up cache on Main Process...")
+    vp_data = compute_volume_profile(train_df, vp_days=args.vp_days)   # ← this already returns {'vp7': df, 'vp30': df}
+    print("Volume Profile cache ready.")
+    warmup_env = TradingEnv(
+        train_df,
+        vp_data,
+        rsi_bonus_lambda=args.rsi_bonus_lambda,
+        stoch_bonus_lambda=args.stoch_bonus_lambda,
+        trade_cooldown_hours=6,
+        deadzone=0.15,
+    )
     warmup_env.close()
     print("✅ Cache ready. Launching Swarm.")
 
