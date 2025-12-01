@@ -1,145 +1,220 @@
-# backtest.py — FINAL WORKING VERSION FOR SAC (sac_crypto_trader.zip)
-import torch
+import os
 import pandas as pd
 import numpy as np
-import wandb
-import matplotlib.pyplot as plt
-import pickle
-import os
-from stable_baselines3 import SAC
-from stable_baselines3.common.vec_env import VecNormalize
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from flask import Flask, render_template_string
+from stable_baselines3 import PPO, SAC
+
+# Import your custom modules
 from trading_env import TradingEnv
-from volume_profile import get_rolling_vp
 
-# ========================== 1. LOAD DATA & VP ==========================
-pair = 'BTC/USDT'
-data_file = f'{pair.replace("/", "_")}_data.csv'
-df = pd.read_csv(data_file, parse_dates=['timestamp'])
-df = df.set_index('timestamp').sort_index()
-print(f"Data loaded: {len(df)} rows")
+app = Flask(__name__)
 
-# VP caching
-vp7_file = f'{pair.replace("/", "_")}_vp7.pkl'
-vp30_file = f'{pair.replace("/", "_")}_vp30.pkl'
+# --- CONFIGURATION ---
+MODEL_PATH = os.path.join("models", "BTCUSDT_best_eval", "best_model.zip")
+DATA_PATH = os.path.join("", "BTCUSDT_data.csv") 
+ALGORITHM = "PPO" 
 
-def load_or_compute_vp(days, filename):
-    if os.path.exists(filename) and os.path.getmtime(filename) >= os.path.getmtime(data_file):
-        print(f"Loading cached {days}d VP...")
-        with open(filename, 'rb') as f:
-            return pickle.load(f)
-    else:
-        print(f"Computing {days}d VP...")
-        vp = get_rolling_vp(df, days)
-        with open(filename, 'wb') as f:
-            pickle.dump(vp, f)
-        return vp
+def load_data():
+    """Loads and prepares data."""
+    if not os.path.exists(DATA_PATH):
+        raise FileNotFoundError(f"Data not found at {DATA_PATH}")
+    
+    df = pd.read_csv(DATA_PATH)
+    
+    # 1. Lowercase all column names (timestamp, open, high, etc.)
+    df.columns = [c.lower() for c in df.columns]
 
-vp7_df  = load_or_compute_vp(7,  vp7_file)
-vp30_df = load_or_compute_vp(30, vp30_file)
+    # 2. RENAME 'timestamp' to 'date' so the rest of the code works
+    if 'timestamp' in df.columns:
+        df.rename(columns={'timestamp': 'date'}, inplace=True)
+    
+    # 3. Convert to datetime
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date').reset_index(drop=True)
+    
+    return df
 
-# ========================== 2. LOAD SAC MODEL ==========================
-print("Loading SAC model...")
-model = SAC.load("sac_crypto_trader.zip")
-print("Model loaded successfully")
+def run_simulation():
+    """Runs the model against the environment and records history."""
+    print("Loading Data...")
+    df = load_data()
+    
+    print("Initializing Environment...")
+    # Initialize Env (Arguments must match your training env)
+    env = TradingEnv(df, initial_balance=1000, lookback_window=50)
+    
+    print(f"Loading Model from {MODEL_PATH}...")
+    if not os.path.exists(MODEL_PATH):
+        return None, f"Model file not found at: {MODEL_PATH}"
 
-# ========================== 3. ENVIRONMENT ==========================
-# Set episode_length_days to cover the full dataset (approx 4 years)
-total_days = (len(df) - 30 * 24) // 24  # Available days after VP warmup
-env = TradingEnv(df, vp7_df, vp30_df, episode_length_days=total_days)
+    try:
+        # Load the correct model type
+        if "sac" in MODEL_PATH.lower() or ALGORITHM.lower() == 'sac':
+            model = SAC.load(MODEL_PATH, env=env)
+        else:
+            model = PPO.load(MODEL_PATH, env=env)
+    except Exception as e:
+        return None, f"Error loading model: {str(e)}"
 
-# Load VecNormalize stats if available (this alone often turns –20 % → +80 %)
-try:
-    env = VecNormalize.load("vec_normalize.pkl", env)
-    env.training = False
-    env.norm_reward = False
-    print("Loaded VecNormalize stats")
-except FileNotFoundError:
-    print("VecNormalize stats not found, proceeding without normalization")
+    print("Running Backtest Loop...")
+    obs, _ = env.reset()
+    done = False
+    
+    history = []
+    
+    while not done:
+        action, _ = model.predict(obs, deterministic=True)
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+        
+        # Capture step data for visualization
+        step_data = {
+            "date": info.get("date", df.iloc[env.current_step]['date']), 
+            "open": df.iloc[env.current_step]['open'],
+            "high": df.iloc[env.current_step]['high'],
+            "low": df.iloc[env.current_step]['low'],
+            "close": info.get('price', df.iloc[env.current_step]['close']),
+            "net_worth": info.get('portfolio_value', env.net_worth),
+            "balance_usdt": info.get('balance', env.balance),
+            "shares_held": info.get('shares_held', env.shares_held),
+            "action": float(action[0])
+        }
+        history.append(step_data)
 
-# ========================== 4. BACKTEST LOOP (SAC) ==========================
-obs, _ = env.reset()
-done = False
+    return pd.DataFrame(history), None
 
-actions = []
-prices = []
-portfolio_values = []
-q_values = []           # Q-value from critics (proxy for value function)
+def create_plot(df):
+    """Creates the Plotly interactive chart."""
+    
+    # Create Subplots: 4 Rows
+    fig = make_subplots(
+        rows=4, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.02,
+        row_heights=[0.5, 0.2, 0.15, 0.15],
+        subplot_titles=("Price Action & Trades", "Net Worth (Total Portfolio)", "USDT Balance", "BTC / Shares Held")
+    )
 
-step = 0
-print("Starting backtest simulation...")
+    # --- 1. OHLC Chart ---
+    fig.add_trace(go.Candlestick(
+        x=df['date'],
+        open=df['open'], high=df['high'],
+        low=df['low'], close=df['close'],
+        name='Price'
+    ), row=1, col=1)
 
-while not done:
-    # Predict action (deterministic)
-    action, _ = model.predict(obs, deterministic=True)
+    # Buy Markers (Green Up Triangles)
+    buys = df[df['action'] > 0.1] 
+    fig.add_trace(go.Scatter(
+        x=buys['date'], y=buys['close'],
+        mode='markers',
+        marker=dict(symbol='triangle-up', color='green', size=12),
+        name='Buy'
+    ), row=1, col=1)
 
-    # Step environment
-    obs, reward, terminated, truncated, info = env.step(action)
-    done = terminated or truncated
+    # Sell Markers (Red Down Triangles)
+    sells = df[df['action'] < -0.1] 
+    fig.add_trace(go.Scatter(
+        x=sells['date'], y=sells['close'],
+        mode='markers',
+        marker=dict(symbol='triangle-down', color='red', size=12),
+        name='Sell'
+    ), row=1, col=1)
 
-    # === CORRECT WAY TO GET Q-VALUES FROM SAC ===
-    with torch.no_grad():
-        obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
-        action_tensor = torch.as_tensor(action, dtype=torch.float32).unsqueeze(0)
+    # --- 2. Net Worth ---
+    fig.add_trace(go.Scatter(
+        x=df['date'], y=df['net_worth'],
+        line=dict(color='blue', width=2),
+        name='Net Worth'
+    ), row=2, col=1)
 
-        # SAC's critic expects (obs, action) pair
-        q_values_batch = model.critic(obs_tensor, action_tensor)  # returns tuple (q1, q2)
-        q_value = torch.min(q_values_batch[0], q_values_batch[1]).item()     # conservative Q
+    # --- 3. USDT Balance ---
+    fig.add_trace(go.Scatter(
+        x=df['date'], y=df['balance_usdt'],
+        line=dict(color='green', width=1),
+        fill='tozeroy',
+        name='USDT Balance'
+    ), row=3, col=1)
 
-    # Record
-    current_price = env.df.iloc[env.current_step]['close']
-    portfolio_value = env._calculate_portfolio_value(current_price)
+    # --- 4. BTC Balance ---
+    fig.add_trace(go.Scatter(
+        x=df['date'], y=df['shares_held'],
+        line=dict(color='orange', width=1),
+        fill='tozeroy',
+        name='BTC Held'
+    ), row=4, col=1)
 
-    actions.append(float(action[0]))
-    q_values.append(q_value)
-    prices.append(current_price)
-    portfolio_values.append(portfolio_value)
+    # --- Layout Settings ---
+    fig.update_layout(
+        title=f"AI Bot Backtest Results ({MODEL_PATH})",
+        xaxis_rangeslider_visible=False, 
+        height=1200,
+        template="plotly_dark",
+        hovermode="x unified"
+    )
 
-    step += 1
-    if step % 1000 == 0:
-        print(f"Step {step:,} | Price ${current_price:,.0f} | Portfolio ${portfolio_value:,.0f}")
+    # Add Range Slider to the bottom chart (controls all shared axes)
+    fig.update_xaxes(rangeslider=dict(visible=True), row=4, col=1)
 
-print(f"Backtest finished! Total steps: {len(actions)}")
-start_date = env.df.index[env.start_step]
-end_date = env.df.index[env.current_step]
-print(f"Dates tested: {start_date} to {end_date}")
+    return fig.to_html(full_html=True)
 
-# ========================== 5. LOG TO WANDB ==========================
-wandb.init(project="grok-crypto-trader", name="backtest-btc-usdt-sac")
+# --- FLASK ROUTES ---
 
-total_return_pct = (portfolio_values[-1] / env.initial_cash - 1) * 100
-returns = np.diff(portfolio_values) / np.array(portfolio_values[:-1])
-sharpe = np.mean(returns) / (np.std(returns) + 1e-9) * np.sqrt(252 * 24) if len(returns) > 1 else 0
+@app.route('/')
+def index():
+    df, error = run_simulation()
+    
+    if error:
+        return f"<h1>Error</h1><p>{error}</p>"
+    
+    if df is None or df.empty:
+        return "<h1>No trades made or data empty.</h1>"
+        
+    # Generate Stats
+    initial = df.iloc[0]['net_worth']
+    final = df.iloc[-1]['net_worth']
+    roi = ((final - initial) / initial) * 100
+    
+    html_chart = create_plot(df)
+    
+    return render_template_string("""
+        <!doctype html>
+        <html>
+            <head>
+                <title>AI Bot Backtest</title>
+                <style>
+                    body { font-family: sans-serif; margin: 0; padding: 20px; background: #111; color: #eee; }
+                    .stats { display: flex; gap: 20px; background: #222; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+                    .stat-box { text-align: center; }
+                    .val { font-size: 1.5em; font-weight: bold; }
+                    .pos { color: #4caf50; }
+                    .neg { color: #f44336; }
+                </style>
+            </head>
+            <body>
+                <div class="stats">
+                    <div class="stat-box">
+                        <div>Initial Portfolio</div>
+                        <div class="val">${{ "%.2f"|format(initial) }}</div>
+                    </div>
+                    <div class="stat-box">
+                        <div>Final Portfolio</div>
+                        <div class="val">${{ "%.2f"|format(final) }}</div>
+                    </div>
+                    <div class="stat-box">
+                        <div>ROI</div>
+                        <div class="val {{ 'pos' if roi > 0 else 'neg' }}">{{ "%.2f"|format(roi) }}%</div>
+                    </div>
+                </div>
+                
+                {{ chart|safe }}
+            </body>
+        </html>
+    """, chart=html_chart, initial=initial, final=final, roi=roi)
 
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True, height_ratios=[3, 1])
-ax1.plot(portfolio_values, label=f"Equity → ${portfolio_values[-1]:,.0f}", color="purple", linewidth=2)
-ax1.set_title(f"SAC Backtest – Total Return: {total_return_pct:+.2f}% | Sharpe: {sharpe:.2f}")
-ax1.set_ylabel("Portfolio Value ($)")
-ax1.legend()
-ax1.grid(alpha=0.3)
-
-ax2.plot(actions, color="green", alpha=0.7)
-ax2.axhline(0, color="gray", linestyle="--")
-ax2.set_ylabel("Action")
-ax2.set_xlabel("Step")
-ax2.grid(alpha=0.3)
-
-wandb.log({
-    "final_portfolio_value": portfolio_values[-1],
-    "total_return_%": total_return_pct,
-    "sharpe_ratio": sharpe,
-    "steps": len(actions),
-    "actions_histogram": wandb.Histogram(actions),
-    "q_value_mean": np.mean(q_values),
-    "equity_curve": wandb.Image(fig)
-})
-
-plt.tight_layout()
-wandb.log({"full_plot": wandb.Image(fig)})
-plt.close(fig)
-
-wandb.finish()
-print(f"\nBacktest complete!")
-print(f"Final portfolio: ${portfolio_values[-1]:,.0f}")
-print(f"Total return: {total_return_pct:+.2f}%")
-print(f"Sharpe ratio: {sharpe:.2f}")
-print(f"W&B run → https://wandb.ai/zhivko/grok-crypto-trader/runs/{wandb.run.id if wandb.run else 'latest'}")
+if __name__ == "__main__":
+    print("Starting Backtest Server...")
+    print("Open http://127.0.0.1:5000 in your browser.")
+    app.run(debug=True, use_reloader=True)

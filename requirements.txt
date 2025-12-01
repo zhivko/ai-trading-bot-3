@@ -1,4 +1,4 @@
-torch@file:///c:/git/pytorch/dist/fixed/torch-2.10.0a0+git4bebc82-cp312-cp312-win_amd64.whl
+torch @ file:///c:/git/pytorch/dist/fixed/torch-2.10.0a0+git4bebc82-cp312-cp312-win_amd64.whl
 ccxt==4.5.22
 gymnasium==0.29.1
 stable-baselines3==2.3.2
@@ -14,3 +14,6 @@ scikit-learn==1.5.0
 tqdm==4.66.4
 ta==0.11.0
 plotly==5.18.0
+
+flask
+
