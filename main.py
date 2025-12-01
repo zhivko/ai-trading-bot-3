@@ -15,6 +15,7 @@ from stable_baselines3 import SAC, PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor 
+from callbacks.feature_saliency import FeatureSaliencyCallback
 
 import wandb
 from wandb.integration.sb3 import WandbCallback
@@ -268,6 +269,9 @@ def main():
 
     callbacks.append(CheckpointCallback(save_freq=50000, save_path=models_dir, name_prefix=args.algo))
     callbacks.append(CurriculumCallback())
+
+    saliency_callback = FeatureSaliencyCallback(vp_days=args.vp_days)
+    callbacks.append(saliency_callback)
 
     eval_listener = WandbEvalListener()
     eval_callback = EvalCallback(

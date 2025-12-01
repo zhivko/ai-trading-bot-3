@@ -105,11 +105,11 @@ $env:USE_NINJA = "1"
 $env:MAX_JOBS = "8"
 $env:CMAKE_GENERATOR = "Ninja"
 
+pip install packaging
 python setup.py install
 
-## Output from logs:
-
-´´´
+## Output from logs
+```
 root@c00ed23b4b46:/workspace/bot# python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 4096
 
 🧹 FRESH START DETECTED
