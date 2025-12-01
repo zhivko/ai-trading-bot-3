@@ -306,6 +306,21 @@ EVAL REPORT (Step 4900000): ROI: 260.57% | Drawdown: 22.21%
 | train/   | ent_coef_loss   | 0.762     |
 | train/   | learning_rate   | 0.0003    |
 | train/   | n_updates       | 352150    |
+EVAL REPORT (Step 4900000): ROI: 260.57% | Drawdown: 22.21%
+| Section  | Metric          | Value     |
+|----------|-----------------|-----------|
+| rollout/ | ep_len_mean     | 1.95e+04  |
+| rollout/ | ep_rew_mean     | 451       |
+| time/    | episodes        | 252       |
+| time/    | fps             | 1090      |
+| time/    | time_elapsed    | 4520      |
+| time/    | total_timesteps | 4930212   |
+| train/   | actor_loss      | 4.76      |
+| train/   | critic_loss     | 0.254     |
+| train/   | ent_coef        | 0.00294   |
+| train/   | ent_coef_loss   | 0.762     |
+| train/   | learning_rate   | 0.0003    |
+| train/   | n_updates       | 352150    |
 2025-12-01 01:07:35
 Training complete.
 ```
