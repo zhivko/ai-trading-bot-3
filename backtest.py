@@ -26,14 +26,18 @@ def load_data():
         return CACHED_DF
 
     print(f"Loading CSV Data from {DATA_PATH}...")
+    # Check current path, then fallback
     if not os.path.exists(DATA_PATH):
-        # Handle fallback if file is just in root
         if os.path.exists("BTCUSDT_data.csv"):
-             DATA_PATH = "BTCUSDT_data.csv"
+             # If you are using the file from your message history
+             final_path = "BTCUSDT_data.csv"
         else:
             raise FileNotFoundError(f"Data not found at {DATA_PATH}")
-    
-    df = pd.read_csv(DATA_PATH)
+    else:
+        final_path = DATA_PATH
+
+    print(f"Reading {final_path}...")
+    df = pd.read_csv(final_path)
     
     # 1. Lowercase columns
     df.columns = [c.lower() for c in df.columns]
@@ -54,7 +58,6 @@ def run_simulation():
     df = load_data()
     
     print("Initializing Environment...")
-    # Env will now auto-load your pickled VP files
     env = TradingEnv(df, initial_balance=1000, lookback_window=50)
     
     print(f"Loading Model from {MODEL_PATH}...")
@@ -80,7 +83,6 @@ def run_simulation():
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         
-        # Capture step data
         step_data = {
             "date": info.get("date"), 
             "close": info.get('price'),
@@ -99,9 +101,8 @@ def run_simulation():
     return pd.DataFrame(history), None
 
 def create_plot(df):
-    """Creates the Plotly interactive chart with 4 aligned subplots."""
+    """Creates the Plotly interactive chart."""
     
-    # Create Subplots: 4 Rows, Shared X Axis
     fig = make_subplots(
         rows=4, cols=1,
         shared_xaxes=True,
@@ -110,56 +111,40 @@ def create_plot(df):
         subplot_titles=("Price Action & Trades", "Net Worth (Total Portfolio)", "USDT Balance", "BTC / Shares Held")
     )
 
-    # --- 1. OHLC Chart (Top) ---
+    # 1. OHLC
     fig.add_trace(go.Candlestick(
-        x=df['date'],
-        open=df['open'], high=df['high'],
-        low=df['low'], close=df['close'],
-        name='Price'
+        x=df['date'], open=df['open'], high=df['high'],
+        low=df['low'], close=df['close'], name='Price'
     ), row=1, col=1)
 
-    # Buy Markers
+    # Markers
     buys = df[df['action'] > 0.1] 
     fig.add_trace(go.Scatter(
-        x=buys['date'], y=buys['close'],
-        mode='markers',
-        marker=dict(symbol='triangle-up', color='green', size=12),
-        name='Buy'
+        x=buys['date'], y=buys['close'], mode='markers',
+        marker=dict(symbol='triangle-up', color='green', size=12), name='Buy'
     ), row=1, col=1)
 
-    # Sell Markers
     sells = df[df['action'] < -0.1] 
     fig.add_trace(go.Scatter(
-        x=sells['date'], y=sells['close'],
-        mode='markers',
-        marker=dict(symbol='triangle-down', color='red', size=12),
-        name='Sell'
+        x=sells['date'], y=sells['close'], mode='markers',
+        marker=dict(symbol='triangle-down', color='red', size=12), name='Sell'
     ), row=1, col=1)
 
-    # --- 2. Net Worth ---
+    # 2. Net Worth
     fig.add_trace(go.Scatter(
-        x=df['date'], y=df['net_worth'],
-        line=dict(color='#00bfff', width=2),
-        name='Net Worth'
+        x=df['date'], y=df['net_worth'], line=dict(color='#00bfff', width=2), name='Net Worth'
     ), row=2, col=1)
 
-    # --- 3. USDT Balance ---
+    # 3. USDT
     fig.add_trace(go.Scatter(
-        x=df['date'], y=df['balance_usdt'],
-        line=dict(color='#00ff00', width=1),
-        fill='tozeroy',
-        name='USDT Balance'
+        x=df['date'], y=df['balance_usdt'], line=dict(color='#00ff00', width=1), fill='tozeroy', name='USDT'
     ), row=3, col=1)
 
-    # --- 4. BTC Balance ---
+    # 4. BTC
     fig.add_trace(go.Scatter(
-        x=df['date'], y=df['shares_held'],
-        line=dict(color='#ffa500', width=1),
-        fill='tozeroy',
-        name='BTC Held'
+        x=df['date'], y=df['shares_held'], line=dict(color='#ffa500', width=1), fill='tozeroy', name='BTC'
     ), row=4, col=1)
 
-    # --- Layout Settings ---
     fig.update_layout(
         title=f"AI Bot Backtest Results",
         xaxis_rangeslider_visible=False,
@@ -168,13 +153,9 @@ def create_plot(df):
         hovermode="x unified",
         margin=dict(l=20, r=20, t=50, b=20)
     )
-
-    # Add Range Slider to the bottom chart (controls all shared axes)
     fig.update_xaxes(rangeslider=dict(visible=True), row=4, col=1)
 
     return fig.to_html(full_html=True)
-
-# --- FLASK ROUTES ---
 
 @app.route('/')
 def index():
@@ -182,11 +163,9 @@ def index():
     
     if error:
         return f"<h1>Error</h1><p>{error}</p>"
-    
     if df is None or df.empty:
         return "<h1>No trades made or data empty.</h1>"
         
-    # Generate Stats
     initial = df.iloc[0]['net_worth']
     final = df.iloc[-1]['net_worth']
     roi = ((final - initial) / initial) * 100
@@ -222,13 +201,10 @@ def index():
                         <div class="val {{ 'pos' if roi > 0 else 'neg' }}">{{ "%.2f"|format(roi) }}%</div>
                     </div>
                 </div>
-                
                 {{ chart|safe }}
             </body>
         </html>
     """, chart=html_chart, initial=initial, final=final, roi=roi)
 
 if __name__ == "__main__":
-    print("Starting Backtest Server...")
-    print("Open http://127.0.0.1:5000 in your browser.")
-    app.run(debug=True, use_reloader=True)
+    app.run(debug=True, use_reloader=False)

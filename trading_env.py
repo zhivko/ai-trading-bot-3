@@ -6,7 +6,7 @@ import hashlib
 import os
 import pickle
 
-# Import the existing calculation logic from your repo
+# Import the existing calculation logic
 from volume_profile import get_rolling_vp
 
 class TradingEnv(gym.Env):
@@ -15,17 +15,23 @@ class TradingEnv(gym.Env):
     def __init__(self, df, initial_balance=10000, lookback_window=30, vp_days=None):
         super(TradingEnv, self).__init__()
         
-        # --- DATA PREP ---
+        # --- 1. DATA HASHING (CRITICAL: Do this FIRST) ---
+        # We hash the raw input 'close' and 'volume' before any modification.
+        # This ensures we match the existing cache files on your disk.
+        data_to_hash = df[['close', 'volume']].values.tobytes()
+        self.data_hash = hashlib.md5(data_to_hash).hexdigest()
+        
+        # --- 2. DATA PREP ---
         self.raw_df = df.reset_index(drop=False) 
         self.df = self.raw_df.copy()
         
-        # 1. Standard Features (Matches your repo logic)
+        # Standard Features
         self.df['close_pct'] = self.df['close'].pct_change().fillna(0)
         
         vol_std = self.df['volume'].std()
         self.df['volume_norm'] = (self.df['volume'] - self.df['volume'].mean()) / (vol_std if vol_std != 0 else 1)
 
-        # 2. INDICATORS
+        # INDICATORS
         # RSI
         delta = self.df['close'].diff()
         gain = (delta.where(delta > 0, 0)).ewm(span=14, adjust=False).mean()
@@ -59,23 +65,18 @@ class TradingEnv(gym.Env):
         self.initial_balance = initial_balance
         self.lookback_window = lookback_window
         
-        # --- VOLUME PROFILE (Cached Wrapper) ---
+        # --- 3. VOLUME PROFILE (Cached) ---
         self.vp_days = vp_days if vp_days else [7, 30]
         self.vp_data = {}
-        
-        # Create Hash of data to ensure cache is valid for this specific CSV
-        # We hash the close and volume columns
-        data_to_hash = self.df[['close', 'volume']].values.tobytes()
-        self.data_hash = hashlib.md5(data_to_hash).hexdigest()
         
         self.cache_dir = "vp_cache"
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
 
         print(f"--- Initializing Environment (VP Days: {self.vp_days}) ---")
-        
+        print(f"--- Data Hash: {self.data_hash} ---") # Should now match 'f3894048...'
+
         for days in self.vp_days:
-            # Matches your file pattern: vp_win30_f389...pkl
             filename = f"vp_win{days}_{self.data_hash}.pkl"
             filepath = os.path.join(self.cache_dir, filename)
             
@@ -86,15 +87,13 @@ class TradingEnv(gym.Env):
                         self.vp_data[days] = pickle.load(f)
                 except Exception as e:
                     print(f"⚠️ Error loading cache {filename}: {e}. Recalculating.")
-                    # Fallback to calculation
                     self.vp_data[days] = get_rolling_vp(self.raw_df, days, bin_percent=0.005)
             else:
-                print(f"⚙️ Calculating VP for {days} days (Cache miss)...")
-                # CALL THE FUNCTION FROM YOUR REPO
+                print(f"❌ Cache miss for {filename}. (Hash mismatch or new data)")
+                print(f"⚙️ Calculating VP for {days} days...")
                 vp_result = get_rolling_vp(self.raw_df, days, bin_percent=0.005)
                 self.vp_data[days] = vp_result
                 
-                # Save to cache
                 try:
                     with open(filepath, 'wb') as f:
                         pickle.dump(vp_result, f)
@@ -102,9 +101,8 @@ class TradingEnv(gym.Env):
                 except Exception as e:
                     print(f"⚠️ Failed to save cache: {e}")
         
-        # Define Observation Space
-        # Calculate size: Market Features + Account(2) + VP((3+Bins)*NumTimeframes)
-        # Assuming get_rolling_vp returns heatmap of size 100 (check your volume_profile.py if different)
+        # Observation Space Setup
+        # Assuming heatmap size is 100 based on previous context, adjust if volume_profile.py differs
         sample_heatmap_len = len(self.vp_data[self.vp_days[0]]['heatmap'][0])
         
         market_obs_size = self.lookback_window * len(self.features)
@@ -150,17 +148,14 @@ class TradingEnv(gym.Env):
         return self._next_observation(), {}
 
     def _next_observation(self):
-        # 1. Market Features (Flattened Window)
         window_start = self.current_step - self.lookback_window
         std_features = self.market_features[window_start : self.current_step].flatten()
         
-        # 2. Account Features
         current_price = self.raw_prices[self.current_step]
         balance_norm = self.balance / self.initial_balance
         holdings_norm = (self.shares_held * current_price) / self.initial_balance
         account_features = np.array([balance_norm, holdings_norm], dtype=np.float32)
         
-        # 3. VP Features
         vp_features_list = []
         for days in self.vp_days:
             data = self.vp_data[days]
@@ -189,7 +184,7 @@ class TradingEnv(gym.Env):
         action_val = float(action[0])
         
         # --- TRADE LOGIC ---
-        # 1. ENCOURAGE LONGER TRADES: Higher Fee (0.25%)
+        # 1. ENCOURAGE LONGER TRADES: High Fee (0.25%)
         REALISTIC_FEE = 0.0025 
         trade_penalty = 0
         
@@ -231,17 +226,14 @@ class TradingEnv(gym.Env):
         cur_stoch = self.df.iloc[self.current_step]['stoch_rsi']
         indicator_bonus = 0.0
 
-        # Reward BUYING when Oversold
         if action_val > 0.2:
             if cur_rsi < 30: indicator_bonus += 0.5 
             if cur_stoch < 0.2: indicator_bonus += 0.3
-        # Reward SELLING when Overbought
         elif action_val < -0.2:
             if cur_rsi > 70: indicator_bonus += 0.5 
             if cur_stoch > 0.8: indicator_bonus += 0.3
         
         reward += indicator_bonus
-        # --- END REWARD SHAPING ---
 
         if self.phase >= 2 and step_reward < 0:
             reward -= abs(step_reward) * 5.0
@@ -260,9 +252,8 @@ class TradingEnv(gym.Env):
 
         obs = self._next_observation()
         
-        # Info for Backtesting / Visualization
+        # Info for Backtesting
         primary_day = self.vp_days[0]
-        # Safety for index
         idx_safe = min(self.current_step, len(self.vp_data[primary_day]['heatmap']) - 1)
         heatmap = self.vp_data[primary_day]['heatmap'][idx_safe]
         
@@ -273,13 +264,10 @@ class TradingEnv(gym.Env):
             "action": action_val,
             "reward": reward,
             "price": current_price,
-            "date": self.raw_df.iloc[self.current_step]['date'], # Needed for Backtest Chart
+            "date": self.raw_df.iloc[self.current_step]['date'], 
             "rsi": cur_rsi,
             "stoch_rsi": cur_stoch,
             "vp_heatmap": heatmap
         }
-
-        if self.current_step % 1000 == 0:
-            print(f"Step {self.current_step}: NetWorth={self.net_worth:.2f}")
 
         return obs, reward, terminated, truncated, info
