@@ -179,43 +179,73 @@ class TradingEnv(gym.Env):
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
-        
+
         # --- TRADE LOGIC ---
-        REALISTIC_FEE = 0.0015
+        # 1. ENCOURAGE LONGER TRADES: Increase Fee (0.15% -> 0.25%)
+        # This forces the bot to capture larger moves to cover costs.
+        REALISTIC_FEE = 0.0025
         trade_penalty = 0
-        
+
         if abs(action_val - self.prev_action) > 0.1:
             self.trade_count += 1
-        self.prev_action = action_val
-        
+            self.prev_action = action_val
+
+        # Execute Trade
         if action_val > 0.1: # Buy
             amount_to_invest = self.balance * action_val
-            if amount_to_invest > 10: 
+            if amount_to_invest > 10:
                 shares_bought = amount_to_invest / current_price
                 self.balance -= amount_to_invest
                 self.shares_held += shares_bought
                 trade_penalty = REALISTIC_FEE
             else:
-                trade_penalty = 0.01 
+                trade_penalty = 0.01
         elif action_val < -0.1: # Sell
             shares_to_sell = self.shares_held * abs(action_val)
             if shares_to_sell * current_price > 10:
                 self.balance += shares_to_sell * current_price
                 self.shares_held -= shares_to_sell
-                trade_penalty = REALISTIC_FEE 
+                trade_penalty = REALISTIC_FEE
             else:
                 trade_penalty = 0.01
 
         self.net_worth = self.balance + (self.shares_held * current_price)
         self.history_net_worth.append(self.net_worth)
-        
+
         if self.net_worth > self.max_net_worth:
             self.max_net_worth = self.net_worth
-            
+
         step_reward = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
-        reward = step_reward * 100 
+        reward = step_reward * 100
         reward -= trade_penalty
-        
+
+        # --- 2. ENCOURAGE RSI & STOCH RSI (Reward Shaping) ---
+        # Get current indicator values (They were calculated in __init__)
+        # Note: In __init__, you named them 'rsi' and 'stoch_rsi'
+        current_rsi = self.df.iloc[self.current_step]['rsi']
+        current_stoch = self.df.iloc[self.current_step]['stoch_rsi']
+
+        indicator_bonus = 0.0
+
+        # Reward BUYING when Oversold (RSI < 30 or Stoch < 0.2)
+        if action_val > 0.2:
+            if current_rsi < 30:
+                indicator_bonus += 0.5  # Strong bonus for catching the bottom
+            if current_stoch < 0.2:
+                indicator_bonus += 0.3
+
+        # Reward SELLING when Overbought (RSI > 70 or Stoch > 0.8)
+        elif action_val < -0.2:
+            if current_rsi > 70:
+                indicator_bonus += 0.5 # Strong bonus for selling the top
+            if current_stoch > 0.8:
+                indicator_bonus += 0.3
+
+        # Add the shaped reward
+        reward += indicator_bonus
+
+        # --- END NEW LOGIC ---
+
         if self.phase >= 2 and step_reward < 0:
             reward -= abs(step_reward) * 5.0
         if self.phase >= 3:
@@ -229,31 +259,31 @@ class TradingEnv(gym.Env):
         if self.current_step >= len(self.df) - 1: truncated = True
         if self.net_worth < (self.initial_balance * 0.5):
             terminated = True
-            reward = -10 
+            reward = -10
 
         obs = self._next_observation()
-        
+
         # INFO
         primary_day = self.vp_days[0]
         heatmap = self.vp_data[primary_day]['heatmap'][self.current_step]
         raw_poc = self.vp_data[primary_day]['poc'][self.current_step]
         raw_vah = self.vp_data[primary_day]['vah'][self.current_step]
         raw_val = self.vp_data[primary_day]['val'][self.current_step]
-        
+
         cur_rsi = self.df.iloc[self.current_step]['rsi']
         cur_stoch = self.df.iloc[self.current_step]['stoch_rsi']
         cur_macd = self.df.iloc[self.current_step]['macd']
         cur_macd_sig = self.df.iloc[self.current_step]['macd_signal']
-        
+
         window_size = primary_day * 24
         start_idx = max(0, self.current_step - window_size)
         window_prices = self.raw_prices[start_idx : self.current_step]
-        
+
         if len(window_prices) > 0:
             min_p, max_p = np.min(window_prices), np.max(window_prices)
         else:
             min_p, max_p = current_price, current_price
-            
+
         price_bins = np.linspace(min_p, max_p, 100).tolist() if min_p != max_p else [min_p]*100
 
         info = {
@@ -265,7 +295,7 @@ class TradingEnv(gym.Env):
             "price": current_price,
             "poc": raw_poc, "vah": raw_vah, "val": raw_val,
             "rsi": cur_rsi, "stoch_rsi": cur_stoch, "macd": cur_macd, "macd_sig": cur_macd_sig,
-            "vp_heatmap": heatmap, "vp_bins": price_bins 
+            "vp_heatmap": heatmap, "vp_bins": price_bins
         }
 
         if self.current_step % 100 == 0:

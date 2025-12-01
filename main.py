@@ -256,9 +256,26 @@ def main():
     else:
         print(f"✨ Creating NEW {args.algo.upper()} Model")
         if args.algo.lower() == 'sac':
-            model = SAC("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=tensorboard_log, learning_rate=3e-4, ent_coef='auto', device=args.device, batch_size=args.batch_size)
+            # ENCOURAGE LONGER TRADES: High Gamma
+            # gamma=0.999 tells the bot to care about the next ~1000 steps
+            hyperparams = {
+                "gamma": 0.999,
+                "learning_rate": 3e-4,
+                "ent_coef": 'auto'
+            }
+
+            model = SAC(
+                "MlpPolicy",
+                env,
+                policy_kwargs=policy_kwargs,
+                verbose=1,
+                tensorboard_log=tensorboard_log,
+                device=args.device,
+                batch_size=args.batch_size,
+                **hyperparams # <--- Added this
+            )
         else:
-            model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=tensorboard_log, device=args.device, batch_size=args.batch_size)
+            model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=tensorboard_log, device=args.device, batch_size=args.batch_size, gamma=0.999)
 
     # --- 6. CALLBACKS ---
     callbacks = []
