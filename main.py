@@ -10,14 +10,17 @@ import glob
 from stable_baselines3.common.utils import get_system_info
 
 # --- WARNING SUPPRESSION ---
+# Fixes "Training and eval env are not of the same type"
 warnings.filterwarnings("ignore", category=UserWarning, module="stable_baselines3.common.vec_env")
+# Fixes "The behavior of DataFrame concatenation..."
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 # SB3 Imports
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
-from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
+# ADDED EvalCallback here
+from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, EvalCallback
 from stable_baselines3.common.env_util import make_vec_env
 
 # WandB
@@ -94,7 +97,7 @@ def main():
             project=args.project_name,
             config=vars(args),
             name=run_name,
-            sync_tensorboard=True, # This manages the step count automatically
+            sync_tensorboard=True, # Handles steps automatically
             monitor_gym=True
         )
     
@@ -102,36 +105,49 @@ def main():
     df = load_and_process_data(args.data_path)
     
     train_df = df.copy()
+    test_df = None
+    
     if args.test_split:
         mask = df['date'] < args.test_split
         train_df = df[mask].reset_index(drop=True)
-        print(f"Split Data: Train ({len(train_df)}) | Test ({len(df) - len(train_df)})")
+        test_df = df[~mask].reset_index(drop=True)
+        print(f"Split Data: Train ({len(train_df)}) | Test ({len(test_df)})")
     
-    # 3. Create Vectorized Environment
+    # 3. Create Vectorized Environment (Training)
     env_kwargs = {
-        'df': train_df,
         'initial_balance': args.initial_balance,
         'vp_days': args.vp_days,
         'vp_bins': args.vp_bins
     }
     
-    print(f"Creating {args.n_envs} parallel environments...")
+    # Copy kwargs and add the specific dataframe
+    train_env_kwargs = env_kwargs.copy()
+    train_env_kwargs['df'] = train_df
     
-    # Use SubprocVecEnv for true parallelism
+    print(f"Creating {args.n_envs} parallel environments for Training...")
     vec_env_cls = SubprocVecEnv if args.n_envs > 1 else DummyVecEnv
     
     env = make_vec_env(
         TradingEnv, 
         n_envs=args.n_envs, 
-        env_kwargs=env_kwargs,
+        env_kwargs=train_env_kwargs,
         vec_env_cls=vec_env_cls,
         monitor_dir="./logs/"
     )
     
-    # 4. Create Single Instance for Saliency
-    dummy_saliency_env = TradingEnv(**env_kwargs)
+    # 4. Create Evaluation Environment (Single Thread)
+    eval_env = None
+    if test_df is not None and not test_df.empty:
+        print("Creating Evaluation environment...")
+        eval_env_kwargs = env_kwargs.copy()
+        eval_env_kwargs['df'] = test_df
+        # Eval env must be single-threaded for accurate results
+        eval_env = make_vec_env(TradingEnv, n_envs=1, env_kwargs=eval_env_kwargs)
 
-    # 5. Model Setup
+    # 5. Create Single Instance for Saliency
+    dummy_saliency_env = TradingEnv(**train_env_kwargs)
+
+    # 6. Model Setup
     policy_kwargs = dict(net_arch=[512, 512, 512]) if args.algo == 'sac' else dict(net_arch=[dict(pi=[256, 256], vf=[256, 256])])
     
     tensorboard_log = f"./{args.algo}_tb/"
@@ -141,17 +157,15 @@ def main():
     if args.resume:
         load_path = args.model_path
         if load_path is None:
-            # Check for best model
             default_best = f"logs/best_model.zip"
             if os.path.exists(default_best):
                 load_path = default_best
-            # Fallback: Check for latest checkpoint
             else:
                 chk_dir = f"checkpoints/{args.algo}_{args.pair}"
                 if os.path.exists(chk_dir):
                     files = glob.glob(f"{chk_dir}/*.zip")
                     if files:
-                        load_path = max(files, key=os.path.getctime) # Latest file
+                        load_path = max(files, key=os.path.getctime)
         
         if load_path and os.path.exists(load_path):
             print(f"📥 RESUMING: Loading model from {load_path}")
@@ -206,15 +220,13 @@ def main():
     sysinfo = get_system_info()
     print("System Information:")
     if torch.cuda.is_available():
-        print(f"- GPU Model: {torch.cuda.get_device_name()}")
         sysinfo[0]['GPU'] = torch.cuda.get_device_name()
-
     for key, value in sorted(sysinfo[0].items()):
         print(f"- {key}: {value}")
 
-    # 6. Callbacks
+    # 7. Callbacks
     
-    # Checkpoint Callback (Saves every 50k steps)
+    # Checkpoint Callback
     checkpoint_path = f"checkpoints/{args.algo}_{args.pair}"
     checkpoint_callback = CheckpointCallback(
         save_freq=50000, 
@@ -223,11 +235,28 @@ def main():
     )
 
     callbacks = [
-        SaveOnBestTrainingRewardCallback(check_freq=10000, log_dir="./logs/"),
         TensorboardCallback(),
         FeatureSaliencyCallback(dummy_saliency_env, check_freq=50000),
         checkpoint_callback
     ]
+
+    # --- ADDED: Evaluation Callback (Fixes empty Evaluation charts) ---
+    if eval_env is not None:
+        print("✅ EvalCallback attached. Validation will run every 20,000 steps.")
+        eval_callback = EvalCallback(
+            eval_env,
+            best_model_save_path='./logs/',
+            log_path='./logs/',
+            eval_freq=20000, 
+            n_eval_episodes=5,
+            deterministic=True,
+            render=False,
+            verbose=1
+        )
+        callbacks.append(eval_callback)
+    else:
+        # Fallback if no test split provided
+        callbacks.append(SaveOnBestTrainingRewardCallback(check_freq=10000, log_dir="./logs/"))
     
     if args.wandb:
         callbacks.append(WandbCallback(
@@ -238,14 +267,14 @@ def main():
         
     callback_list = CallbackList(callbacks)
     
-    # 7. Learn
+    # 8. Learn
     print(f"🚀 Starting Training for {args.total_timesteps} steps...")
     try:
         model.learn(total_timesteps=args.total_timesteps, callback=callback_list, progress_bar=True)
     except KeyboardInterrupt:
         print("🛑 Training interrupted. Saving...")
         
-    # 8. Save
+    # 9. Save
     final_path = f"models/{args.algo}_{args.pair}_final"
     model.save(final_path)
     print(f"✅ Model saved to {final_path}")

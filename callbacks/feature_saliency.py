@@ -7,9 +7,6 @@ from captum.attr import IntegratedGradients
 
 class FeatureSaliencyCallback(BaseCallback):
     def __init__(self, dummy_env, verbose=0, check_freq=50000):
-        """
-        :param dummy_env: A SINGLE instance of TradingEnv (not VecEnv) used to get feature names.
-        """
         super(FeatureSaliencyCallback, self).__init__(verbose)
         self.check_freq = check_freq
         self.dummy_env = dummy_env 
@@ -35,7 +32,7 @@ class FeatureSaliencyCallback(BaseCallback):
             obs_tensor = torch.tensor(obs_single, dtype=torch.float32).to(self.model.device)
             obs_tensor.requires_grad_()
 
-            # 2. Define Forward Function (Robust Architecture Check)
+            # 2. Define Forward Function
             def forward_func(x):
                 # --- SAC LOGIC ---
                 if hasattr(self.model.policy, 'actor'):
@@ -59,7 +56,6 @@ class FeatureSaliencyCallback(BaseCallback):
 
             # Test function
             if forward_func(obs_tensor) is None:
-                print("⚠️ Saliency: Could not determine model architecture. Skipping.")
                 return
 
             # 3. Calculate Integrated Gradients
@@ -88,6 +84,7 @@ class FeatureSaliencyCallback(BaseCallback):
                 elif "VP_" in name and "Dist" in name: 
                     group = "VP Levels"
                 elif "_t-" in name: 
+                    # Clean up windowed names
                     group = name.split('_t-')[0].replace('_norm', '') + " (Window)"
                 else: 
                     group = name.replace('_norm', '')
