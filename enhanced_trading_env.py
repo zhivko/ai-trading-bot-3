@@ -10,7 +10,7 @@ class EnhancedTradingEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
     def __init__(self, df, initial_balance=10000, lookback_window=50, vp_days=None, vp_bins=40,
-                 buy_threshold=0.2, sell_threshold=-0.2, precalculated_vp=None, trading_fee_multiplier=0.0025):
+                 buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075):
         super(EnhancedTradingEnv, self).__init__()
         
         # --- CONFIGURATION ---
@@ -80,7 +80,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # EMA 50 for trend
         self.df['ema_50'] = self.df['close'].ewm(span=50, adjust=False).mean()
-        self.df['trend_ema50'] = (self.df['close'] - self.df['ema_50']) / self.df['ema_50']
+        self.df['trend_ema50'] = ((self.df['close'] - self.df['ema_50']) / self.df['ema_50']) * 20.0
 
         self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema50']
         self.df.fillna(0, inplace=True)
@@ -200,20 +200,23 @@ class EnhancedTradingEnv(gym.Env):
         # --- CONFIGURABLE THRESHOLDS ---
         if action_val > self.buy_threshold: # Buy
             amount_to_invest = self.balance * action_val
-            if amount_to_invest > 10: 
+            if amount_to_invest > 10:
                 shares_bought = amount_to_invest / current_price
-                self.balance -= amount_to_invest
+                fee = amount_to_invest * self.trading_fee_multiplier
+                self.balance -= amount_to_invest + fee
                 self.shares_held += shares_bought
-                trade_penalty = self.trading_fee_multiplier
+                trade_penalty = fee
             else:
-                trade_penalty = 0.01 
+                trade_penalty = 0.01
         
         elif action_val < self.sell_threshold: # Sell
             shares_to_sell = self.shares_held * abs(action_val)
             if shares_to_sell * current_price > 10:
-                self.balance += shares_to_sell * current_price
+                trade_value = shares_to_sell * current_price
+                fee = trade_value * self.trading_fee_multiplier
+                self.balance += trade_value - fee
                 self.shares_held -= shares_to_sell
-                trade_penalty = self.trading_fee_multiplier
+                trade_penalty = fee
             else:
                 trade_penalty = 0.01
 
@@ -228,16 +231,6 @@ class EnhancedTradingEnv(gym.Env):
         reward -= trade_penalty
         reward -= stability_penalty # <--- Add this
 
-        # --- NEW: Action Stability Penalty ---
-        # Punish the agent slightly for taking ANY action that isn't holding
-        # This reduces "noise trading"
-
-        trade_occurred = abs(self.shares_held - self.prev_shares_held) > 0
-
-        if trade_occurred:
-            # A small fixed penalty (e.g., equivalent to losing 0.05% portfolio)
-            churn_penalty = -0.0005 * self.balance
-            reward += churn_penalty
 
         # --- REWARD SHAPING (RSI/STOCH) ---
         cur_rsi = self.df.iloc[self.current_step]['rsi']
