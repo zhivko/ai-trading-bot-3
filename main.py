@@ -26,8 +26,12 @@ from wandb.integration.sb3 import WandbCallback
 
 # Local Imports
 from enhanced_trading_env import EnhancedTradingEnv
-from callbacks.base_callbacks import SaveOnBestTrainingRewardCallback, TensorboardCallback
+from callbacks.base_callbacks import SaveOnBestTrainingRewardCallback, TensorboardCallback, CustomEvalCallback
 from callbacks.feature_saliency import FeatureSaliencyCallback
+
+# --- WARNING SUPPRESSION ---
+warnings.filterwarnings("ignore", category=UserWarning, module="stable_baselines3.common.vec_env")
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 # Create directories
 os.makedirs("models", exist_ok=True)
@@ -196,6 +200,10 @@ def main():
         if os.path.exists(model_dir):
             shutil.rmtree(model_dir)     
 
+        #remove /{algo}_tb directory if it exists
+        tb_dir = f"{args.algo}_tb"
+        if os.path.exists(tb_dir):
+            shutil.rmtree(tb_dir)
 
     # --- FRESH START LOGIC ---
     if model is None:
@@ -252,7 +260,7 @@ def main():
     # A. Checkpoint (Saves every 50k steps)
     checkpoint_path = f"checkpoints/{args.algo}_{args.pair}"
     checkpoint_callback = CheckpointCallback(
-        save_freq=50000, 
+        save_freq=20000, 
         save_path=checkpoint_path,
         name_prefix=f"{args.algo}_vp{args.vp_bins}"
     )
@@ -272,11 +280,11 @@ def main():
     if eval_env is not None:
         print("✅ EvalCallback attached. Validation will run every 20,000 steps.")
         print("   -> Best performing model on TEST data will be saved as 'logs/best_model.zip'")
-        eval_callback = EvalCallback(
+        eval_callback = CustomEvalCallback(
             eval_env,
             best_model_save_path='./logs/',
             log_path='./logs/',
-            eval_freq=20000, 
+            eval_freq=20000,
             n_eval_episodes=5,
             deterministic=True,
             render=False,
@@ -286,7 +294,7 @@ def main():
     
     if args.wandb:
         callbacks.append(WandbCallback(
-            gradient_save_freq=10000,
+            gradient_save_freq=20000,
             model_save_path=f"models/{args.algo}_{args.pair}",
             verbose=2
         ))
@@ -299,7 +307,7 @@ def main():
         model.learn(total_timesteps=args.total_timesteps, callback=callback_list, progress_bar=True)
     except KeyboardInterrupt:
         print("🛑 Training interrupted. Saving...")
-        
+        model.save(f"models/{args.algo}_{args.pair}_interrupted")
     # 9. Save Final
     final_path = f"models/{args.algo}_{args.pair}_final"
     model.save(final_path)

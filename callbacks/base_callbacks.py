@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import wandb # Import wandb
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from stable_baselines3.common.results_plotter import load_results, ts2xy
 
 class SaveOnBestTrainingRewardCallback(BaseCallback):
@@ -75,8 +75,68 @@ class TensorboardCallback(BaseCallback):
             self.logger.record("action/action_mean", val)
             metrics["action/action_mean"] = val
 
+        # Log global_step
+        metrics["global_step"] = self.num_timesteps
+
         # EXPLICITLY LOG TO WANDB (Fixes missing charts)
         if wandb.run is not None and metrics:
             wandb.log(metrics)
 
         return True
+
+
+class CustomEvalCallback(EvalCallback):
+    """
+    Custom EvalCallback that logs evaluation metrics including portfolio (networth) to WandB.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.callback_on_new_best = None  # Avoid init_callback error by not setting to function
+        self.best_mean_portfolio = -np.inf
+        self.best_std_portfolio = 0
+
+    def _evaluate_with_portfolio(self):
+        portfolio_values = []
+        episode_rewards = []
+        for _ in range(self.n_eval_episodes):
+            obs = self.eval_env.reset()
+            done = False
+            episode_reward = 0
+            while not done:
+                action, _ = self.model.predict(obs, deterministic=self.deterministic)
+                obs, reward, done, info = self.eval_env.step(action)
+                episode_reward += reward
+            episode_rewards.append(episode_reward)
+            portfolio_values.append(info.get('portfolio_value', episode_reward))  # fallback to reward if no portfolio_value
+        mean_reward = np.mean(episode_rewards)
+        std_reward = np.std(episode_rewards)
+        mean_portfolio = np.mean(portfolio_values)
+        std_portfolio = np.std(portfolio_values)
+        return mean_reward, std_reward, mean_portfolio, std_portfolio
+
+    def _on_step(self) -> bool:
+        if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+            mean_reward, std_reward, mean_portfolio, std_portfolio = self._evaluate_with_portfolio()
+            if self.log_path is not None:
+                self.logger.record("eval/mean_reward", mean_reward)
+                self.logger.record("eval/std_reward", std_reward)
+                self.logger.record("eval/mean_portfolio", mean_portfolio)
+                self.logger.record("eval/std_portfolio", std_portfolio)
+            if mean_reward > self.best_mean_reward:
+                self.best_mean_reward = mean_reward
+                self.best_std_reward = std_reward
+                self.best_mean_portfolio = mean_portfolio
+                self.best_std_portfolio = std_portfolio
+                if self.best_model_save_path is not None:
+                    self.model.save(os.path.join(self.best_model_save_path, 'best_model'))
+                self._log_best_to_wandb(mean_reward, std_reward)
+        return True
+
+    def _log_best_to_wandb(self, mean_reward, std_reward):
+        if wandb.run is not None:
+            wandb.log({
+                "best_eval/mean_reward": mean_reward,
+                "best_eval/std_reward": std_reward,
+                "best_eval/mean_portfolio": self.best_mean_portfolio,
+                "best_eval/std_portfolio": self.best_std_portfolio
+            }, step=self.num_timesteps)
