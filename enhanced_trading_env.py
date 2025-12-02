@@ -80,7 +80,13 @@ class EnhancedTradingEnv(gym.Env):
 
         # EMA 50 for trend
         self.df['ema_50'] = self.df['close'].ewm(span=50, adjust=False).mean()
-        self.df['trend_ema50'] = ((self.df['close'] - self.df['ema_50']) / self.df['ema_50']) * 20.0
+
+        # --- FIX: Aggressive Trend Scaling ---
+        # A 1% difference (0.01) is huge for Bitcoin.
+        # We want 1% to look like 0.5 to the network.
+        # Multiply by 50.
+        raw_trend = (self.df['close'] - self.df['ema_50']) / self.df['ema_50']
+        self.df['trend_ema50'] = np.clip(raw_trend * 50.0, -1.0, 1.0)
 
         self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema50']
         self.df.fillna(0, inplace=True)
@@ -155,12 +161,14 @@ class EnhancedTradingEnv(gym.Env):
             heatmap = data['heatmap'][self.current_step].astype(np.float32)
 
             # --- FIX: Normalize Heatmap ---
-            # Divide by the maximum volume in this specific profile.
-            # This makes the "Point of Control" (highest volume node) = 1.0
-            # And everything else between 0.0 and 1.0
-            max_val = np.max(heatmap)
-            if max_val > 0:
-                heatmap = heatmap / max_val
+            # Normalize by SUM (Probability Distribution)
+            # This ensures the total signal strength of the heatmap is exactly 1.0.
+            # It puts the heatmap on equal footing with RSI/EMA.
+            total_volume = np.sum(heatmap)
+            if total_volume > 0:
+                heatmap = heatmap / total_volume
+            else:
+                heatmap = np.zeros_like(heatmap)
 
             if current_price > 0 and poc > 0:
                 dist_poc = (poc - current_price) / current_price
@@ -174,6 +182,30 @@ class EnhancedTradingEnv(gym.Env):
             
         vp_features = np.array(vp_features_list, dtype=np.float32)
         full_obs = np.concatenate((std_features, account_features, vp_features))
+
+        # --- DEBUG LOGGING ---
+        # Print stats every 5000 steps to avoid spamming, but see what's happening
+        if self.current_step % 5000 == 0:
+            print(f"\n[DEBUG Step {self.current_step}] Feature Magnitudes:")
+
+            # 1. Check Volume Magnitude
+            vol_val = self.df.iloc[self.current_step]['volume_norm']
+            print(f"  > Volume Norm Input:   {vol_val:.5f}  (Should be 0.0 - 1.0)")
+
+            # 2. Check Trend Magnitude (The likely culprit)
+            trend_val = self.df.iloc[self.current_step]['trend_ema50']
+            print(f"  > Trend EMA Input:     {trend_val:.5f}  (Now scaled and clipped -1 to 1)")
+
+            # 3. Check VP Heatmap Magnitude
+            # Access the first available VP day key
+            first_day = self.vp_days[0]
+            vp_sample = self.vp_data[first_day]['heatmap'][self.current_step]
+            print(f"  > VP Heatmap Max:      {np.max(vp_sample):.2f} (Now normalized by sum, max <=1.0)")
+
+            # 4. Check Stoch RSI
+            stoch = self.df.iloc[self.current_step]['stoch_rsi_norm']
+            print(f"  > Stoch RSI Input:     {stoch:.5f}")
+
         return full_obs.astype(np.float32)
 
     def step(self, action):
