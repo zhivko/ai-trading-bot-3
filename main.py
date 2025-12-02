@@ -159,6 +159,25 @@ def main():
                 model = PPO.load(load_path, env=env, print_system_info=True, device=args.device, tensorboard_log=tensorboard_log)
         else:
              print("⚠️ Resume requested but no model found. Starting fresh.")
+    else:
+        # delete models/{algo}_{pair} directory if it exists
+        model_dir = f"models/{args.algo}_{args.pair}"
+
+        if os.path.exists(model_dir):
+            shutil.rmtree(model_dir)
+            print(f"🧹 Deleted old model directory: {model_dir}")
+
+        # delete {algo}_tb/ directory if it exists
+        if os.path.exists(tensorboard_log):
+            shutil.rmtree(tensorboard_log)
+            print(f"🧹 Deleted old tensorboard logs: {tensorboard_log}")
+
+        # delete checkpoints/{algo}_{pair} directory if it exists
+        checkpoint_dir = f"checkpoints/{args.algo}_{args.pair}"
+        if os.path.exists(checkpoint_dir):
+            shutil.rmtree(checkpoint_dir)
+            print(f"🧹 Deleted old checkpoints: {checkpoint_dir}"   )
+
 
     # --- CLEANUP FOR FRESH START ---
     if model is None:
