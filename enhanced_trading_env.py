@@ -43,11 +43,18 @@ class EnhancedTradingEnv(gym.Env):
         # Standard Features
         self.df['close_pct'] = self.df['close'].pct_change().fillna(0)
 
-        # Use Log Scaling for Volume to compress huge spikes and make changes relative
-        self.df['volume_norm'] = np.log1p(self.df['volume'])
-        # Optional: MinMax scale the log values to 0-1 range for better NN stability
-        v_min, v_max = self.df['volume_norm'].min(), self.df['volume_norm'].max()
-        self.df['volume_norm'] = (self.df['volume_norm'] - v_min) / (v_max - v_min + 1e-8)
+        # --- FIX: Rolling Max Normalization ---
+        # Instead of Z-score or simple Log, we scale volume relative to the last 100 steps.
+        # This ensures the value is almost always between 0.0 and 1.0
+
+        # 1. Get Rolling Max Volume (Window = 100 or similar to your observation window)
+        vol_rolling_max = self.df['volume'].rolling(window=100, min_periods=1).max()
+
+        # 2. Divide current volume by rolling max (Safe division)
+        self.df['volume_norm'] = self.df['volume'] / (vol_rolling_max + 1e-8)
+
+        # 3. Fill NaNs just in case
+        self.df['volume_norm'] = self.df['volume_norm'].fillna(0)
 
         # Indicators
         delta = self.df['close'].diff()
@@ -145,15 +152,23 @@ class EnhancedTradingEnv(gym.Env):
             poc = data['poc'][self.current_step]
             vah = data['vah'][self.current_step]
             val = data['val'][self.current_step]
-            heatmap = data['heatmap'][self.current_step]
-            
+            heatmap = data['heatmap'][self.current_step].astype(np.float32)
+
+            # --- FIX: Normalize Heatmap ---
+            # Divide by the maximum volume in this specific profile.
+            # This makes the "Point of Control" (highest volume node) = 1.0
+            # And everything else between 0.0 and 1.0
+            max_val = np.max(heatmap)
+            if max_val > 0:
+                heatmap = heatmap / max_val
+
             if current_price > 0 and poc > 0:
                 dist_poc = (poc - current_price) / current_price
                 dist_vah = (vah - current_price) / current_price
                 dist_val = (val - current_price) / current_price
             else:
                 dist_poc, dist_vah, dist_val = 0, 0, 0
-            
+
             vp_features_list.extend([dist_poc, dist_vah, dist_val])
             vp_features_list.extend(heatmap)
             
@@ -173,7 +188,7 @@ class EnhancedTradingEnv(gym.Env):
         action_delta = abs(action_val - self.prev_action)
 
         # Define stability penalty (e.g. 0.05% per unit of change)
-        stability_penalty = action_delta * 0.0005 * self.balance
+        stability_penalty = action_delta * 0.00001 * self.balance
 
         # --- TRADE LOGIC ---
         trade_penalty = 0
