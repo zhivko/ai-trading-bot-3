@@ -6,6 +6,7 @@ import torch
 import warnings
 import sys
 import shutil
+from dotenv import load_dotenv
 from stable_baselines3.common.utils import get_system_info
 
 # --- WARNING SUPPRESSION ---
@@ -22,6 +23,7 @@ from stable_baselines3.common.env_util import make_vec_env
 # WandB
 import wandb
 from wandb.integration.sb3 import WandbCallback
+wandb.require("core")
 
 # Local Imports
 from trading_env import TradingEnv
@@ -84,10 +86,12 @@ def load_and_process_data(csv_path):
     return df
 
 def main():
+    load_dotenv()
     args = parse_args()
     
     # 1. Initialize WandB
     if args.wandb:
+        wandb.login(key=os.getenv("WANDB_API_KEY"))
         run_name = f"{args.algo}_{args.pair}_VP{args.vp_bins}_Envs{args.n_envs}"
         wandb.init(
             project=args.project_name,
@@ -221,12 +225,7 @@ def main():
                 device=args.device
             )
         
-    sysinfo = get_system_info()
-    print("System Information:")
-    if torch.cuda.is_available():
-        print(f"- GPU Model: {torch.cuda.get_device_name()}")
-    for key, value in sysinfo.items():
-        print(f"- {key}: {value}")
+
 
     # 6. Callbacks
     
@@ -251,9 +250,16 @@ def main():
             model_save_path=f"models/{args.algo}_{args.pair}",
             verbose=2
         ))
-        
     callback_list = CallbackList(callbacks)
-    
+
+    sysinfo = get_system_info()
+    if torch.cuda.is_available():
+        sysinfo[0]['GPU Model'] = torch.cuda.get_device_name()
+    print("System Information:")
+
+    for key, value in sorted(sysinfo[0].items()):
+        print(f"- {key}: {value}")
+
     # 7. Learn
     print(f"🚀 Starting Training for {args.total_timesteps} steps...")
     try:

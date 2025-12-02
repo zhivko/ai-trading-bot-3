@@ -18,5 +18,6 @@ plotly==5.18.0
 flask
 flask-socketio
 python-socketio
+python-dotenv
 
 captum
