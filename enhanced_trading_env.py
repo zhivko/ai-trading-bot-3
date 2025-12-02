@@ -42,9 +42,12 @@ class EnhancedTradingEnv(gym.Env):
         
         # Standard Features
         self.df['close_pct'] = self.df['close'].pct_change().fillna(0)
-        
-        vol_std = self.df['volume'].std()
-        self.df['volume_norm'] = (self.df['volume'] - self.df['volume'].mean()) / (vol_std if vol_std != 0 else 1)
+
+        # Use Log Scaling for Volume to compress huge spikes and make changes relative
+        self.df['volume_norm'] = np.log1p(self.df['volume'])
+        # Optional: MinMax scale the log values to 0-1 range for better NN stability
+        v_min, v_max = self.df['volume_norm'].min(), self.df['volume_norm'].max()
+        self.df['volume_norm'] = (self.df['volume_norm'] - v_min) / (v_max - v_min + 1e-8)
 
         # Indicators
         delta = self.df['close'].diff()
@@ -114,6 +117,7 @@ class EnhancedTradingEnv(gym.Env):
         self.net_worth = self.initial_balance
         self.prev_net_worth = self.initial_balance
         self.shares_held = 0
+        self.prev_shares_held = 0
         self.max_net_worth = self.initial_balance
         self.trade_count = 0
         self.prev_action = 0
@@ -161,7 +165,16 @@ class EnhancedTradingEnv(gym.Env):
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
-        
+
+        # --- NEW: Calculate Action Delta ---
+        # How much did the agent change its mind?
+        # If prev was Buying (0.8) and now Selling (-0.8), delta is 1.6 (Huge flip)
+        # If prev was Buying (0.8) and now Holding (0.1), delta is 0.7
+        action_delta = abs(action_val - self.prev_action)
+
+        # Define stability penalty (e.g. 0.05% per unit of change)
+        stability_penalty = action_delta * 0.0005 * self.balance
+
         # --- TRADE LOGIC ---
         trade_penalty = 0
         
@@ -191,13 +204,25 @@ class EnhancedTradingEnv(gym.Env):
 
         self.net_worth = self.balance + (self.shares_held * current_price)
         self.history_net_worth.append(self.net_worth)
-        
+
         if self.net_worth > self.max_net_worth:
             self.max_net_worth = self.net_worth
-            
+
         step_reward = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
-        reward = step_reward * 100 
+        reward = step_reward * 100
         reward -= trade_penalty
+        reward -= stability_penalty # <--- Add this
+
+        # --- NEW: Action Stability Penalty ---
+        # Punish the agent slightly for taking ANY action that isn't holding
+        # This reduces "noise trading"
+
+        trade_occurred = abs(self.shares_held - self.prev_shares_held) > 0
+
+        if trade_occurred:
+            # A small fixed penalty (e.g., equivalent to losing 0.05% portfolio)
+            churn_penalty = -0.0005 * self.balance
+            reward += churn_penalty
 
         # --- REWARD SHAPING (RSI/STOCH) ---
         cur_rsi = self.df.iloc[self.current_step]['rsi']
@@ -238,13 +263,15 @@ class EnhancedTradingEnv(gym.Env):
         reward += alignment_bonus
 
         self.prev_net_worth = self.net_worth
+        self.prev_shares_held = self.shares_held
+        self.prev_action = action_val
 
         terminated = False
         truncated = False
         if self.current_step >= len(self.df) - 1: truncated = True
         if self.net_worth < (self.initial_balance * 0.5):
             terminated = True
-            reward = -10 
+            reward = -10
 
         obs = self._next_observation()
         

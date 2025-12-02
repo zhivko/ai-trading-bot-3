@@ -52,8 +52,8 @@ def parse_args():
     parser.add_argument("--n-envs", type=int, default=12, help="Number of parallel environments (Threads)")
     
     # Thresholds
-    parser.add_argument("--buy-threshold", type=float, default=0.2, help="Threshold to Buy (> X)")
-    parser.add_argument("--sell-threshold", type=float, default=-0.2, help="Threshold to Sell (< X)")
+    parser.add_argument("--buy-threshold", type=float, default=0.5, help="Threshold to Buy (> X)")
+    parser.add_argument("--sell-threshold", type=float, default=-0.5, help="Threshold to Sell (< X)")
     
     # Training
     parser.add_argument("--algo", type=str, default="ppo", choices=["ppo", "sac"], help="RL Algorithm")
@@ -297,7 +297,7 @@ def main():
             best_model_save_path='./logs/',
             log_path='./logs/',
             eval_freq=20000,
-            n_eval_episodes=5,
+            n_eval_episodes=1,
             deterministic=True,
             render=False,
             verbose=1
