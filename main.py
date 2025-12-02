@@ -9,14 +9,14 @@ import shutil
 import glob
 from stable_baselines3.common.utils import get_system_info
 
-# Fixes "The behavior of DataFrame concatenation..."
+# --- WARNING SUPPRESSION ---
+warnings.filterwarnings("ignore", category=UserWarning, module="stable_baselines3.common.vec_env")
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 # SB3 Imports
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
-# ADDED EvalCallback here
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, EvalCallback
 from stable_baselines3.common.env_util import make_vec_env
 
@@ -25,7 +25,7 @@ import wandb
 from wandb.integration.sb3 import WandbCallback
 
 # Local Imports
-from trading_env import TradingEnv
+from enhanced_trading_env import EnhancedTradingEnv
 from callbacks.base_callbacks import SaveOnBestTrainingRewardCallback, TensorboardCallback
 from callbacks.feature_saliency import FeatureSaliencyCallback
 
@@ -46,6 +46,10 @@ def parse_args():
     parser.add_argument("--vp-bins", type=int, default=40, help="Number of bins for VP Heatmap")
     parser.add_argument("--initial-balance", type=float, default=1000, help="Starting cash")
     parser.add_argument("--n-envs", type=int, default=14, help="Number of parallel environments (Threads)")
+    
+    # Thresholds
+    parser.add_argument("--buy-threshold", type=float, default=0.2, help="Threshold to Buy (> X)")
+    parser.add_argument("--sell-threshold", type=float, default=-0.2, help="Threshold to Sell (< X)")
     
     # Training
     parser.add_argument("--algo", type=str, default="ppo", choices=["ppo", "sac"], help="RL Algorithm")
@@ -94,7 +98,7 @@ def main():
             project=args.project_name,
             config=vars(args),
             name=run_name,
-            sync_tensorboard=True, # Handles steps automatically
+            sync_tensorboard=True, 
             monitor_gym=True
         )
     
@@ -114,35 +118,38 @@ def main():
     env_kwargs = {
         'initial_balance': args.initial_balance,
         'vp_days': args.vp_days,
-        'vp_bins': args.vp_bins
+        'vp_bins': args.vp_bins,
+        'buy_threshold': args.buy_threshold,
+        'sell_threshold': args.sell_threshold
     }
     
-    # Copy kwargs and add the specific dataframe
     train_env_kwargs = env_kwargs.copy()
     train_env_kwargs['df'] = train_df
     
-    print(f"Creating {args.n_envs} parallel environments for Training...")
+    print(f"Creating {args.n_envs} parallel environments (EnhancedTradingEnv)...")
     vec_env_cls = SubprocVecEnv if args.n_envs > 1 else DummyVecEnv
     
     env = make_vec_env(
-        TradingEnv, 
+        EnhancedTradingEnv, 
         n_envs=args.n_envs, 
         env_kwargs=train_env_kwargs,
         vec_env_cls=vec_env_cls,
         monitor_dir="./logs/"
     )
     
-    # 4. Create Evaluation Environment (Single Thread)
+    # 4. Create Evaluation Environment
     eval_env = None
     if test_df is not None and not test_df.empty:
         print("Creating Evaluation environment...")
         eval_env_kwargs = env_kwargs.copy()
         eval_env_kwargs['df'] = test_df
-        # Eval env using same vec_env_cls as training for consistency
-        eval_env = make_vec_env(TradingEnv, n_envs=1, env_kwargs=eval_env_kwargs, vec_env_cls=vec_env_cls)
+        eval_env = make_vec_env(EnhancedTradingEnv, n_envs=1, env_kwargs=eval_env_kwargs)
+    else:
+        print("⚠️ WARNING: Test dataset is EMPTY. Evaluation charts will remain blank.")
+        print(f"   Please check your --test-split date ({args.test_split}) vs your CSV data range.")
 
     # 5. Create Single Instance for Saliency
-    dummy_saliency_env = TradingEnv(**train_env_kwargs)
+    dummy_saliency_env = EnhancedTradingEnv(**train_env_kwargs)
 
     # 6. Model Setup
     policy_kwargs = dict(net_arch=[512, 512, 512]) if args.algo == 'sac' else dict(net_arch=[dict(pi=[256, 256], vf=[256, 256])])
@@ -154,9 +161,11 @@ def main():
     if args.resume:
         load_path = args.model_path
         if load_path is None:
+            # 1. Try Best Model
             default_best = f"logs/best_model.zip"
             if os.path.exists(default_best):
                 load_path = default_best
+            # 2. Try Latest Checkpoint
             else:
                 chk_dir = f"checkpoints/{args.algo}_{args.pair}"
                 if os.path.exists(chk_dir):
@@ -172,6 +181,21 @@ def main():
                 model = PPO.load(load_path, env=env, print_system_info=True, device=args.device, tensorboard_log=tensorboard_log)
         else:
              print("⚠️ Resume requested but no model found. Starting fresh.")
+    else:
+        # delete directory for {algo}_tb
+        if os.path.exists(tensorboard_log):
+            shutil.rmtree(tensorboard_log)  
+
+        # remove also checkpoints for this algo/pair to avoid confusion
+        chk_dir = f"checkpoints/{args.algo}_{args.pair}"
+        if os.path.exists(chk_dir):
+            shutil.rmtree(chk_dir)
+
+        # remove also models for this algo/pair to avoid confusion
+        model_dir = f"models/{args.algo}_{args.pair}"
+        if os.path.exists(model_dir):
+            shutil.rmtree(model_dir)     
+
 
     # --- FRESH START LOGIC ---
     if model is None:
@@ -213,33 +237,19 @@ def main():
                 tensorboard_log=tensorboard_log,
                 device=args.device
             )
-    else:
-        # delete directory for {algo}_tb
-        if os.path.exists(tensorboard_log):
-            shutil.rmtree(tensorboard_log)  
-
-        # remove also checkpoints for this algo/pair to avoid confusion
-        chk_dir = f"checkpoints/{args.algo}_{args.pair}"
-        if os.path.exists(chk_dir):
-            shutil.rmtree(chk_dir)
-
-        # remove also models for this algo/pair to avoid confusion
-        model_dir = f"models/{args.algo}_{args.pair}"
-        if os.path.exists(model_dir):
-            shutil.rmtree(model_dir)        
-
-
-        
+    
+    # --- RESTORED SYSTEM INFO BLOCK ---
     sysinfo = get_system_info()
     print("System Information:")
     if torch.cuda.is_available():
         sysinfo[0]['GPU'] = torch.cuda.get_device_name()
     for key, value in sorted(sysinfo[0].items()):
         print(f"- {key}: {value}")
+    # ----------------------------------
 
-    # 7. Callbacks
+    # 7. Callbacks Setup
     
-    # Checkpoint Callback
+    # A. Checkpoint (Saves every 50k steps)
     checkpoint_path = f"checkpoints/{args.algo}_{args.pair}"
     checkpoint_callback = CheckpointCallback(
         save_freq=50000, 
@@ -247,15 +257,21 @@ def main():
         name_prefix=f"{args.algo}_vp{args.vp_bins}"
     )
 
+    # B. Best Training Reward (Saved separately)
+    train_reward_callback = SaveOnBestTrainingRewardCallback(check_freq=10000, log_dir="./logs/")
+    train_reward_callback.save_path = os.path.join("./logs/", "best_training_model")
+
     callbacks = [
         TensorboardCallback(),
         FeatureSaliencyCallback(dummy_saliency_env, check_freq=50000),
-        checkpoint_callback
+        checkpoint_callback,
+        train_reward_callback
     ]
 
-    # --- ADDED: Evaluation Callback (Fixes empty Evaluation charts) ---
+    # C. Evaluation Callback
     if eval_env is not None:
         print("✅ EvalCallback attached. Validation will run every 20,000 steps.")
+        print("   -> Best performing model on TEST data will be saved as 'logs/best_model.zip'")
         eval_callback = EvalCallback(
             eval_env,
             best_model_save_path='./logs/',
@@ -267,9 +283,6 @@ def main():
             verbose=1
         )
         callbacks.append(eval_callback)
-    else:
-        # Fallback if no test split provided
-        callbacks.append(SaveOnBestTrainingRewardCallback(check_freq=10000, log_dir="./logs/"))
     
     if args.wandb:
         callbacks.append(WandbCallback(
@@ -287,7 +300,7 @@ def main():
     except KeyboardInterrupt:
         print("🛑 Training interrupted. Saving...")
         
-    # 9. Save
+    # 9. Save Final
     final_path = f"models/{args.algo}_{args.pair}_final"
     model.save(final_path)
     print(f"✅ Model saved to {final_path}")
