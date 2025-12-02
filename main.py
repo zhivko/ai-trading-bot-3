@@ -49,7 +49,7 @@ def parse_args():
     parser.add_argument("--vp-days", type=int, nargs='+', default=[7, 30], help="Volume Profile days (e.g. 7 30)")
     parser.add_argument("--vp-bins", type=int, default=40, help="Number of bins for VP Heatmap")
     parser.add_argument("--initial-balance", type=float, default=1000, help="Starting cash")
-    parser.add_argument("--n-envs", type=int, default=14, help="Number of parallel environments (Threads)")
+    parser.add_argument("--n-envs", type=int, default=12, help="Number of parallel environments (Threads)")
     
     # Thresholds
     parser.add_argument("--buy-threshold", type=float, default=0.2, help="Threshold to Buy (> X)")
