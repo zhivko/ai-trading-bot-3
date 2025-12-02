@@ -67,18 +67,6 @@ docker pull nvcr.io/nvidia/pytorch:25.01-py3
 docker run --gpus all -it --rm --ipc=host -v "c:\git\ai-trading-bot-3:/workspace/bot" nvcr.io/nvidia/pytorch:25.01-py3
 ```
 
-## Usage
-Usage example:
-```bash
-python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 4096
-```
-
-or with resume if you break leaarning
-
-```bash
-python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cuda --resume --batch-size 2048
-```
-
 ## Results
 
 EVAL REPORT (Step 4900000): ROI: 260.57% | Drawdown: 22.21%
@@ -324,3 +312,17 @@ EVAL REPORT (Step 4900000): ROI: 260.57% | Drawdown: 22.21%
 2025-12-01 01:07:35
 Training complete.
 ```
+
+
+## Usage
+Usage example:
+```bash
+python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 4096
+```
+
+or with resume if you break leaarning
+
+```bash
+python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2022-01-01 --total-timesteps 5000000 --wandb --device cuda --resume --batch-size 4096
+```
+["--pair","BTCUSDT","--vp-days","7","30","--algo","sac","--test-split","2022-01-01","--total-timesteps","5000000","--wandb","--device","cuda","--batch-size","4096"]

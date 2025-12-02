@@ -5,7 +5,6 @@ from gymnasium import spaces
 import hashlib
 import os
 import pickle
-from scipy.ndimage import zoom 
 
 # Import the existing calculation logic
 from volume_profile import get_rolling_vp
@@ -76,7 +75,7 @@ class TradingEnv(gym.Env):
         print(f"--- Initializing Environment (Target Bins: {self.vp_bins}) ---")
         
         for days in self.vp_days:
-            # NEW FILENAME FORMAT: Include 'bins' to distinguish from old 100-bin files
+            # Filename includes 'bins' to distinguish from old files
             filename = f"vp_win{days}_bins{self.vp_bins}_{self.data_hash}.pkl"
             filepath = os.path.join(self.cache_dir, filename)
             
@@ -86,7 +85,6 @@ class TradingEnv(gym.Env):
                 try:
                     with open(filepath, 'rb') as f:
                         loaded_data = pickle.load(f)
-                        # Verify integrity
                         if len(loaded_data['heatmap'][0]) != self.vp_bins:
                             print(f"⚠️ Cache bin mismatch for {days}d. Reloading.")
                             loaded_data = None
@@ -97,25 +95,25 @@ class TradingEnv(gym.Env):
             
             if loaded_data is None:
                 print(f"⚙️ Calculating VP for {days} days (Bins: {self.vp_bins})...")
-                # Pass num_bins to your calculator function
-                loaded_data = get_rolling_vp(self.raw_df, days, num_bins=self.vp_bins)
+                try:
+                    loaded_data = get_rolling_vp(self.raw_df, days, bins=self.vp_bins)
+                except TypeError:
+                    # Fallback if volume_profile.py doesn't accept bins arg
+                    print("⚠️ get_rolling_vp doesn't accept 'bins', resizing output manually...")
+                    raw_data = get_rolling_vp(self.raw_df, days)
+                    loaded_data = self._resize_vp_data(raw_data, self.vp_bins)
 
-                # Save new cache
                 with open(filepath, 'wb') as f:
                     pickle.dump(loaded_data, f)
             
             self.vp_data[days] = loaded_data
 
         # --- 3. SPACE DEFINITION ---
-        # Calculate expected size:
-        # Market (300) + Account (2) + VP (2 * (3 + 40)) = 388
         market_obs_size = self.lookback_window * len(self.features)
         account_obs_size = 2
         vp_obs_size = len(self.vp_days) * (3 + self.vp_bins) 
         total_obs_size = market_obs_size + account_obs_size + vp_obs_size
         
-        print(f"--- Observation Space: {total_obs_size} (Expected: 388) ---")
-
         self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
         
@@ -123,6 +121,49 @@ class TradingEnv(gym.Env):
         
         self.phase = 1
         self.reset()
+
+    def get_feature_names(self):
+        """Returns a list of names corresponding to the observation vector."""
+        # 1. Market Features (Flattened window)
+        # Note: In _next_observation, we flatten the window. 
+        # Usually Saliency maps aggregate this, but let's list them all or aggregate in callback.
+        # For simplicity here, we list distinct names.
+        
+        # Ideally we only care about the *latest* step's features for naming in simple charts,
+        # but the input is size 300+. 
+        # The Saliency Callback provided earlier aggregates indices. 
+        # But to be precise, let's just provide the names for the 'groups' if possible, 
+        # or we provide a name for EVERY index.
+        
+        names = []
+        
+        # Window Features
+        for i in range(self.lookback_window):
+            for f in self.features:
+                names.append(f"{f}_t-{self.lookback_window - i}")
+        
+        # 2. Account Features
+        names.extend(['balance_norm', 'shares_held'])
+        
+        # 3. Volume Profile Features
+        for days in self.vp_days:
+            names.extend([f"VP_{days}d_Dist_POC", f"VP_{days}d_Dist_VAH", f"VP_{days}d_Dist_VAL"])
+            for i in range(self.vp_bins):
+                names.append(f"VP_{days}d_Bin_{i}")
+                
+        return names
+
+    def _resize_vp_data(self, data, target_bins):
+        resized_heatmaps = []
+        for hm in data['heatmap']:
+            resized = np.interp(
+                np.linspace(0, len(hm), target_bins),
+                np.arange(len(hm)),
+                hm
+            )
+            resized_heatmaps.append(resized)
+        data['heatmap'] = np.array(resized_heatmaps)
+        return data
 
     def set_phase(self, new_phase):
         self.phase = new_phase
@@ -163,7 +204,7 @@ class TradingEnv(gym.Env):
             poc = data['poc'][self.current_step]
             vah = data['vah'][self.current_step]
             val = data['val'][self.current_step]
-            heatmap = data['heatmap'][self.current_step] # Always vp_bins length
+            heatmap = data['heatmap'][self.current_step]
             
             if current_price > 0 and poc > 0:
                 dist_poc = (poc - current_price) / current_price
@@ -260,17 +301,5 @@ class TradingEnv(gym.Env):
             "date": self.raw_df.iloc[self.current_step]['date'], 
             "vp_heatmap": heatmap
         }
-
-        if self.current_step % 1500 == 0:
-            current_date = self.raw_df.iloc[self.current_step]["timestamp"]
-            poc = self.raw_df['poc'][self.current_step]
-            vah = self.raw_df['vah'][self.current_step]
-            val = self.raw_df['val'][self.current_step]
-            heatmap = self.raw_df['heatmap'][self.current_step] # Always vp_bins length
-
-            vah = self.raw_df['vah'][self.current_step]
-
-            dist_pct = ((current_price - poc) / poc) * 100 if poc != 0 else 0
-            print(f"Step {self.current_step} [{current_date}]: P={current_price:.0f} | POC={poc:.0f} ({dist_pct:+.2f}%) | NetWorth={self.net_worth:.0f} | ATH={self.max_net_worth:.0f}")
 
         return obs, reward, terminated, truncated, info

@@ -1,337 +1,228 @@
+import os
 import argparse
 import pandas as pd
-import os
 import numpy as np
-import warnings
 import torch
 import glob
-import multiprocessing
-import shutil
 
-warnings.filterwarnings("ignore")
-
-import gymnasium as gym
-from stable_baselines3 import SAC, PPO
+# SB3 Imports
+from stable_baselines3 import PPO, SAC
+from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
-from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
-from stable_baselines3.common.monitor import Monitor 
-from callbacks.feature_saliency import FeatureSaliencyCallback
+from stable_baselines3.common.callbacks import CallbackList
+from stable_baselines3.common.env_util import make_vec_env
 
+# WandB
 import wandb
 from wandb.integration.sb3 import WandbCallback
 
+# Local Imports
+from trading_env import TradingEnv
+from callbacks.base_callbacks import SaveOnBestTrainingRewardCallback, TensorboardCallback
+from callbacks.feature_saliency import FeatureSaliencyCallback
 
-from enhanced_trading_env import EnhancedTradingEnv as TradingEnv  # Alias to avoid changing all calls
-from volume_profile import get_rolling_vp  # Your new wrapper
-
+# Create directories
+os.makedirs("models", exist_ok=True)
+os.makedirs("logs", exist_ok=True)
 
 wandb.require("core")
 
-# --- REAL-TIME CALLBACK ---
-class RealTimeWandbCallback(BaseCallback):
-    def __init__(self, verbose=0):
-        super(RealTimeWandbCallback, self).__init__(verbose)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Deep Learning Trading Bot")
+    
+    # Data & Config
+    parser.add_argument("--pair", type=str, default="BTCUSDT", help="Trading pair")
+    parser.add_argument("--data-path", type=str, default="data/BTCUSDT_1h.csv", help="Path to CSV data")
+    
+    # Environment
+    parser.add_argument("--vp-days", type=int, nargs='+', default=[7, 30], help="Volume Profile days (e.g. 7 30)")
+    parser.add_argument("--vp-bins", type=int, default=40, help="Number of bins for VP Heatmap")
+    parser.add_argument("--initial-balance", type=float, default=1000, help="Starting cash")
+    parser.add_argument("--n-envs", type=int, default=14, help="Number of parallel environments (Threads)")
+    
+    # Training
+    parser.add_argument("--algo", type=str, default="ppo", choices=["ppo", "sac"], help="RL Algorithm")
+    parser.add_argument("--total-timesteps", type=int, default=5_000_000, help="Total training steps")
+    parser.add_argument("--batch-size", type=int, default=4096, help="Batch size")
+    parser.add_argument("--learning-rate", type=float, default=3e-4, help="Learning Rate")
+    parser.add_argument("--gamma", type=float, default=0.999, help="Discount factor (High for long-term)")
+    parser.add_argument("--device", type=str, default="auto", help="cuda or cpu")
+    
+    # Validation & Resume
+    parser.add_argument("--test-split", type=str, default=None, help="Date to split Train/Test (e.g. '2023-01-01')")
+    parser.add_argument("--resume", action="store_true", help="Resume training from existing model")
+    parser.add_argument("--model-path", type=str, default=None, help="Path to specific model to load")
+    
+    # Logging
+    parser.add_argument("--wandb", action="store_true", help="Enable WandB logging")
+    parser.add_argument("--project-name", type=str, default="ai-trading-bot", help="WandB Project Name")
+    
+    return parser.parse_args()
 
-    def _on_step(self) -> bool:
-        if wandb.run is None: return True
-        infos = self.locals["infos"][0]
-        
-        if self.num_timesteps % 1000 == 0:
-            current_lr = 0.0
-            try: current_lr = self.model.policy.optimizer.param_groups[0]["lr"]
-            except: pass
-
-            current_alpha = 0.0
-            if hasattr(self.model, "log_ent_coef"):
-                try: current_alpha = np.exp(self.model.log_ent_coef.detach().cpu().item())
-                except: pass
-
-            wandb.log({
-                "realtime/portfolio_value": infos.get("portfolio_value", 0),
-                "realtime/balance": infos.get("balance", 0),
-                "realtime/step_reward": infos.get("reward", 0),
-                "realtime/action": infos.get("action", 0),
-                "realtime/alpha_entropy": current_alpha,
-                "realtime/learning_rate": current_lr,
-                
-                "realtime/market_context": {
-                    "realtime/price_main": infos.get("price", 0),
-                    "realtime/price_poc": infos.get("poc", 0), 
-                    "realtime/price_vah": infos.get("vah", 0), 
-                    "realtime/price_val": infos.get("val", 0), 
-                },
-                
-                "realtime/momentum": {
-                    "rsi": infos.get("rsi", 50),
-                    "stoch_rsi": infos.get("stoch_rsi", 0.5)
-                },
-                
-                "realtime/macd": {
-                    "macd_line": infos.get("macd", 0),
-                    "signal_line": infos.get("macd_sig", 0)
-                },
-
-                "global_step": self.num_timesteps
-            })
+def load_and_process_data(csv_path):
+    if not os.path.exists(csv_path):
+        # Check root
+        if os.path.exists("BTCUSDT_data.csv"):
+            csv_path = "BTCUSDT_data.csv"
+        else:
+            raise FileNotFoundError(f"Data not found at {csv_path}")
             
-        if self.num_timesteps % 10000 == 0 and "vp_heatmap" in infos:
-            heatmap = infos["vp_heatmap"]
-            price_bins = infos.get("vp_bins", []) 
-            current_price = infos.get("price", 0)
-
-            if len(price_bins) == len(heatmap):
-                data = []
-                for p, vol in zip(price_bins, heatmap):
-                    is_current = 0.04 if abs(p - current_price) < (price_bins[1]-price_bins[0]) else 0
-                    data.append([p, vol, is_current])
-                
-                table = wandb.Table(data=data, columns=["price", "volume", "curr_marker"])
-                wandb.log({
-                    "realtime/vp_snapshot": wandb.plot.line(
-                        table, "price", "volume", 
-                        title=f"Volume Profile @ ${current_price:.0f}"
-                    )
-                })
-            
-        return True
-
-# --- EVALUATION LISTENER (CRASH-PROOF VERSION) ---
-class WandbEvalListener(BaseCallback):
-    def __init__(self, verbose=0):
-        super().__init__(verbose)
-
-    def _on_step(self) -> bool:
-        if self.parent is not None:
-            # FIX: Use getattr with a default value of 0 to prevent AttributeError crash
-            mean_reward = getattr(self.parent, 'last_mean_reward', -np.inf)
-            mean_len = getattr(self.parent, 'last_mean_ep_length', 0)
-            
-            # EXTRACT CUSTOM METRICS
-            try:
-                # 1. Unwrap the env
-                if hasattr(self.parent, 'eval_env') and self.parent.eval_env is not None:
-                    eval_env = self.parent.eval_env.envs[0].unwrapped
-                    
-                    # 2. Get the metrics we saved in reset()
-                    metrics = getattr(eval_env, 'episode_metrics', {})
-                    
-                    if metrics:
-                        print(f"\n📊 EVAL REPORT (Step {self.num_timesteps}): "
-                              f"ROI: {metrics.get('roi', 0):.2f}% | "
-                              f"Drawdown: {metrics.get('max_drawdown', 0):.2f}%")
-                        
-                        wandb.log({
-                            "eval/mean_reward": mean_reward,
-                            "eval/portfolio_value": metrics.get('final_balance', 0),
-                            "eval/roi_pct": metrics.get('roi', 0),
-                            "eval/buy_hold_roi_pct": metrics.get('bh_roi', 0),
-                            "eval/max_drawdown_pct": metrics.get('max_drawdown', 0),
-                            "eval/sharpe_ratio": metrics.get('sharpe', 0),
-                            "eval/trade_count": metrics.get('trades', 0),
-                            "global_step": self.num_timesteps
-                        })
-                    elif mean_reward != -np.inf:
-                        # Fallback if metrics missing but reward exists
-                        wandb.log({
-                            "eval/mean_reward": mean_reward, 
-                            "eval/mean_ep_length": mean_len,
-                            "global_step": self.num_timesteps
-                        })
-            except Exception as e:
-                print(f"⚠️ Eval Log Error: {e}")
-                
-        return True 
-
-class CurriculumCallback(BaseCallback):
-    def __init__(self, verbose=0):
-        super().__init__(verbose)
-        self.current_phase = 1
-
-    def _on_step(self) -> bool:
-        new_phase = 1
-        
-        # Scale curriculum for 5,000,000 steps
-        if self.num_timesteps > 2000000:  # After 2M steps (40% progress)
-            new_phase = 3 # Hard Mode (Drawdown Penalty)
-        elif self.num_timesteps > 1000000: # After 1M steps (20% progress)
-            new_phase = 2 # Medium Mode (Volatility Penalty)
-            
-        # Default is Phase 1 (Pure Profit)
-            
-        if new_phase != self.current_phase:
-            self.current_phase = new_phase
-            print(f"\n🚀 UPGRADING TO PHASE {new_phase} at step {self.num_timesteps}")
-            
-            # Apply to environment
-            self.training_env.env_method("set_phase", new_phase)
-            
-            if wandb.run is not None:
-                wandb.log({"train/curriculum_phase": new_phase, "global_step": self.num_timesteps})
-                
-        return True
+    print(f"Loading data from {csv_path}...")
+    df = pd.read_csv(csv_path)
+    
+    # Normalize columns
+    df.columns = [c.lower() for c in df.columns]
+    if 'timestamp' in df.columns:
+        df.rename(columns={'timestamp': 'date'}, inplace=True)
+    
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date').reset_index(drop=True)
+    return df
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--pair", type=str, default="BTCUSDT")
-    parser.add_argument("--data-path", type=str, default="BTCUSDT_data.csv")
-    parser.add_argument("--vp-days", nargs='+', type=int, default=[7, 30]) 
-    parser.add_argument("--algo", type=str, default="sac") 
-    parser.add_argument("--total-timesteps", type=int, default=5000000)
-    parser.add_argument("--test-split", type=str, default="2024-01-01")
-    parser.add_argument("--resume", nargs='?', const='LATEST', default=None)
-    parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--batch-size", type=int, default=4096)
-    parser.add_argument("--num_envs", type=int, default=14)
-    parser.add_argument("--rsi-bonus-lambda", type=float, default=0.02)
-    parser.add_argument("--stoch-bonus-lambda", type=float, default=0.01)
-    parser.add_argument("--wandb", action="store_true")
-    args = parser.parse_args()
-
-    # --- 0. CLEANUP ---
-    models_dir = f"./models/{args.pair}"
-    log_dir = f"./{args.algo}_tb/"
+    args = parse_args()
     
-    if args.resume is None:
-        print("\n🧹 FRESH START DETECTED")
-        if os.path.exists(models_dir):
-            shutil.rmtree(models_dir)
-            os.makedirs(models_dir)
-        else:
-            os.makedirs(models_dir)
-        if os.path.exists(log_dir):
-            shutil.rmtree(log_dir)
-    else:
-        print(f"\n🔄 RESUME DETECTED")
-
-    # --- 1. LOAD DATA ---
-    csv_file = args.data_path if args.data_path else "BTCUSDT_data.csv"
-    if os.path.exists(csv_file):
-        print(f"Loading: {csv_file}")
-        df = pd.read_csv(csv_file)
-        df.columns = df.columns.str.lower()
-        if 'timestamp' in df.columns: df.rename(columns={'timestamp': 'date'}, inplace=True)
-        df['date'] = pd.to_datetime(df['date'])
-        df.set_index('date', inplace=True)
-        
-        print(f"✂️ Splitting data at {args.test_split}...")
-        train_df = df[df.index < args.test_split].copy()
-        test_df = df[df.index >= args.test_split].copy()
-    else:
-        print("❌ Error: File not found.")
-        return
-
-    # --- 2. CALCULATE CORES ---
-    n_cpu = max(1, multiprocessing.cpu_count() - 2)
-    print(f"🚀 Speeding up with {n_cpu} Parallel Environments...")
-
-    # --- 3. WARMUP ---
-    print("🔥 Warming up cache on Main Process...")
-
-    vp_data = {'vp7': get_rolling_vp(train_df, window_days=7), 'vp30': get_rolling_vp(train_df, window_days=30)}
-
-    # Warmup env (use vp_data, not vp_days)
-    warmup_env = TradingEnv(
-        df=train_df,
-        vp_data=vp_data,  # NEW: Pass the dict
-        rsi_bonus_lambda=0.02,
-        stoch_bonus_lambda=0.01,
-        trade_cooldown_hours=6,
-        deadzone=0.15,
-    )
-
-    # For VecEnv lambda (if used)
-    def make_env():
-        return TradingEnv(
-            df=train_df,
-            vp_data=vp_data,
-            rsi_bonus_lambda=0.02,
-            stoch_bonus_lambda=0.01,
-            trade_cooldown_hours=6,
-            deadzone=0.15,
+    # 1. Initialize WandB
+    if args.wandb:
+        run_name = f"{args.algo}_{args.pair}_VP{args.vp_bins}_Envs{args.n_envs}"
+        wandb.init(
+            project=args.project_name,
+            config=vars(args),
+            name=run_name,
+            sync_tensorboard=True,
+            monitor_gym=True
         )
-
-    env = SubprocVecEnv([make_env for _ in range(args.num_envs)])
-    # EvalEnv must save stats, so we need to access it later via unwrapped
-    eval_env = DummyVecEnv([lambda: Monitor(TradingEnv(test_df, vp_data=vp_data))])
-
-    # --- 5. MODEL SETUP ---
-    policy_kwargs = dict(net_arch=[512, 512]) 
-    tensorboard_log = f"./{args.algo}_tb/"
     
-    model_path_to_load = None
-    if args.resume is not None:
-        if args.resume == 'LATEST':
-            if os.path.exists(models_dir):
-                list_of_files = glob.glob(f"{models_dir}/*.zip")
-                if list_of_files:
-                    model_path_to_load = max(list_of_files, key=os.path.getmtime)
-                    print(f"🔄 Auto-detected: {model_path_to_load}")
-        else:
-            model_path_to_load = args.resume
+    # 2. Load Data
+    df = load_and_process_data(args.data_path)
+    
+    train_df = df.copy()
+    if args.test_split:
+        mask = df['date'] < args.test_split
+        train_df = df[mask].reset_index(drop=True)
+        print(f"Split Data: Train ({len(train_df)}) | Test ({len(df) - len(train_df)})")
+    
+    # 3. Create Vectorized Environment (Parallel)
+    # We pass the dataframe to the env. Since it's read-only, multiprocessing is usually okay on Linux.
+    # On Windows, it might be slower due to pickling, but works.
+    env_kwargs = {
+        'df': train_df,
+        'initial_balance': args.initial_balance,
+        'vp_days': args.vp_days,
+        'vp_bins': args.vp_bins
+    }
+    
+    print(f"Creating {args.n_envs} parallel environments...")
+    
+    # SubprocVecEnv for true parallelism (requires 'if __name__ == "__main__":')
+    # DummyVecEnv for debugging
+    vec_env_cls = SubprocVecEnv if args.n_envs > 1 else DummyVecEnv
+    
+    env = make_vec_env(
+        TradingEnv, 
+        n_envs=args.n_envs, 
+        env_kwargs=env_kwargs,
+        vec_env_cls=vec_env_cls,
+        monitor_dir="./logs/"
+    )
+    
+    # 4. Create Single Instance for Saliency & Names (VecEnv hides attributes)
+    # We create one separate instance just to get names and run saliency checks
+    dummy_saliency_env = TradingEnv(**env_kwargs)
 
-    if model_path_to_load and os.path.exists(model_path_to_load):
-        print(f"📥 Loading model: {model_path_to_load}")
-        if args.algo.lower() == 'sac':
-            model = SAC.load(model_path_to_load, env=env, tensorboard_log=tensorboard_log, device=args.device)
-        else:
-            model = PPO.load(model_path_to_load, env=env, tensorboard_log=tensorboard_log, device=args.device)
-    else:
+    # 5. Model Setup
+    policy_kwargs = dict(net_arch=[512, 512, 512]) if args.algo == 'sac' else dict(net_arch=[dict(pi=[256, 256], vf=[256, 256])])
+    
+    tensorboard_log = f"./{args.algo}_tb/"
+    model = None
+    
+    # --- RESUME LOGIC ---
+    if args.resume:
+        # Determine path
+        load_path = args.model_path
+        if load_path is None:
+            # Try to find best model
+            default_best = f"logs/best_model.zip"
+            if os.path.exists(default_best):
+                load_path = default_best
+            else:
+                print("⚠️ No model path provided and no 'best_model.zip' found. Starting fresh.")
+        
+        if load_path and os.path.exists(load_path):
+            print(f"📥 RESUMING: Loading model from {load_path}")
+            if args.algo == 'sac':
+                model = SAC.load(load_path, env=env, print_system_info=True, device=args.device, tensorboard_log=tensorboard_log)
+            else:
+                model = PPO.load(load_path, env=env, print_system_info=True, device=args.device, tensorboard_log=tensorboard_log)
+    
+    # --- FRESH START LOGIC ---
+    if model is None:
         print(f"✨ Creating NEW {args.algo.upper()} Model")
-        if args.algo.lower() == 'sac':
-            # ENCOURAGE LONGER TRADES: High Gamma
-            # gamma=0.999 tells the bot to care about the next ~1000 steps
-            hyperparams = {
-                "gamma": 0.999,
-                "learning_rate": 3e-4,
-                "ent_coef": 'auto'
-            }
-
+        if args.algo == 'sac':
             model = SAC(
                 "MlpPolicy",
                 env,
+                learning_rate=args.learning_rate,
+                buffer_size=100_000,
+                batch_size=args.batch_size,
+                ent_coef='auto',
+                gamma=args.gamma,
+                tau=0.005,
+                train_freq=1,
+                gradient_steps=1,
                 policy_kwargs=policy_kwargs,
                 verbose=1,
                 tensorboard_log=tensorboard_log,
-                device=args.device,
-                batch_size=args.batch_size,
-                **hyperparams # <--- Added this
+                device=args.device
             )
         else:
-            model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=tensorboard_log, device=args.device, batch_size=args.batch_size, gamma=0.999)
-
-    # --- 6. CALLBACKS ---
-    callbacks = []
+            model = PPO(
+                "MlpPolicy",
+                env,
+                learning_rate=args.learning_rate,
+                n_steps=2048,
+                batch_size=args.batch_size,
+                n_epochs=10,
+                gamma=args.gamma,
+                gae_lambda=0.95,
+                clip_range=0.2,
+                policy_kwargs=policy_kwargs,
+                verbose=1,
+                tensorboard_log=tensorboard_log,
+                device=args.device
+            )
+        
+    # 6. Callbacks
+    callbacks = [
+        SaveOnBestTrainingRewardCallback(check_freq=10000, log_dir="./logs/"),
+        TensorboardCallback(),
+        FeatureSaliencyCallback(dummy_saliency_env, check_freq=50000) 
+    ]
+    
     if args.wandb:
-        wandb.init(project="ai-trading-bot", config=vars(args), sync_tensorboard=True, monitor_gym=True, save_code=True)
-        callbacks.append(RealTimeWandbCallback())
-        callbacks.append(WandbCallback(verbose=2))
-
-    callbacks.append(CheckpointCallback(save_freq=50000, save_path=models_dir, name_prefix=args.algo))
-    callbacks.append(CurriculumCallback())
-
-    saliency_callback = FeatureSaliencyCallback(vp_days=args.vp_days)
-    callbacks.append(saliency_callback)
-
-    eval_listener = WandbEvalListener()
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path=f'./models/best_eval/{args.algo.lower()}_{args.pair}_best.zip',
-        log_path=tensorboard_log,
-        eval_freq=50000, 
-        n_eval_episodes=1,
-        deterministic=True,
-        render=False,
-        callback_after_eval=eval_listener
-    )
-    callbacks.append(eval_callback)
-
-    # --- 7. TRAIN ---
-    print(f"--- STARTING TRAINING ({args.total_timesteps} steps) ---")
-    model.learn(total_timesteps=args.total_timesteps, callback=callbacks, reset_num_timesteps=(model_path_to_load is None))
-    model.save(f"{args.algo}_{args.pair}_final")
-    print("Training complete.")
+        callbacks.append(WandbCallback(
+            gradient_save_freq=10000,
+            model_save_path=f"models/{args.algo}_{args.pair}",
+            verbose=2
+        ))
+        
+    callback_list = CallbackList(callbacks)
+    
+    # 7. Learn
+    print(f"🚀 Starting Training for {args.total_timesteps} steps...")
+    try:
+        model.learn(total_timesteps=args.total_timesteps, callback=callback_list, progress_bar=True)
+    except KeyboardInterrupt:
+        print("🛑 Training interrupted. Saving...")
+        
+    # 8. Save
+    final_path = f"models/{args.algo}_{args.pair}_final"
+    model.save(final_path)
+    print(f"✅ Model saved to {final_path}")
+    
+    if args.wandb:
+        wandb.finish()
 
 if __name__ == "__main__":
-    multiprocessing.freeze_support() 
+    # Required for multiprocessing on Windows
     main()
-

@@ -248,5 +248,19 @@ class EnhancedTradingEnv(gym.Env):
     def render(self, mode="human"):
         print(f"Step {self.current_step} | NW: ${self.net_worth:,.0f} | Shares: {self.shares_held:.3f}")
 
-    def close(self):
-        pass
+    def get_feature_names(self):
+        # 1. Market Features
+        names = self.features.copy() # ['close_pct', 'volume_norm', 'rsi', etc...]
+        
+        # 2. Account Features
+        names.extend(['balance_norm', 'shares_held'])
+        
+        # 3. Volume Profile Features
+        # We need to generate a name for every single bin in the heatmap
+        for days in self.vp_days:
+            names.extend([f"VP_{days}d_Dist_POC", f"VP_{days}d_Dist_VAH", f"VP_{days}d_Dist_VAL"])
+            # Add a name for every bin
+            for i in range(self.vp_bins):
+                names.append(f"VP_{days}d_Bin_{i}")
+                
+        return names
