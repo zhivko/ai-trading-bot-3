@@ -1,5 +1,6 @@
 import ccxt
 import pandas as pd
+import pandas_ta as ta
 import time
 from datetime import datetime, timedelta
 import argparse
@@ -46,6 +47,13 @@ def fetch_historical_ohlcv(pair, start_date, end_date=None):
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df = df[df['timestamp'] <= end_date]
     df.set_index('timestamp', inplace=True)
+    
+    # Ensure EMA is calculated
+    if 'ema_50' not in df.columns:
+        df['ema_50'] = df.ta.ema(length=50)
+        # Fill NaN values to prevent errors in the beginning of the episode
+        df['ema_50'] = df['ema_50'].fillna(0)
+    
     return df
 
 def fetch_data_for_pairs(pairs, start_date, end_date=None):

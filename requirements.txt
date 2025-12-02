@@ -1,18 +1,18 @@
 torch @ file:///c:/git/pytorch/dist/fixed/torch-2.10.0a0+git4bebc82-cp312-cp312-win_amd64.whl
+numpy==1.26.4
 ccxt==4.5.22
 gymnasium==0.29.1
 stable-baselines3
 stable-baselines3[extra]
 sb3-contrib==2.3.0
 shimmy>=0.2.1
-pandas==2.2.2
-#numpy==1.26.4
+pandas>=2.2.2
 wandb==0.17.5
 tensorboard==2.16.2
 matplotlib==3.9.0
 scipy==1.14.0
 scikit-learn==1.5.0
-tqdm==4.66.4
+tqdm>=4.66.4
 ta==0.11.0
 plotly==5.18.0
 flask

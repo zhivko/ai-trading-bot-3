@@ -217,6 +217,9 @@ class EnhancedTradingEnv(gym.Env):
 
         obs = self._next_observation()
         
+        # Calculate EMA 50 for charting callback
+        ema_50 = self.df.iloc[self.current_step].get('ema_50', 0)
+        
         # Info
         primary_day = self.vp_days[0]
         idx_safe = min(self.current_step, len(self.vp_data[primary_day]['heatmap']) - 1)
@@ -229,7 +232,9 @@ class EnhancedTradingEnv(gym.Env):
             "action": action_val,
             "reward": reward,
             "price": current_price,
-            "date": self.raw_df.iloc[self.current_step]['date'], 
+            "current_price": current_price,  # Required for charting
+            "ema50": ema_50,                 # Required for charting
+            "date": self.raw_df.iloc[self.current_step]['date'],
             "vp_heatmap": heatmap
         }
 
