@@ -3,14 +3,18 @@ import argparse
 import pandas as pd
 import numpy as np
 import torch
-import glob
+import warnings
+from stable_baselines3.common.utils import get_system_info
+
+# Suppress annoying warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.simplefilter(action='ignore', category=UserWarning)
 
 # SB3 Imports
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
-from stable_baselines3.common.callbacks import CallbackList, EvalCallback # <--- Added EvalCallback
-from stable_baselines3.common.utils import get_system_info
+from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import make_vec_env
 
 # WandB
@@ -88,7 +92,7 @@ def main():
             project=args.project_name,
             config=vars(args),
             name=run_name,
-            sync_tensorboard=True, 
+            sync_tensorboard=True,
             monitor_gym=True
         )
     
@@ -96,15 +100,12 @@ def main():
     df = load_and_process_data(args.data_path)
     
     train_df = df.copy()
-    test_df = None
-    
     if args.test_split:
         mask = df['date'] < args.test_split
         train_df = df[mask].reset_index(drop=True)
-        test_df = df[~mask].reset_index(drop=True)
-        print(f"Split Data: Train ({len(train_df)}) | Test ({len(test_df)})")
+        print(f"Split Data: Train ({len(train_df)}) | Test ({len(df) - len(train_df)})")
     
-    # 3. Create Vectorized Environment (Training)
+    # 3. Create Vectorized Environment (Parallel)
     env_kwargs = {
         'df': train_df,
         'initial_balance': args.initial_balance,
@@ -112,8 +113,9 @@ def main():
         'vp_bins': args.vp_bins
     }
     
-    print(f"Creating {args.n_envs} parallel training environments...")
+    print(f"Creating {args.n_envs} parallel environments...")
     
+    # SubprocVecEnv for true parallelism
     vec_env_cls = SubprocVecEnv if args.n_envs > 1 else DummyVecEnv
     
     env = make_vec_env(
@@ -124,7 +126,7 @@ def main():
         monitor_dir="./logs/"
     )
     
-    # 4. Create Single Instance for Saliency
+    # 4. Create Single Instance for Saliency & Names
     dummy_saliency_env = TradingEnv(**env_kwargs)
 
     # 5. Model Setup
@@ -137,6 +139,7 @@ def main():
     if args.resume:
         load_path = args.model_path
         if load_path is None:
+            # Try to find best model
             default_best = f"logs/best_model.zip"
             if os.path.exists(default_best):
                 load_path = default_best
@@ -149,10 +152,27 @@ def main():
                 model = SAC.load(load_path, env=env, print_system_info=True, device=args.device, tensorboard_log=tensorboard_log)
             else:
                 model = PPO.load(load_path, env=env, print_system_info=True, device=args.device, tensorboard_log=tensorboard_log)
-            
-            if torch.cuda.is_available():
-                print(f"- GPU Model: {torch.cuda.get_device_name()}")
-    
+    else:
+        # we need to delete dir and files in /models/{algo}_{pair}
+        model_dir = f"models/{args.algo}_{args.pair}"
+        if os.path.exists(model_dir):
+            for f in os.listdir(model_dir):
+                os.remove(os.path.join(model_dir, f))
+            os.rmdir(model_dir)
+        
+        # we need to dir and files in /{algo}_tb dir
+        tb_dir = f"./{args.algo}_tb/"
+        if os.path.exists(tb_dir):
+            for f in os.listdir(tb_dir):
+                file_path = os.path.join(tb_dir, f)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+                else:
+                    import shutil
+                    shutil.rmtree(file_path)
+            os.rmdir(tb_dir)
+
+
     # --- FRESH START LOGIC ---
     if model is None:
         print(f"✨ Creating NEW {args.algo.upper()} Model")
@@ -190,40 +210,22 @@ def main():
                 device=args.device
             )
         
-        get_system_info()
-        if torch.cuda.is_available():
-            print(f"- GPU Model: {torch.cuda.get_device_name()}")
-        
+
+    sysinfo = get_system_info()
+    # print sistem info
+    print("System Information:")
+    if torch.cuda.is_available():
+        print(f"- GPU Model: {torch.cuda.get_device_name()}")
+    for key, value in sysinfo.items():
+        print(f"- {key}: {value}")
+
     # 6. Callbacks
     callbacks = [
-        # This saves based on TRAINING reward (often noisy)
         SaveOnBestTrainingRewardCallback(check_freq=10000, log_dir="./logs/"),
-        TensorboardCallback(), 
+        TensorboardCallback(),
         FeatureSaliencyCallback(dummy_saliency_env, check_freq=50000) 
     ]
-
-    # --- NEW: EVAL CALLBACK (This adds the Evaluation Charts) ---
-    if test_df is not None and len(test_df) > 0:
-        print("Creating Evaluation Environment...")
-        # Evaluation should usually happen on a single environment, deterministic=True
-        eval_env_kwargs = env_kwargs.copy()
-        eval_env_kwargs['df'] = test_df
-        
-        # Create a single Eval Env
-        eval_env = DummyVecEnv([lambda: TradingEnv(**eval_env_kwargs)])
-        
-        eval_callback = EvalCallback(
-            eval_env,
-            best_model_save_path=f"./models/{args.algo}_best_eval/",
-            log_path="./logs/eval/",
-            eval_freq=20000, # Test every 20k steps
-            deterministic=True,
-            render=False,
-            verbose=1
-        )
-        callbacks.append(eval_callback)
-        print("✅ Evaluation Callback added.")
-
+    
     if args.wandb:
         callbacks.append(WandbCallback(
             gradient_save_freq=10000,
@@ -236,6 +238,7 @@ def main():
     # 7. Learn
     print(f"🚀 Starting Training for {args.total_timesteps} steps...")
     try:
+        # progress_bar=True requires 'pip install tqdm rich'
         model.learn(total_timesteps=args.total_timesteps, callback=callback_list, progress_bar=True)
     except KeyboardInterrupt:
         print("🛑 Training interrupted. Saving...")

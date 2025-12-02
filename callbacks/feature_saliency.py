@@ -35,22 +35,19 @@ class FeatureSaliencyCallback(BaseCallback):
             obs_tensor = torch.tensor(obs_single, dtype=torch.float32).to(self.model.device)
             obs_tensor.requires_grad_()
 
-            # 2. Define Forward Function (Robust Architecture Check)
+            # 2. Define Forward Function
             def forward_func(x):
                 # --- SAC LOGIC ---
                 if hasattr(self.model.policy, 'actor'):
-                    # SAC Policy does not have a central features_extractor, it's inside the actor
                     features = self.model.policy.actor.features_extractor(x)
-                    # Get mean action
                     return self.model.policy.actor.get_action_dist_params(features)[0]
                 
                 # --- PPO LOGIC ---
                 elif hasattr(self.model.policy, 'action_net'):
-                    # PPO Policy usually has a central features_extractor
-                    if self.model.policy.features_extractor is not None:
+                    # Access features_extractor safely
+                    if hasattr(self.model.policy, 'features_extractor'):
                         features = self.model.policy.features_extractor(x)
                     else:
-                        # Fallback if PPO structure varies (rare)
                         features = self.model.policy.pi_features_extractor(x)
                         
                     latent_pi = self.model.policy.mlp_extractor.forward_actor(features)
@@ -59,9 +56,7 @@ class FeatureSaliencyCallback(BaseCallback):
                 else:
                     return None
 
-            # Test it
             if forward_func(obs_tensor) is None:
-                print("⚠️ Saliency: Could not determine model architecture.")
                 return
 
             # 3. Calculate Integrated Gradients
@@ -84,7 +79,6 @@ class FeatureSaliencyCallback(BaseCallback):
             agg_map = {}
             for name, val in zip(full_names, mean_attr):
                 imp = abs(val)
-                # Clean up names for grouping
                 if "VP_" in name and "Bin" in name: 
                     group = "Volume Profile (Heatmap)"
                 elif "VP_" in name and "Dist" in name: 
@@ -100,8 +94,6 @@ class FeatureSaliencyCallback(BaseCallback):
             
         except Exception as e:
             print(f"⚠️ Saliency Error during calculation: {e}")
-            # Optional: Print traceback to debug further if needed
-            # import traceback; traceback.print_exc()
 
     def plot_importance(self, names, values, step):
         # Sort desc
@@ -116,5 +108,6 @@ class FeatureSaliencyCallback(BaseCallback):
         plt.tight_layout()
         
         if wandb.run is not None:
-            wandb.log({"feature_importance": wandb.Image(plt)}, step=step)
+            # FIXED: Removed 'step=step' to prevent conflict with sync_tensorboard
+            wandb.log({"feature_importance": wandb.Image(plt)})
         plt.close()
