@@ -111,7 +111,14 @@ class CustomEvalCallback(EvalCallback):
                 info = info[0]
                 episode_reward += reward
             episode_rewards.append(episode_reward)
-            portfolio_values.append(info[0].get('portfolio_value', episode_reward))  # fallback to reward if no portfolio_value
+
+            if isinstance(info, list):
+                current_info = info[0]
+            else:
+                current_info = info
+
+            portfolio_values.append(current_info.get('portfolio_value', episode_reward))
+
         mean_reward = np.mean(episode_rewards)
         std_reward = np.std(episode_rewards)
         mean_portfolio = np.mean(portfolio_values)

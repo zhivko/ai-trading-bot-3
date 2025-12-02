@@ -195,11 +195,11 @@ def main():
         if os.path.exists(chk_dir):
             shutil.rmtree(chk_dir)
 
-        # remove also models for this algo/pair to avoid confusion
-        model_dir = f"models/{args.algo}_{args.pair}"
-        if os.path.exists(model_dir):
-            shutil.rmtree(model_dir)     
+        # remove also models for this models/{args.algo}_{args.pair}*.* using glob
 
+        model_files = glob.glob(f"models/{args.algo}_{args.pair}*.*")
+        for file in model_files:
+            os.remove(file)
         #remove /{algo}_tb directory if it exists
         tb_dir = f"{args.algo}_tb"
         if os.path.exists(tb_dir):
