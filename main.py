@@ -119,11 +119,12 @@ def main():
     vec_env_cls = SubprocVecEnv if args.n_envs > 1 else DummyVecEnv
     
     env = make_vec_env(
-        TradingEnv, 
-        n_envs=args.n_envs, 
+        TradingEnv,
+        n_envs=args.n_envs,
         env_kwargs=env_kwargs,
         vec_env_cls=vec_env_cls,
-        monitor_dir="./logs/"
+        monitor_dir="./logs/",
+        monitor_kwargs={'info_keywords': ('portfolio_value', 'sharpe_ratio', 'max_drawdown')}
     )
     
     # 4. Create Single Instance for Saliency & Names (VecEnv hides attributes)

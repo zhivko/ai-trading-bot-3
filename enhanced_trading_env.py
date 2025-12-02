@@ -217,6 +217,27 @@ class EnhancedTradingEnv(gym.Env):
         terminated = self.net_worth < self.initial_balance * 0.5
         truncated = self.current_step >= len(self.df) - 1
 
+        if terminated or truncated:
+            # Compute Sharpe ratio annualized assuming daily data (sqrt(252))
+            if len(self.net_worth_history) >= 2:
+                returns = np.diff(self.net_worth_history) / self.net_worth_history[:-1]
+                mean_ret = np.mean(returns)
+                std_ret = np.std(returns)
+                sharpe_ratio = mean_ret / std_ret * np.sqrt(252) if std_ret > 0 else 0.0
+            else:
+                sharpe_ratio = 0.0
+
+            # Compute max drawdown as the minimum drawdown percentage
+            if len(self.net_worth_history) >= 1:
+                peaks = np.maximum.accumulate(self.net_worth_history)
+                drawdowns = (peaks - self.net_worth_history) / peaks
+                max_drawdown = np.min(drawdowns)
+            else:
+                max_drawdown = 0.0
+
+            info['sharpe_ratio'] = sharpe_ratio
+            info['max_drawdown'] = max_drawdown
+
         obs = self._get_observation()
         self.last_obs = obs.copy()
 
