@@ -104,7 +104,11 @@ class CustomEvalCallback(EvalCallback):
             episode_reward = 0
             while not done:
                 action, _ = self.model.predict(obs, deterministic=self.deterministic)
-                obs, reward, done, info = self.eval_env.step(action)
+                action = action[0]
+                obs, reward, done, info = self.eval_env.step([action])
+                reward = reward[0]
+                done = done[0]
+                info = info[0]
                 episode_reward += reward
             episode_rewards.append(episode_reward)
             portfolio_values.append(info.get('portfolio_value', episode_reward))  # fallback to reward if no portfolio_value
