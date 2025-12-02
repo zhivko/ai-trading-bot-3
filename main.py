@@ -118,19 +118,25 @@ def main():
         test_df = df[~mask].reset_index(drop=True)
         print(f"Split Data: Train ({len(train_df)}) | Test ({len(test_df)})")
     
+    # 1. Calculate VP once in the main process
+    from volume_profile import get_rolling_vp
+    print("Pre-calculating Volume Profile...")
+    vp_data = {}
+    for d in args.vp_days:
+        vp_data[d] = get_rolling_vp(train_df, d, bins=args.vp_bins)
+
     # 3. Create Vectorized Environment (Training)
     env_kwargs = {
         'initial_balance': args.initial_balance,
         'vp_days': args.vp_days,
         'vp_bins': args.vp_bins,
         'buy_threshold': args.buy_threshold,
-        'sell_threshold': args.sell_threshold
+        'sell_threshold': args.sell_threshold,
+        'precalculated_vp': vp_data  # Pass it here
     }
     
     train_env_kwargs = env_kwargs.copy()
     train_env_kwargs['df'] = train_df
-    
-    print(f"Creating {args.n_envs} parallel environments (EnhancedTradingEnv)...")
     vec_env_cls = SubprocVecEnv if args.n_envs > 1 else DummyVecEnv
     
     env = make_vec_env(
@@ -144,8 +150,13 @@ def main():
     # 4. Create Evaluation Environment
     eval_env = None
     if test_df is not None and not test_df.empty:
+        print("Pre-calculating Volume Profile for eval...")
+        vp_data_test = {}
+        for d in args.vp_days:
+            vp_data_test[d] = get_rolling_vp(test_df, d, bins=args.vp_bins)
         print("Creating Evaluation environment...")
         eval_env_kwargs = env_kwargs.copy()
+        eval_env_kwargs['precalculated_vp'] = vp_data_test
         eval_env_kwargs['df'] = test_df
         eval_env = make_vec_env(EnhancedTradingEnv, n_envs=1, env_kwargs=eval_env_kwargs)
     else:

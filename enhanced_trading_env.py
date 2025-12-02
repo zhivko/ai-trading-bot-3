@@ -10,23 +10,34 @@ class EnhancedTradingEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
     def __init__(self, df, initial_balance=10000, lookback_window=50, vp_days=None, vp_bins=40,
-                 buy_threshold=0.2, sell_threshold=-0.2):
+                 buy_threshold=0.2, sell_threshold=-0.2, precalculated_vp=None):
         super(EnhancedTradingEnv, self).__init__()
         
         # --- CONFIGURATION ---
         self.initial_balance = initial_balance
         self.lookback_window = lookback_window
-        # Default to [7, 30] if None
-        self.vp_days = vp_days if vp_days else [7, 30]
-        self.vp_bins = vp_bins 
+        # Default to [3, 7] if None
+        self.vp_days = vp_days if vp_days else [3, 7]
+        self.vp_bins = vp_bins
         
         # --- THRESHOLDS ---
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
         
         # --- 1. DATA PREP ---
-        self.raw_df = df.reset_index(drop=False) 
+        self.raw_df = df.reset_index(drop=False)
         self.df = self.raw_df.copy()
+        
+        if precalculated_vp:
+            self.vp_data = precalculated_vp
+        else:
+            # Fallback to calculating it (only if not passed)
+            self.vp_data = {}
+            print(f"--- Initializing EnhancedTradingEnv (Target Bins: {self.vp_bins}) ---")
+            
+            for days in self.vp_days:
+                # All caching/hashing logic is now in volume_profile.py
+                self.vp_data[days] = get_rolling_vp(self.raw_df, days, bins=self.vp_bins)
         
         # Standard Features
         self.df['close_pct'] = self.df['close'].pct_change().fillna(0)
@@ -62,14 +73,6 @@ class EnhancedTradingEnv(gym.Env):
         self.market_features = self.df[self.features].values.astype(np.float32)
         self.raw_prices = self.df['close'].values.astype(np.float32)
         
-        # --- 2. VOLUME PROFILE (Delegated) ---
-        self.vp_data = {}
-        
-        print(f"--- Initializing EnhancedTradingEnv (Target Bins: {self.vp_bins}) ---")
-        
-        for days in self.vp_days:
-            # All caching/hashing logic is now in volume_profile.py
-            self.vp_data[days] = get_rolling_vp(self.raw_df, days, bins=self.vp_bins)
 
         # --- 3. SPACE DEFINITION ---
         market_obs_size = self.lookback_window * len(self.features)

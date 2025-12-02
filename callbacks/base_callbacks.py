@@ -52,39 +52,59 @@ class TensorboardCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         # ---------------------------------------------------------
-        # 1. FIX: Handle Vectorized Environment (List vs Dict)
+        # 1. ROBUST FIX: Handle Vectorized Environment & Tuples
         # ---------------------------------------------------------
         infos = self.locals['infos']
         
-        # If wrapped in VecEnv, infos is a list of dicts. We want the first one.
+        # Step A: Unwrap VecEnv list (Batch of infos)
         if isinstance(infos, list):
-            info = infos[0] 
+            # We only care about the first environment (Thread 0) for plotting
+            if len(infos) > 0:
+                raw_info = infos[0] 
+            else:
+                raw_info = {} 
         else:
-            info = infos # Should not happen in SB3 learn(), but safe to handle
+            raw_info = infos
 
+        # Step B: Unwrap Tuple (Gymnasium/SB3 mismatch fix)
+        # If the env returns (truncated, info) or similar tuple, find the dict.
+        final_info = {}
+        if isinstance(raw_info, tuple):
+            for item in raw_info:
+                if isinstance(item, dict):
+                    final_info = item
+                    break
+        elif isinstance(raw_info, dict):
+            final_info = raw_info
+        
         # ---------------------------------------------------------
         # 2. Get Thread 0 Action
         # ---------------------------------------------------------
-        # Actions are usually a numpy array [env_0_action, env_1_action, ...]
         actions = self.locals['actions']
         
-        # Handle case where actions might be a simple int/float or array
-        if isinstance(actions, (np.ndarray, list)):
-            action = actions[0]
+        # Handle cases where action is scalar, list, or numpy array
+        if isinstance(actions, (list, np.ndarray)):
+            if len(actions) > 0:
+                action = actions[0]
+            else:
+                action = 0
         else:
             action = actions
 
-        # If action is an array (e.g. Box space), extract the scalar
-        if isinstance(action, (np.ndarray, list)):
-            action = action[0]
+        # If the specific action is still an array (e.g. continuous space), extract scalar
+        if isinstance(action, (list, np.ndarray)):
+            try:
+                action = action[0]
+            except IndexError:
+                action = 0
 
         # ---------------------------------------------------------
         # 3. Extract Data & Store
         # ---------------------------------------------------------
-        # Using .get() with defaults prevents crashing if env keys are missing
-        current_price = info.get('current_price', info.get('price', 0))
-        ema_50 = info.get('ema50', 0)
-        portfolio_value = info.get('portfolio_value', 0)
+        # Now 'final_info' is guaranteed to be a dict, so .get() is safe.
+        current_price = final_info.get('current_price', final_info.get('price', 0))
+        ema_50 = final_info.get('ema50', 0)
+        portfolio_value = final_info.get('portfolio_value', 0)
 
         self.ep_prices.append(current_price)
         self.ep_emas.append(ema_50)
@@ -95,8 +115,8 @@ class TensorboardCallback(BaseCallback):
         # 4. Check for Episode End (Thread 0)
         # ---------------------------------------------------------
         dones = self.locals['dones']
-        # Again, handle list vs scalar
-        is_done = dones[0] if isinstance(dones, (np.ndarray, list)) else dones
+        # Handle list vs scalar for 'dones'
+        is_done = dones[0] if isinstance(dones, (list, np.ndarray)) else dones
 
         if is_done:
             self._plot_regime_chart()
@@ -110,68 +130,63 @@ class TensorboardCallback(BaseCallback):
 
     def _plot_regime_chart(self):
         """
-        Plots Price/EMA (Top) and Actions (Bottom) to visualize Bull/Bear behavior.
-        Sends the image to WandB.
+        Plots Price/EMA (Top) and Actions (Bottom) to visualize 
+        Bull/Bear behavior.
         """
-        # 1. Skip if data is insufficient
+        # Skip empty or short episodes
         if len(self.ep_prices) < 10:
             return
 
-        # 2. Setup Data
         steps = range(len(self.ep_prices))
-        prices = np.array(self.ep_prices)
-        emas = np.array(self.ep_emas)
-        actions = np.array(self.ep_actions)
-
-        # 3. Create Plot
+        
+        # Create Plot
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True, gridspec_kw={'height_ratios': [3, 1]})
 
-        # --- Top Chart: Market Context (Price + EMA) ---
-        ax1.plot(steps, prices, label='Price', color='black', linewidth=1.2)
+        # --- Top Chart: Market Regime ---
+        ax1.plot(steps, self.ep_prices, label='Price', color='black', linewidth=1.2)
         
-        # Check if EMA data is valid (not all zeros)
-        has_ema = any(x > 0 for x in emas)
-        if has_ema:
-            ax1.plot(steps, emas, label='EMA 50', color='orange', linestyle='--', linewidth=1)
+        # Only plot EMA if valid
+        if any(x > 0 for x in self.ep_emas):
+            ax1.plot(steps, self.ep_emas, label='EMA 50', color='orange', linestyle='--', linewidth=1)
             
-            # Highlight Background: Green (Bull) vs Red (Bear)
-            # Fill green where Price > EMA
-            ax1.fill_between(steps, prices, emas, where=(prices > emas), 
-                             color='green', alpha=0.1, interpolate=True, label='Bull Regime')
-            # Fill red where Price <= EMA
-            ax1.fill_between(steps, prices, emas, where=(prices <= emas), 
-                             color='red', alpha=0.1, interpolate=True, label='Bear Regime')
+            # Highlight Areas: Green (Price > EMA), Red (Price < EMA)
+            prices = np.array(self.ep_prices)
+            emas = np.array(self.ep_emas)
+            
+            # Safe filling (ensure lengths match)
+            min_len = min(len(prices), len(emas))
+            ax1.fill_between(steps[:min_len], prices[:min_len], emas[:min_len], 
+                             where=(prices[:min_len] > emas[:min_len]), color='green', alpha=0.1, label='Bull Zone')
+            ax1.fill_between(steps[:min_len], prices[:min_len], emas[:min_len], 
+                             where=(prices[:min_len] <= emas[:min_len]), color='red', alpha=0.1, label='Bear Zone')
 
         last_pv = self.ep_portfolio[-1] if self.ep_portfolio else 0
-        ax1.set_title(f"Thread 0 Analysis | End Portfolio: {last_pv:.2f}")
-        ax1.set_ylabel("Price")
+        ax1.set_title(f"Episode Analysis (Thread 0) | End Portfolio: {last_pv:.2f}")
         ax1.legend(loc='upper left')
         ax1.grid(True, alpha=0.3)
 
-        # --- Bottom Chart: Agent Actions ---
-        # Colors: Green for Buy (>0), Red for Sell (<0)
+        # --- Bottom Chart: Actions ---
+        actions = np.array(self.ep_actions)
         colors = ['green' if a > 0 else 'red' for a in actions]
         
-        ax2.bar(steps, actions, color=colors, width=1.0, alpha=0.7)
+        ax2.bar(steps, actions, color=colors, width=1.0)
         ax2.axhline(0, color='black', linewidth=0.8)
-        ax2.set_ylabel("Action\n(Sell < 0 < Buy)")
-        ax2.set_ylim(-1.1, 1.1) # Assuming action space is -1 to 1
+        ax2.set_ylabel("Action\n(-1 Sell / +1 Buy)")
+        ax2.set_ylim(-1.1, 1.1)
         ax2.grid(True, alpha=0.3)
         ax2.set_xlabel("Steps")
 
         plt.tight_layout()
 
-        # 4. Log to WandB
-        # We wrap in try/except in case WandB is not initialized
+        # Log to WandB
         try:
-            wandb.log({"trade_analysis/thread_0_regime": wandb.Image(fig)})
-        except Exception as e:
-            # If wandb isn't active, we just pass to prevent crashing training
-            pass
+            if wandb.run is not None:
+                wandb.log({"trade_analysis/thread_0_chart": wandb.Image(fig)})
+        except Exception:
+            pass 
 
-        # 5. Close figure to free memory
         plt.close(fig)
-        
+                
 
 class CustomEvalCallback(EvalCallback):
     """

@@ -8,7 +8,7 @@ def get_features(df, vp7_df, vp30_df, t):
     Extract features for a given timestamp t.
     """
     if t not in df.index or pd.isna(df.loc[t, 'close']):
-        return np.zeros(219)  # Updated size with heatmap features added
+        return np.zeros(220)  # Updated size with heatmap features added
 
 
     close = df.loc[t, 'close']
@@ -44,6 +44,14 @@ def get_features(df, vp7_df, vp30_df, t):
         atr = atr_indicator.average_true_range().iloc[-1] if not pd.isna(atr_indicator.average_true_range().iloc[-1]) else 0
     else:
         atr = 0
+
+    if len(data_up_to_t) >= 50:  # EMA 50 needs at least 50
+        ema_indicator = ta.trend.EMAIndicator(data_up_to_t, window=50)
+        ema_50 = ema_indicator.ema_indicator().iloc[-1] if not pd.isna(ema_indicator.ema_indicator().iloc[-1]) else close
+    else:
+        ema_50 = close
+
+    norm_ema_50 = (ema_50 / close) - 1
 
     # 7d VP
     vp7 = vp7_df.loc[t]
@@ -125,7 +133,7 @@ def get_features(df, vp7_df, vp30_df, t):
            [dist_hvn7, dist_lvn7, rel_poc7, in_va7,  # 4
             dist_hvn30, dist_lvn30, rel_poc30, in_va30,  # 4
             vol, imbalance],  # 2
-           [macd_line, macd_signal, macd_hist, rsi, stoch_k, stoch_d, atr],  # 7
+           [macd_line, macd_signal, macd_hist, rsi, stoch_k, stoch_d, atr, norm_ema_50],  # 8
            session  # 24
        ])
 
