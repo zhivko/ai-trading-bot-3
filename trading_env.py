@@ -261,4 +261,16 @@ class TradingEnv(gym.Env):
             "vp_heatmap": heatmap
         }
 
+        if self.current_step % 1500 == 0:
+            current_date = self.raw_df.iloc[self.current_step]["timestamp"]
+            poc = self.raw_df['poc'][self.current_step]
+            vah = self.raw_df['vah'][self.current_step]
+            val = self.raw_df['val'][self.current_step]
+            heatmap = self.raw_df['heatmap'][self.current_step] # Always vp_bins length
+
+            vah = self.raw_df['vah'][self.current_step]
+
+            dist_pct = ((current_price - poc) / poc) * 100 if poc != 0 else 0
+            print(f"Step {self.current_step} [{current_date}]: P={current_price:.0f} | POC={poc:.0f} ({dist_pct:+.2f}%) | NetWorth={self.net_worth:.0f} | ATH={self.max_net_worth:.0f}")
+
         return obs, reward, terminated, truncated, info

@@ -34,7 +34,9 @@ class EnhancedTradingEnv(gym.Env):
         super().__init__()
 
         self.timestamps = df.index
-        self.df = df.reset_index(drop=True)
+
+        self.raw_df = df.reset_index(drop=False) 
+        self.df = self.raw_df.copy()
 
         # Compute vp_data internally
         vp_data = {}
@@ -49,12 +51,20 @@ class EnhancedTradingEnv(gym.Env):
             vp_df['lvn'] = vp['lvn']
             vp_data[f'vp{days}'] = vp_df
         self.vp_data = vp_data
+
+        # Add volume profile columns to raw_df for logging access
+        if 'vp7' in self.vp_data:
+            self.raw_df['poc'] = self.vp_data['vp7']['poc'].values
+            self.raw_df['vah'] = self.vp_data['vp7']['vah'].values
+            self.raw_df['val'] = self.vp_data['vp7']['val'].values
+            self.raw_df['heatmap'] = self.vp_data['vp7']['heatmap'].values
         self.initial_balance = initial_balance
         self.fee_rate = fee_rate
         self.rsi_bonus_lambda = rsi_bonus_lambda
         self.stoch_bonus_lambda = stoch_bonus_lambda
         self.trade_cooldown = trade_cooldown_hours
         self.deadzone = deadzone
+        self.raw_prices = self.df['close'].values.astype(np.float32)
 
         self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
         self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(139,), dtype=np.float32)  # adjust if you changed features
@@ -66,17 +76,22 @@ class EnhancedTradingEnv(gym.Env):
         self.phase = 1
         self.last_trade_step = -9999
         self.net_worth_history = []
+        self.max_net_worth = self.initial_balance
 
         self.reset(seed=seed)
 
     def seed(self, seed=None):
         self.np_random, seed = gym.utils.seeding.np_random(seed)
         return [seed]
+    def set_phase(self, new_phase):
+        self.phase = new_phase
+
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.balance = self.initial_balance
         self.net_worth = self.initial_balance
+        self.max_net_worth = self.initial_balance
         self.position = 0.0
         self.entry_price = None
         self.last_trade_step = -9999
@@ -104,7 +119,7 @@ class EnhancedTradingEnv(gym.Env):
 
     def step(self, action: np.ndarray):
         action_val = float(action[0])
-        price = float(self.df.iloc[self.current_step]["close"])
+        current_price = self.raw_prices[self.current_step]
         timestamp = self.timestamps[self.current_step]
 
         info = {}
@@ -127,18 +142,21 @@ class EnhancedTradingEnv(gym.Env):
                 fee = trade_size * self.net_worth * self.fee_rate
                 self.balance -= fee
                 self.position = target
-                self.entry_price = price
+                self.entry_price = current_price
                 self.last_trade_step = self.current_step
                 info["trade"] = True
                 info["fee"] = fee
 
         # === 3. Net worth ===
         if self.position != 0 and self.entry_price is not None:
-            pnl_factor = self.position * (price / self.entry_price - 1)
+            pnl_factor = self.position * (current_price / self.entry_price - 1)
             self.net_worth = self.balance * (1 + pnl_factor)
         else:
             self.net_worth = self.balance
         self.net_worth_history.append(self.net_worth)
+
+        if self.net_worth > self.max_net_worth:
+            self.max_net_worth = self.net_worth
 
         # === 4. Base reward (PnL) ===
         total_pct = (self.net_worth / self.initial_balance - 1)
@@ -160,7 +178,7 @@ class EnhancedTradingEnv(gym.Env):
             if timestamp in vp7_row.index:
                 poc = vp7_row.loc[timestamp, 'poc']
                 if pd.notna(poc):
-                    dist = abs(price - poc) / price
+                    dist = abs(current_price - poc) / current_price
                     vp_bonus = 0.08 * (1.0 - min(dist / 0.02, 1.0))  # max +0.08 if within 2%
         reward += vp_bonus
 
@@ -185,6 +203,19 @@ class EnhancedTradingEnv(gym.Env):
 
         if wandb and wandb.run:
             wandb.log(info)
+
+        if self.current_step % 1500 == 0:
+            current_date = self.timestamps[self.current_step]
+            poc = self.raw_df['poc'][self.current_step]
+            vah = self.raw_df['vah'][self.current_step]
+            val = self.raw_df['val'][self.current_step]
+            heatmap = self.raw_df['heatmap'][self.current_step] # Always vp_bins length
+
+            vah = self.raw_df['vah'][self.current_step]
+
+            dist_pct = ((current_price - poc) / poc) * 100 if poc != 0 else 0
+            print(f"Step {self.current_step} [{current_date}]: P={current_price:.0f} | POC={poc:.0f} ({dist_pct:+.2f}%) | NetWorth={self.net_worth:.0f} | ATH={self.max_net_worth:.0f}")
+
 
         return obs, float(reward), bool(done), bool(done), info
 
