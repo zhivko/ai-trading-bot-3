@@ -25,8 +25,6 @@ from callbacks.feature_saliency import FeatureSaliencyCallback
 os.makedirs("models", exist_ok=True)
 os.makedirs("logs", exist_ok=True)
 
-wandb.require("core")
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Deep Learning Trading Bot")
     
@@ -103,8 +101,6 @@ def main():
         print(f"Split Data: Train ({len(train_df)}) | Test ({len(df) - len(train_df)})")
     
     # 3. Create Vectorized Environment (Parallel)
-    # We pass the dataframe to the env. Since it's read-only, multiprocessing is usually okay on Linux.
-    # On Windows, it might be slower due to pickling, but works.
     env_kwargs = {
         'df': train_df,
         'initial_balance': args.initial_balance,
@@ -114,21 +110,18 @@ def main():
     
     print(f"Creating {args.n_envs} parallel environments...")
     
-    # SubprocVecEnv for true parallelism (requires 'if __name__ == "__main__":')
-    # DummyVecEnv for debugging
+    # SubprocVecEnv for true parallelism
     vec_env_cls = SubprocVecEnv if args.n_envs > 1 else DummyVecEnv
     
     env = make_vec_env(
-        TradingEnv,
-        n_envs=args.n_envs,
+        TradingEnv, 
+        n_envs=args.n_envs, 
         env_kwargs=env_kwargs,
         vec_env_cls=vec_env_cls,
-        monitor_dir="./logs/",
-        monitor_kwargs={'info_keywords': ('portfolio_value', 'sharpe_ratio', 'max_drawdown')}
+        monitor_dir="./logs/"
     )
     
-    # 4. Create Single Instance for Saliency & Names (VecEnv hides attributes)
-    # We create one separate instance just to get names and run saliency checks
+    # 4. Create Single Instance for Saliency & Names
     dummy_saliency_env = TradingEnv(**env_kwargs)
 
     # 5. Model Setup
@@ -139,7 +132,6 @@ def main():
     
     # --- RESUME LOGIC ---
     if args.resume:
-        # Determine path
         load_path = args.model_path
         if load_path is None:
             # Try to find best model
@@ -212,6 +204,7 @@ def main():
     # 7. Learn
     print(f"🚀 Starting Training for {args.total_timesteps} steps...")
     try:
+        # progress_bar=True requires 'tqdm' and 'rich' installed
         model.learn(total_timesteps=args.total_timesteps, callback=callback_list, progress_bar=True)
     except KeyboardInterrupt:
         print("🛑 Training interrupted. Saving...")
@@ -225,5 +218,4 @@ def main():
         wandb.finish()
 
 if __name__ == "__main__":
-    # Required for multiprocessing on Windows
     main()
