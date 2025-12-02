@@ -6,7 +6,7 @@ import torch
 import warnings
 import sys
 import shutil
-from dotenv import load_dotenv
+import glob
 from stable_baselines3.common.utils import get_system_info
 
 # --- WARNING SUPPRESSION ---
@@ -23,7 +23,6 @@ from stable_baselines3.common.env_util import make_vec_env
 # WandB
 import wandb
 from wandb.integration.sb3 import WandbCallback
-wandb.require("core")
 
 # Local Imports
 from trading_env import TradingEnv
@@ -86,18 +85,16 @@ def load_and_process_data(csv_path):
     return df
 
 def main():
-    load_dotenv()
     args = parse_args()
     
     # 1. Initialize WandB
     if args.wandb:
-        wandb.login(key=os.getenv("WANDB_API_KEY"))
         run_name = f"{args.algo}_{args.pair}_VP{args.vp_bins}_Envs{args.n_envs}"
         wandb.init(
             project=args.project_name,
             config=vars(args),
             name=run_name,
-            sync_tensorboard=True,
+            sync_tensorboard=True, # This manages the step count automatically
             monitor_gym=True
         )
     
@@ -120,6 +117,7 @@ def main():
     
     print(f"Creating {args.n_envs} parallel environments...")
     
+    # Use SubprocVecEnv for true parallelism
     vec_env_cls = SubprocVecEnv if args.n_envs > 1 else DummyVecEnv
     
     env = make_vec_env(
@@ -163,30 +161,10 @@ def main():
                 model = PPO.load(load_path, env=env, print_system_info=True, device=args.device, tensorboard_log=tensorboard_log)
         else:
              print("⚠️ Resume requested but no model found. Starting fresh.")
-    else:
-        # delete models/{algo}_{pair} directory if it exists
-        model_dir = f"models/{args.algo}_{args.pair}"
 
-        if os.path.exists(model_dir):
-            shutil.rmtree(model_dir)
-            print(f"🧹 Deleted old model directory: {model_dir}")
-
-        # delete {algo}_tb/ directory if it exists
-        if os.path.exists(tensorboard_log):
-            shutil.rmtree(tensorboard_log)
-            print(f"🧹 Deleted old tensorboard logs: {tensorboard_log}")
-
-        # delete checkpoints/{algo}_{pair} directory if it exists
-        checkpoint_dir = f"checkpoints/{args.algo}_{args.pair}"
-        if os.path.exists(checkpoint_dir):
-            shutil.rmtree(checkpoint_dir)
-            print(f"🧹 Deleted old checkpoints: {checkpoint_dir}"   )
-
-
-    # --- CLEANUP FOR FRESH START ---
+    # --- FRESH START LOGIC ---
     if model is None:
         if not args.resume:
-            # Delete old tensorboard logs to avoid confusing curves
             if os.path.exists(tensorboard_log):
                 shutil.rmtree(tensorboard_log)
 
@@ -225,11 +203,18 @@ def main():
                 device=args.device
             )
         
+    sysinfo = get_system_info()
+    print("System Information:")
+    if torch.cuda.is_available():
+        print(f"- GPU Model: {torch.cuda.get_device_name()}")
+        sysinfo[0]['GPU'] = torch.cuda.get_device_name()
 
+    for key, value in sorted(sysinfo[0].items()):
+        print(f"- {key}: {value}")
 
     # 6. Callbacks
     
-    # A. Checkpoint Callback (Saves every 50k steps)
+    # Checkpoint Callback (Saves every 50k steps)
     checkpoint_path = f"checkpoints/{args.algo}_{args.pair}"
     checkpoint_callback = CheckpointCallback(
         save_freq=50000, 
@@ -241,7 +226,7 @@ def main():
         SaveOnBestTrainingRewardCallback(check_freq=10000, log_dir="./logs/"),
         TensorboardCallback(),
         FeatureSaliencyCallback(dummy_saliency_env, check_freq=50000),
-        checkpoint_callback  # <--- ADDED CHECKPOINTING
+        checkpoint_callback
     ]
     
     if args.wandb:
@@ -250,16 +235,9 @@ def main():
             model_save_path=f"models/{args.algo}_{args.pair}",
             verbose=2
         ))
+        
     callback_list = CallbackList(callbacks)
-
-    sysinfo = get_system_info()
-    if torch.cuda.is_available():
-        sysinfo[0]['GPU Model'] = torch.cuda.get_device_name()
-    print("System Information:")
-
-    for key, value in sorted(sysinfo[0].items()):
-        print(f"- {key}: {value}")
-
+    
     # 7. Learn
     print(f"🚀 Starting Training for {args.total_timesteps} steps...")
     try:
@@ -276,5 +254,4 @@ def main():
         wandb.finish()
 
 if __name__ == "__main__":
-    import glob # Needed for resume logic
     main()

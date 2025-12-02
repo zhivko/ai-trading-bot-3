@@ -35,17 +35,17 @@ class FeatureSaliencyCallback(BaseCallback):
             obs_tensor = torch.tensor(obs_single, dtype=torch.float32).to(self.model.device)
             obs_tensor.requires_grad_()
 
-            # 2. Define Forward Function (ROBUST VERSION)
+            # 2. Define Forward Function (Robust Architecture Check)
             def forward_func(x):
                 # --- SAC LOGIC ---
                 if hasattr(self.model.policy, 'actor'):
-                    # SAC features are inside the actor
+                    # Access features via actor
                     features = self.model.policy.actor.features_extractor(x)
                     return self.model.policy.actor.get_action_dist_params(features)[0]
                 
                 # --- PPO LOGIC ---
                 elif hasattr(self.model.policy, 'action_net'):
-                    # PPO features extractor
+                    # Access features via policy
                     if hasattr(self.model.policy, 'features_extractor'):
                         features = self.model.policy.features_extractor(x)
                     else:
@@ -57,7 +57,7 @@ class FeatureSaliencyCallback(BaseCallback):
                 else:
                     return None
 
-            # Test function before running heavy calculations
+            # Test function
             if forward_func(obs_tensor) is None:
                 print("⚠️ Saliency: Could not determine model architecture. Skipping.")
                 return
@@ -82,13 +82,12 @@ class FeatureSaliencyCallback(BaseCallback):
             agg_map = {}
             for name, val in zip(full_names, mean_attr):
                 imp = abs(val)
-                # Clean up names for grouping
+                # Grouping Logic
                 if "VP_" in name and "Bin" in name: 
                     group = "Volume Profile (Heatmap)"
                 elif "VP_" in name and "Dist" in name: 
                     group = "VP Levels"
                 elif "_t-" in name: 
-                    # Collapse windowed features (e.g. rsi_t-10 -> rsi)
                     group = name.split('_t-')[0].replace('_norm', '') + " (Window)"
                 else: 
                     group = name.replace('_norm', '')
@@ -113,6 +112,8 @@ class FeatureSaliencyCallback(BaseCallback):
         plt.tight_layout()
         
         if wandb.run is not None:
-            # FIX: Do not pass 'step' here, WandB handles it via sync_tensorboard
+            # FIX: Do NOT pass 'step=step' here.
+            # sync_tensorboard=True in main.py handles the step automatically.
             wandb.log({"feature_importance": wandb.Image(plt)})
+            
         plt.close()
