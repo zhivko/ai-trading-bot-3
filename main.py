@@ -9,9 +9,6 @@ import shutil
 import glob
 from stable_baselines3.common.utils import get_system_info
 
-# --- WARNING SUPPRESSION ---
-# Fixes "Training and eval env are not of the same type"
-warnings.filterwarnings("ignore", category=UserWarning, module="stable_baselines3.common.vec_env")
 # Fixes "The behavior of DataFrame concatenation..."
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
@@ -141,8 +138,8 @@ def main():
         print("Creating Evaluation environment...")
         eval_env_kwargs = env_kwargs.copy()
         eval_env_kwargs['df'] = test_df
-        # Eval env must be single-threaded for accurate results
-        eval_env = make_vec_env(TradingEnv, n_envs=1, env_kwargs=eval_env_kwargs)
+        # Eval env using same vec_env_cls as training for consistency
+        eval_env = make_vec_env(TradingEnv, n_envs=1, env_kwargs=eval_env_kwargs, vec_env_cls=vec_env_cls)
 
     # 5. Create Single Instance for Saliency
     dummy_saliency_env = TradingEnv(**train_env_kwargs)
