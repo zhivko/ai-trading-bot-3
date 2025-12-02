@@ -216,6 +216,22 @@ def main():
                 tensorboard_log=tensorboard_log,
                 device=args.device
             )
+    else:
+        # delete directory for {algo}_tb
+        if os.path.exists(tensorboard_log):
+            shutil.rmtree(tensorboard_log)  
+
+        # remove also checkpoints for this algo/pair to avoid confusion
+        chk_dir = f"checkpoints/{args.algo}_{args.pair}"
+        if os.path.exists(chk_dir):
+            shutil.rmtree(chk_dir)
+
+        # remove also models for this algo/pair to avoid confusion
+        model_dir = f"models/{args.algo}_{args.pair}"
+        if os.path.exists(model_dir):
+            shutil.rmtree(model_dir)        
+
+
         
     sysinfo = get_system_info()
     print("System Information:")

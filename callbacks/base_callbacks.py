@@ -77,6 +77,6 @@ class TensorboardCallback(BaseCallback):
 
         # EXPLICITLY LOG TO WANDB (Fixes missing charts)
         if wandb.run is not None and metrics:
-            wandb.log(metrics, step=self.num_timesteps)
+            wandb.log(metrics)
 
         return True
