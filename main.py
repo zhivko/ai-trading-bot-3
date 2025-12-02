@@ -20,8 +20,8 @@ from callbacks.feature_saliency import FeatureSaliencyCallback
 import wandb
 from wandb.integration.sb3 import WandbCallback
 
-from trading_env import TradingEnv 
-from enhanced_trading_env import EnhancedTradingEnv as TradingEnv
+
+from enhanced_trading_env import EnhancedTradingEnv as TradingEnv  # Alias to avoid changing all calls
 from volume_profile import get_rolling_vp  # Your new wrapper
 
 
@@ -181,6 +181,7 @@ def main():
     parser.add_argument("--resume", nargs='?', const='LATEST', default=None)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--batch-size", type=int, default=4096)
+    parser.add_argument("--num_envs", type=int, default=14)
     parser.add_argument("--rsi-bonus-lambda", type=float, default=0.02)
     parser.add_argument("--stoch-bonus-lambda", type=float, default=0.01)
     parser.add_argument("--wandb", action="store_true")
@@ -226,24 +227,32 @@ def main():
     # --- 3. WARMUP ---
     print("🔥 Warming up cache on Main Process...")
 
+    vp_data = {'vp7': get_rolling_vp(train_df, window_days=7), 'vp30': get_rolling_vp(train_df, window_days=30)}
+
+    # Warmup env (use vp_data, not vp_days)
     warmup_env = TradingEnv(
-        train_df,
-        vp_days=[7,30],
-        rsi_bonus_lambda=args.rsi_bonus_lambda,
-        stoch_bonus_lambda=args.stoch_bonus_lambda,
+        df=train_df,
+        vp_data=vp_data,  # NEW: Pass the dict
+        rsi_bonus_lambda=0.02,
+        stoch_bonus_lambda=0.01,
         trade_cooldown_hours=6,
         deadzone=0.15,
     )
-    warmup_env.close()
-    print("✅ Cache ready. Launching Swarm.")
 
-    # --- 4. INIT PARALLEL ENVIRONMENTS ---
-    def make_train_env():
-        return Monitor(TradingEnv(train_df, vp_days=args.vp_days))
+    # For VecEnv lambda (if used)
+    def make_env():
+        return TradingEnv(
+            df=train_df,
+            vp_data=vp_data,
+            rsi_bonus_lambda=0.02,
+            stoch_bonus_lambda=0.01,
+            trade_cooldown_hours=6,
+            deadzone=0.15,
+        )
 
-    env = SubprocVecEnv([make_train_env for _ in range(n_cpu)])
+    env = SubprocVecEnv([make_env for _ in range(args.num_envs)])
     # EvalEnv must save stats, so we need to access it later via unwrapped
-    eval_env = DummyVecEnv([lambda: Monitor(TradingEnv(test_df, vp_days=args.vp_days))])
+    eval_env = DummyVecEnv([lambda: Monitor(TradingEnv(test_df, vp_data=vp_data))])
 
     # --- 5. MODEL SETUP ---
     policy_kwargs = dict(net_arch=[512, 512]) 
