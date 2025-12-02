@@ -4,17 +4,19 @@ import pandas as pd
 import numpy as np
 import torch
 import warnings
+import sys
+import shutil
 from stable_baselines3.common.utils import get_system_info
 
-# Suppress annoying warnings
+# --- WARNING SUPPRESSION ---
+warnings.filterwarnings("ignore", category=UserWarning, module="stable_baselines3.common.vec_env")
 warnings.simplefilter(action='ignore', category=FutureWarning)
-warnings.simplefilter(action='ignore', category=UserWarning)
 
 # SB3 Imports
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
-from stable_baselines3.common.callbacks import CallbackList
+from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
 from stable_baselines3.common.env_util import make_vec_env
 
 # WandB
@@ -29,6 +31,7 @@ from callbacks.feature_saliency import FeatureSaliencyCallback
 # Create directories
 os.makedirs("models", exist_ok=True)
 os.makedirs("logs", exist_ok=True)
+os.makedirs("checkpoints", exist_ok=True)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Deep Learning Trading Bot")
@@ -64,7 +67,6 @@ def parse_args():
 
 def load_and_process_data(csv_path):
     if not os.path.exists(csv_path):
-        # Check root
         if os.path.exists("BTCUSDT_data.csv"):
             csv_path = "BTCUSDT_data.csv"
         else:
@@ -73,7 +75,6 @@ def load_and_process_data(csv_path):
     print(f"Loading data from {csv_path}...")
     df = pd.read_csv(csv_path)
     
-    # Normalize columns
     df.columns = [c.lower() for c in df.columns]
     if 'timestamp' in df.columns:
         df.rename(columns={'timestamp': 'date'}, inplace=True)
@@ -105,7 +106,7 @@ def main():
         train_df = df[mask].reset_index(drop=True)
         print(f"Split Data: Train ({len(train_df)}) | Test ({len(df) - len(train_df)})")
     
-    # 3. Create Vectorized Environment (Parallel)
+    # 3. Create Vectorized Environment
     env_kwargs = {
         'df': train_df,
         'initial_balance': args.initial_balance,
@@ -115,7 +116,6 @@ def main():
     
     print(f"Creating {args.n_envs} parallel environments...")
     
-    # SubprocVecEnv for true parallelism
     vec_env_cls = SubprocVecEnv if args.n_envs > 1 else DummyVecEnv
     
     env = make_vec_env(
@@ -126,7 +126,7 @@ def main():
         monitor_dir="./logs/"
     )
     
-    # 4. Create Single Instance for Saliency & Names
+    # 4. Create Single Instance for Saliency
     dummy_saliency_env = TradingEnv(**env_kwargs)
 
     # 5. Model Setup
@@ -139,12 +139,17 @@ def main():
     if args.resume:
         load_path = args.model_path
         if load_path is None:
-            # Try to find best model
+            # Check for best model
             default_best = f"logs/best_model.zip"
             if os.path.exists(default_best):
                 load_path = default_best
+            # Fallback: Check for latest checkpoint
             else:
-                print("⚠️ No model path provided and no 'best_model.zip' found. Starting fresh.")
+                chk_dir = f"checkpoints/{args.algo}_{args.pair}"
+                if os.path.exists(chk_dir):
+                    files = glob.glob(f"{chk_dir}/*.zip")
+                    if files:
+                        load_path = max(files, key=os.path.getctime) # Latest file
         
         if load_path and os.path.exists(load_path):
             print(f"📥 RESUMING: Loading model from {load_path}")
@@ -152,29 +157,16 @@ def main():
                 model = SAC.load(load_path, env=env, print_system_info=True, device=args.device, tensorboard_log=tensorboard_log)
             else:
                 model = PPO.load(load_path, env=env, print_system_info=True, device=args.device, tensorboard_log=tensorboard_log)
-    else:
-        # we need to delete dir and files in /models/{algo}_{pair}
-        model_dir = f"models/{args.algo}_{args.pair}"
-        if os.path.exists(model_dir):
-            for f in os.listdir(model_dir):
-                os.remove(os.path.join(model_dir, f))
-            os.rmdir(model_dir)
-        
-        # we need to dir and files in /{algo}_tb dir
-        tb_dir = f"./{args.algo}_tb/"
-        if os.path.exists(tb_dir):
-            for f in os.listdir(tb_dir):
-                file_path = os.path.join(tb_dir, f)
-                if os.path.isfile(file_path):
-                    os.remove(file_path)
-                else:
-                    import shutil
-                    shutil.rmtree(file_path)
-            os.rmdir(tb_dir)
+        else:
+             print("⚠️ Resume requested but no model found. Starting fresh.")
 
-
-    # --- FRESH START LOGIC ---
+    # --- CLEANUP FOR FRESH START ---
     if model is None:
+        if not args.resume:
+            # Delete old tensorboard logs to avoid confusing curves
+            if os.path.exists(tensorboard_log):
+                shutil.rmtree(tensorboard_log)
+
         print(f"✨ Creating NEW {args.algo.upper()} Model")
         if args.algo == 'sac':
             model = SAC(
@@ -210,9 +202,7 @@ def main():
                 device=args.device
             )
         
-
     sysinfo = get_system_info()
-    # print sistem info
     print("System Information:")
     if torch.cuda.is_available():
         print(f"- GPU Model: {torch.cuda.get_device_name()}")
@@ -220,10 +210,20 @@ def main():
         print(f"- {key}: {value}")
 
     # 6. Callbacks
+    
+    # A. Checkpoint Callback (Saves every 50k steps)
+    checkpoint_path = f"checkpoints/{args.algo}_{args.pair}"
+    checkpoint_callback = CheckpointCallback(
+        save_freq=50000, 
+        save_path=checkpoint_path,
+        name_prefix=f"{args.algo}_vp{args.vp_bins}"
+    )
+
     callbacks = [
         SaveOnBestTrainingRewardCallback(check_freq=10000, log_dir="./logs/"),
         TensorboardCallback(),
-        FeatureSaliencyCallback(dummy_saliency_env, check_freq=50000) 
+        FeatureSaliencyCallback(dummy_saliency_env, check_freq=50000),
+        checkpoint_callback  # <--- ADDED CHECKPOINTING
     ]
     
     if args.wandb:
@@ -238,7 +238,6 @@ def main():
     # 7. Learn
     print(f"🚀 Starting Training for {args.total_timesteps} steps...")
     try:
-        # progress_bar=True requires 'pip install tqdm rich'
         model.learn(total_timesteps=args.total_timesteps, callback=callback_list, progress_bar=True)
     except KeyboardInterrupt:
         print("🛑 Training interrupted. Saving...")
@@ -252,4 +251,5 @@ def main():
         wandb.finish()
 
 if __name__ == "__main__":
+    import glob # Needed for resume logic
     main()

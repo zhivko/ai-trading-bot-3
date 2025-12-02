@@ -26,7 +26,7 @@ class FeatureSaliencyCallback(BaseCallback):
             if isinstance(obs, dict): 
                 obs = obs['default']
             
-            # Handle VecEnv batching
+            # Handle VecEnv batching (take 1st item)
             if len(obs.shape) > 1 and obs.shape[0] > 1:
                 obs_single = obs[0:1] 
             else:
@@ -35,16 +35,17 @@ class FeatureSaliencyCallback(BaseCallback):
             obs_tensor = torch.tensor(obs_single, dtype=torch.float32).to(self.model.device)
             obs_tensor.requires_grad_()
 
-            # 2. Define Forward Function
+            # 2. Define Forward Function (ROBUST VERSION)
             def forward_func(x):
                 # --- SAC LOGIC ---
                 if hasattr(self.model.policy, 'actor'):
+                    # SAC features are inside the actor
                     features = self.model.policy.actor.features_extractor(x)
                     return self.model.policy.actor.get_action_dist_params(features)[0]
                 
                 # --- PPO LOGIC ---
                 elif hasattr(self.model.policy, 'action_net'):
-                    # Access features_extractor safely
+                    # PPO features extractor
                     if hasattr(self.model.policy, 'features_extractor'):
                         features = self.model.policy.features_extractor(x)
                     else:
@@ -56,7 +57,9 @@ class FeatureSaliencyCallback(BaseCallback):
                 else:
                     return None
 
+            # Test function before running heavy calculations
             if forward_func(obs_tensor) is None:
+                print("⚠️ Saliency: Could not determine model architecture. Skipping.")
                 return
 
             # 3. Calculate Integrated Gradients
@@ -79,11 +82,13 @@ class FeatureSaliencyCallback(BaseCallback):
             agg_map = {}
             for name, val in zip(full_names, mean_attr):
                 imp = abs(val)
+                # Clean up names for grouping
                 if "VP_" in name and "Bin" in name: 
                     group = "Volume Profile (Heatmap)"
                 elif "VP_" in name and "Dist" in name: 
                     group = "VP Levels"
                 elif "_t-" in name: 
+                    # Collapse windowed features (e.g. rsi_t-10 -> rsi)
                     group = name.split('_t-')[0].replace('_norm', '') + " (Window)"
                 else: 
                     group = name.replace('_norm', '')
@@ -108,6 +113,6 @@ class FeatureSaliencyCallback(BaseCallback):
         plt.tight_layout()
         
         if wandb.run is not None:
-            # FIXED: Removed 'step=step' to prevent conflict with sync_tensorboard
+            # FIX: Do not pass 'step' here, WandB handles it via sync_tensorboard
             wandb.log({"feature_importance": wandb.Image(plt)})
         plt.close()
