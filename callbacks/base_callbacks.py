@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import wandb # Import wandb
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.results_plotter import load_results, ts2xy
 
@@ -36,7 +37,7 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
 
 class TensorboardCallback(BaseCallback):
     """
-    Custom callback for plotting additional values in tensorboard.
+    Custom callback for plotting additional values in Tensorboard AND WandB.
     """
     def __init__(self, verbose=0):
         super(TensorboardCallback, self).__init__(verbose)
@@ -49,16 +50,33 @@ class TensorboardCallback(BaseCallback):
         else:
             info = {}
 
+        # Prepare metrics dictionary
+        metrics = {}
+        
         if "portfolio_value" in info:
-            self.logger.record("market_context/portfolio_value", info["portfolio_value"])
+            val = info["portfolio_value"]
+            self.logger.record("market_context/portfolio_value", val)
+            metrics["market_context/portfolio_value"] = val
+            
         if "balance" in info:
-            self.logger.record("market_context/balance", info["balance"])
+            val = info["balance"]
+            self.logger.record("market_context/balance", val)
+            metrics["market_context/balance"] = val
+            
         if "price" in info:
-            self.logger.record("market_context/price_main", info["price"])
+            val = info["price"]
+            self.logger.record("market_context/price_main", val)
+            metrics["market_context/price_main"] = val
         
         # Log Action Distribution (Mean)
         actions = self.locals.get("actions", None)
         if actions is not None:
-            self.logger.record("action/action_mean", np.mean(actions))
+            val = np.mean(actions)
+            self.logger.record("action/action_mean", val)
+            metrics["action/action_mean"] = val
+
+        # EXPLICITLY LOG TO WANDB (Fixes missing charts)
+        if wandb.run is not None and metrics:
+            wandb.log(metrics, step=self.num_timesteps)
 
         return True
