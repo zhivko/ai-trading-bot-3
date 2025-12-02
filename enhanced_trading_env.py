@@ -10,7 +10,7 @@ class EnhancedTradingEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
     def __init__(self, df, initial_balance=10000, lookback_window=50, vp_days=None, vp_bins=40,
-                 buy_threshold=0.2, sell_threshold=-0.2, precalculated_vp=None):
+                 buy_threshold=0.2, sell_threshold=-0.2, precalculated_vp=None, trading_fee_multiplier=0.0025):
         super(EnhancedTradingEnv, self).__init__()
         
         # --- CONFIGURATION ---
@@ -19,6 +19,7 @@ class EnhancedTradingEnv(gym.Env):
         # Default to [3, 7] if None
         self.vp_days = vp_days if vp_days else [3, 7]
         self.vp_bins = vp_bins
+        self.trading_fee_multiplier = trading_fee_multiplier
         
         # --- THRESHOLDS ---
         self.buy_threshold = buy_threshold
@@ -67,7 +68,11 @@ class EnhancedTradingEnv(gym.Env):
         self.df['macd_norm'] = self.df['macd'] / self.df['close']
         self.df['macd_sig_norm'] = self.df['macd_signal'] / self.df['close']
 
-        self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm']
+        # EMA 50 for trend
+        self.df['ema_50'] = self.df['close'].ewm(span=50, adjust=False).mean()
+        self.df['trend_ema50'] = (self.df['close'] - self.df['ema_50']) / self.df['ema_50']
+
+        self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema50']
         self.df.fillna(0, inplace=True)
         
         self.market_features = self.df[self.features].values.astype(np.float32)
@@ -158,7 +163,6 @@ class EnhancedTradingEnv(gym.Env):
         action_val = float(action[0])
         
         # --- TRADE LOGIC ---
-        REALISTIC_FEE = 0.0025 
         trade_penalty = 0
         
         if abs(action_val - self.prev_action) > 0.1:
@@ -172,7 +176,7 @@ class EnhancedTradingEnv(gym.Env):
                 shares_bought = amount_to_invest / current_price
                 self.balance -= amount_to_invest
                 self.shares_held += shares_bought
-                trade_penalty = REALISTIC_FEE
+                trade_penalty = self.trading_fee_multiplier
             else:
                 trade_penalty = 0.01 
         
@@ -181,7 +185,7 @@ class EnhancedTradingEnv(gym.Env):
             if shares_to_sell * current_price > 10:
                 self.balance += shares_to_sell * current_price
                 self.shares_held -= shares_to_sell
-                trade_penalty = REALISTIC_FEE 
+                trade_penalty = self.trading_fee_multiplier
             else:
                 trade_penalty = 0.01
 
@@ -208,6 +212,30 @@ class EnhancedTradingEnv(gym.Env):
             if cur_stoch > 0.8: indicator_bonus += 0.3
         
         reward += indicator_bonus
+
+        # --- Trend Alignment Shaping ---
+        # Logic:
+        # If Price > EMA (Bull) AND Position > 0 (Long) -> Bonus
+        # If Price < EMA (Bear) AND Position < 0 (Short) -> Bonus
+        # Otherwise -> Penalty or 0
+
+        # Get current state
+        price = self.df.iloc[self.current_step]['close']
+        ema = self.df.iloc[self.current_step]['ema_50']
+
+        # Normalized trend strength
+        trend_diff = (price - ema) / ema
+
+        # Check if holding shares (normalized between -1 and 1 approx)
+        current_position = self.shares_held * price / self.balance if self.balance > 0 else 0
+
+        # Alignment score:
+        # If trend_diff is positive and we are long (pos position), result is positive.
+        # If trend_diff is negative and we are short (neg position), result is positive.
+        # If they mismatch, result is negative.
+        alignment_bonus = trend_diff * current_position * 0.1  # Weight it small
+
+        reward += alignment_bonus
 
         self.prev_net_worth = self.net_worth
 

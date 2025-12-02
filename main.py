@@ -132,7 +132,8 @@ def main():
         'vp_bins': args.vp_bins,
         'buy_threshold': args.buy_threshold,
         'sell_threshold': args.sell_threshold,
-        'precalculated_vp': vp_data  # Pass it here
+        'precalculated_vp': vp_data,  # Pass it here
+        'trading_fee_multiplier': 0.00075,  # 0.075% (Binance default) usually kills noise trading
     }
     
     train_env_kwargs = env_kwargs.copy()
