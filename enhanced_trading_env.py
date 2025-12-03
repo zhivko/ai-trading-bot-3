@@ -107,6 +107,7 @@ class EnhancedTradingEnv(gym.Env):
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
         
         self.phase = 1
+        self.prev_sign = 0  # Initialize for switch penalty
         self.reset()
 
     def get_feature_names(self):
@@ -134,6 +135,7 @@ class EnhancedTradingEnv(gym.Env):
         self.max_net_worth = self.initial_balance
         self.trade_count = 0
         self.prev_action = 0
+        self.prev_sign = 0  # Reset for switch penalty
         self.history_net_worth = [self.initial_balance]
         
         if len(self.df) > self.max_lookback + 1000:
@@ -258,11 +260,37 @@ class EnhancedTradingEnv(gym.Env):
         if self.net_worth > self.max_net_worth:
             self.max_net_worth = self.net_worth
 
+        # --- SWITCH PENALTY LOGIC ---
+        # Calculate the "Sign" of the action (-1 Sell, 0 Hold, 1 Buy)
+        # We use the raw action_val from the network, not just the threshold result
+        current_sign = 1 if action_val > 0.1 else (-1 if action_val < -0.1 else 0)
+
+        switch_penalty = 0
+
+        # If we flip direction (e.g. 1 -> -1 or -1 -> 1)
+        # AND we weren't just holding (0)
+        if current_sign != 0 and self.prev_sign != 0 and current_sign != self.prev_sign:
+            # HEAVY PENALTY: 1.0% of portfolio.
+            # This tells the bot: "Do not reverse position unless you expect >1% profit!"
+            switch_penalty = 0.01 * self.balance
+
+        # Update for next step
+        self.prev_sign = current_sign
+        # -------------------------------------------------
+
         step_reward = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
         reward = step_reward * 100
         reward -= trade_penalty
         reward -= stability_penalty # <--- Add this
+        reward -= switch_penalty
 
+        # --- HOLDING BONUS ---
+        # Reward holding profitable positions to encourage swing trading
+        holding_bonus = 0
+        if self.shares_held != 0 and step_reward > 0:
+            holding_bonus = step_reward * 0.1  # 10% bonus on profits when holding
+
+        reward += holding_bonus
 
         # --- REWARD SHAPING (RSI/STOCH) ---
         cur_rsi = self.df.iloc[self.current_step]['rsi']

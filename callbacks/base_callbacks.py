@@ -6,6 +6,9 @@ from stable_baselines3.common.results_plotter import load_results, ts2xy
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
+import sys
+sys.path.append('..')
+from fetch_metrics import generate_metrics
 
 
 class SaveOnBestTrainingRewardCallback(BaseCallback):
@@ -257,6 +260,9 @@ class CustomEvalCallback(EvalCallback):
                 if self.best_model_save_path is not None:
                     self.model.save(os.path.join(self.best_model_save_path, 'best_model'))
                 self._log_best_to_wandb(mean_reward, std_reward)
+            # Generate metrics after evaluation
+            if wandb.run is not None:
+                generate_metrics()
         return True
 
     def _log_best_to_wandb(self, mean_reward, std_reward):

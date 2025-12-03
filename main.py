@@ -28,6 +28,7 @@ from wandb.integration.sb3 import WandbCallback
 from enhanced_trading_env import EnhancedTradingEnv
 from callbacks.base_callbacks import SaveOnBestTrainingRewardCallback, TensorboardCallback, CustomEvalCallback
 from callbacks.feature_saliency import FeatureSaliencyCallback
+from fetch_metrics import generate_metrics
 
 # --- WARNING SUPPRESSION ---
 warnings.filterwarnings("ignore", category=UserWarning, module="stable_baselines3.common.vec_env")
@@ -133,7 +134,7 @@ def main():
         'buy_threshold': args.buy_threshold,
         'sell_threshold': args.sell_threshold,
         'precalculated_vp': vp_data,  # Pass it here
-        'trading_fee_multiplier': 0.00075,  # 0.075% (Binance default) usually kills noise trading
+        'trading_fee_multiplier': 0.002,  # 0.2% fee (Simulates slippage + fee)
     }
     
     train_env_kwargs = env_kwargs.copy()
@@ -324,8 +325,9 @@ def main():
     final_path = f"models/{args.algo}_{args.pair}_final"
     model.save(final_path)
     print(f"✅ Model saved to {final_path}")
-    
+
     if args.wandb:
+        generate_metrics()
         wandb.finish()
 
 if __name__ == "__main__":
