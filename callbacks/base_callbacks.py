@@ -44,73 +44,60 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
 
 class TensorboardCallback(BaseCallback):
     """
-    Custom callback for plotting additional values in tensorboard/wandb.
-    Now supports DATE/TIME on X-Axis using info['date'].
+    Custom callback for plotting:
+    1. Price vs EMA vs Action (Regime Analysis)
+    2. Financial Metrics (Sharpe, Drawdown, Benchmark Comparison)
     """
 
     def __init__(self, verbose=0):
         super().__init__(verbose)
-        # Buffers
         self.ep_prices = []
         self.ep_emas = []
         self.ep_actions = []
         self.ep_portfolio = []
-        self.ep_dates = [] # <--- Buffer for dates
+        self.ep_dates = [] 
 
     def _on_step(self) -> bool:
-        # 1. Handle VecEnv & Tuples (Robust extraction)
+        # 1. Robust Info Extraction
         infos = self.locals['infos']
+        info = infos[0] if isinstance(infos, list) else infos
         
-        # Unwrap VecEnv list
-        if isinstance(infos, list):
-            raw_info = infos[0] if len(infos) > 0 else {}
-        else:
-            raw_info = infos
-
-        # Unwrap Tuple (Gymnasium/SB3 mismatch fix)
-        final_info = {}
-        if isinstance(raw_info, tuple):
-            for item in raw_info:
+        # Handle tuple unpacking if necessary
+        if isinstance(info, tuple):
+            for item in info:
                 if isinstance(item, dict):
-                    final_info = item
+                    info = item
                     break
-        elif isinstance(raw_info, dict):
-            final_info = raw_info
+            if not isinstance(info, dict): info = {}
 
-        # 2. Get Thread 0 Action
+        # 2. Get Data
         actions = self.locals['actions']
-        if isinstance(actions, (list, np.ndarray)):
-            action = actions[0] if len(actions) > 0 else 0
-        else:
-            action = actions
-        
+        action = actions[0] if isinstance(actions, (list, np.ndarray)) else actions
         if isinstance(action, (list, np.ndarray)):
             try: action = action[0]
             except IndexError: action = 0
 
-        # 3. Extract Data safely
-        current_price = final_info.get('current_price', final_info.get('price', 0))
-        ema_50 = final_info.get('ema50', 0)
-        portfolio_value = final_info.get('portfolio_value', 0)
-        
-        # --- GET DATE ---
-        # Your env sends 'date', we fallback to step count if missing
-        current_date = final_info.get('date', f"{self.n_calls}")
+        current_price = info.get('current_price', info.get('price', 0))
+        ema_50 = info.get('ema50', 0)
+        portfolio_value = info.get('portfolio_value', 0)
+        current_date = info.get('date', f"{self.n_calls}")
 
-        # 4. Store
+        # 3. Store
         self.ep_prices.append(current_price)
         self.ep_emas.append(ema_50)
         self.ep_actions.append(action)
         self.ep_portfolio.append(portfolio_value)
-        self.ep_dates.append(current_date) # <--- Store the date
+        self.ep_dates.append(current_date)
 
-        # 5. Check Done
+        # 4. Episode End Logic
         dones = self.locals['dones']
         is_done = dones[0] if isinstance(dones, (list, np.ndarray)) else dones
 
         if is_done:
+            self._calculate_financial_metrics() # <--- NEW: Calculate Stats
             self._plot_regime_chart()
-            # Reset buffers
+            
+            # Reset
             self.ep_prices = []
             self.ep_emas = []
             self.ep_actions = []
@@ -119,12 +106,58 @@ class TensorboardCallback(BaseCallback):
 
         return True
 
-    def _plot_regime_chart(self):
-        if len(self.ep_prices) < 10:
+    def _calculate_financial_metrics(self):
+        """Calculates Sharpe, Drawdown, and Benchmark comparison."""
+        if len(self.ep_portfolio) < 2:
             return
 
-        # Prepare Data
-        # We use integers for plotting alignment, then swap labels later
+        # Convert lists to arrays
+        portfolio = np.array(self.ep_portfolio)
+        prices = np.array(self.ep_prices)
+
+        # 1. Calculate Returns
+        # pct_change = (now - prev) / prev
+        returns = np.diff(portfolio) / portfolio[:-1]
+        
+        # 2. Sharpe Ratio (Annualized assuming hourly data)
+        # periods_per_year = 365 * 24 = 8760
+        std_dev = np.std(returns)
+        if std_dev > 0:
+            sharpe = (np.mean(returns) / std_dev) * np.sqrt(8760)
+        else:
+            sharpe = 0
+
+        # 3. Max Drawdown
+        # Peak so far
+        running_max = np.maximum.accumulate(portfolio)
+        # Drawdown = (current - peak) / peak
+        drawdown = (portfolio - running_max) / running_max
+        max_drawdown = np.min(drawdown) # This will be negative, e.g., -0.20 for 20% drop
+
+        # 4. Benchmark (Buy & Hold) Return
+        if prices[0] > 0:
+            bnh_return = (prices[-1] - prices[0]) / prices[0]
+            strategy_return = (portfolio[-1] - portfolio[0]) / portfolio[0]
+        else:
+            bnh_return = 0
+            strategy_return = 0
+
+        # 5. Log to WandB
+        try:
+            if wandb.run is not None:
+                wandb.log({
+                    "financial/sharpe_ratio": sharpe,
+                    "financial/max_drawdown": max_drawdown,
+                    "financial/strategy_return": strategy_return,
+                    "financial/benchmark_return": bnh_return,
+                    "financial/outperformance": strategy_return - bnh_return
+                })
+        except Exception:
+            pass
+
+    def _plot_regime_chart(self):
+        # (Keep your existing charting code exactly as it is)
+        if len(self.ep_prices) < 10: return
         steps = np.arange(len(self.ep_prices)) 
         prices = np.array(self.ep_prices)
         emas = np.array(self.ep_emas)
@@ -132,77 +165,41 @@ class TensorboardCallback(BaseCallback):
         dates = self.ep_dates
 
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True, gridspec_kw={'height_ratios': [3, 1]})
-
-        # --- Top Chart (Price) ---
         ax1.plot(steps, prices, label='Price', color='black', linewidth=1.2)
         if any(x > 0 for x in emas):
             ax1.plot(steps, emas, label='EMA 50', color='orange', linestyle='--', linewidth=1)
-            
             min_len = min(len(prices), len(emas))
-            ax1.fill_between(steps[:min_len], prices[:min_len], emas[:min_len], 
-                             where=(prices[:min_len] > emas[:min_len]), color='green', alpha=0.1, label='Bull Zone')
-            ax1.fill_between(steps[:min_len], prices[:min_len], emas[:min_len], 
-                             where=(prices[:min_len] <= emas[:min_len]), color='red', alpha=0.1, label='Bear Zone')
-
+            ax1.fill_between(steps[:min_len], prices[:min_len], emas[:min_len], where=(prices[:min_len] > emas[:min_len]), color='green', alpha=0.1, label='Bull')
+            ax1.fill_between(steps[:min_len], prices[:min_len], emas[:min_len], where=(prices[:min_len] <= emas[:min_len]), color='red', alpha=0.1, label='Bear')
+        
         last_pv = self.ep_portfolio[-1] if self.ep_portfolio else 0
-        ax1.set_title(f"Episode Analysis (Thread 0) | End Portfolio: {last_pv:.2f}")
+        ax1.set_title(f"Thread 0 | PV: {last_pv:.2f}")
         ax1.legend(loc='upper left')
         ax1.grid(True, alpha=0.3)
 
-        # --- Bottom Chart (Actions) ---
         colors = ['green' if a > 0 else 'red' for a in actions]
         ax2.bar(steps, actions, color=colors, width=1.0)
         ax2.axhline(0, color='black', linewidth=0.8)
         ax2.set_ylabel("Action")
-        ax2.set_ylim(-1.1, 1.1)
-        ax2.grid(True, alpha=0.3)
-
-        # --- X-AXIS DATE FORMATTING ---
-        # 1. Select ~8 evenly spaced indices to show as ticks
+        
+        # Date labels
         num_ticks = 8
         tick_indices = np.linspace(0, len(steps) - 1, num_ticks, dtype=int)
-        
-        # 2. Get the dates corresponding to those indices
         tick_labels = []
         for idx in tick_indices:
             raw_date = dates[idx]
-            # Convert timestamp/datetime to string
-            if hasattr(raw_date, 'strftime'):
-                d_str = raw_date.strftime('%Y-%m-%d\n%H:%M')
-            else:
-                d_str = str(raw_date)[:16] # Fallback string truncation
+            if hasattr(raw_date, 'strftime'): d_str = raw_date.strftime('%Y-%m-%d\n%H:%M')
+            else: d_str = str(raw_date)[:16]
             tick_labels.append(d_str)
-
-        # 3. Apply labels
         ax2.set_xticks(tick_indices)
-        ax2.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=9)
-        # -----------------------------
+        ax2.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
 
         plt.tight_layout()
-
         try:
-            # --- NEW: Calculate Overtrading Metrics ---
-            actions = np.array(self.ep_actions)
-
-            # Count how many times the sign changes (Buy -> Sell or Sell -> Buy)
-            # We use sign(actions) and look for differences
-            action_signs = np.sign(actions)
-            trade_count = np.count_nonzero(np.diff(action_signs))
-
-            # Calculate Turnover Rate (Percentage of steps where a trade occurred)
-            turnover_rate = trade_count / len(actions)
-
-            if wandb.run is not None:
-                wandb.log({
-                    "trade_analysis/thread_0_chart": wandb.Image(fig), # Your existing chart
-                    "metrics/trades_per_episode": trade_count,         # <--- NEW
-                    "metrics/turnover_rate": turnover_rate             # <--- NEW
-                })
-        except Exception:
-            pass
-
+            if wandb.run is not None: wandb.log({"trade_analysis/thread_0_chart": wandb.Image(fig)})
+        except Exception: pass
         plt.close(fig)
-
+        
 
 class CustomEvalCallback(EvalCallback):
     """

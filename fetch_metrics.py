@@ -18,40 +18,38 @@ def get_base64_image(image_path):
 
 def calculate_financial_kpis(history_df, summary_dict):
     """
-    Derive financial metrics using Summary (for latest) and History (for trends).
+    Derive financial metrics using Summary (latest) and History (trends).
     """
     kpis = {}
     
-    # --- 1. Final Mean Reward ---
-    # Priority: Summary -> Best Eval -> Rollout Reward
+    # --- 1. Reward (Evaluation vs Training) ---
     if 'best_eval/mean_reward' in summary_dict:
-        val = summary_dict['best_eval/mean_reward']
-        kpis["Final Eval Reward"] = f"{val:.2f}"
-    elif 'rollout/ep_rew_mean' in summary_dict:
-        val = summary_dict['rollout/ep_rew_mean']
-        kpis["Final Mean Reward"] = f"{val:.2f}"
-    # Fallback to History
-    elif 'best_eval/mean_reward' in history_df.columns:
-        kpis["Final Eval Reward"] = f"{history_df['best_eval/mean_reward'].dropna().iloc[-1]:.2f}"
+        kpis["Final Eval Reward"] = f"{summary_dict['best_eval/mean_reward']:.2f}"
     elif 'rollout/ep_rew_mean' in history_df.columns:
-        kpis["Final Mean Reward"] = f"{history_df['rollout/ep_rew_mean'].dropna().iloc[-1]:.2f}"
+        val = history_df['rollout/ep_rew_mean'].dropna()
+        if not val.empty:
+            kpis["Final Mean Reward"] = f"{val.iloc[-1]:.2f}"
+        else:
+            kpis["Final Reward"] = "N/A"
     else:
         kpis["Final Reward"] = "N/A"
 
-    # --- 2. Total Steps ---
-    if 'global_step' in summary_dict:
-        total = summary_dict['global_step']
+    # --- 2. Total Steps (Fix for incorrect step count) ---
+    # Priority: time/total_timesteps (SB3) -> global_step (WandB) -> _step
+    if 'time/total_timesteps' in summary_dict:
+        total = summary_dict['time/total_timesteps']
+    elif 'time/total_timesteps' in history_df.columns:
+        total = history_df['time/total_timesteps'].max()
     elif 'global_step' in history_df.columns:
         total = history_df['global_step'].max()
     else:
-        total = len(history_df)
-    kpis["Total Steps"] = f"{total:,.0f}"
+        total = summary_dict.get('_step', 0)
+    
+    kpis["Total Env Steps"] = f"{total:,.0f}"
 
     # --- 3. Training Time ---
-    # Check multiple keys for time
     time_keys = ['time/time_elapsed', '_runtime']
     time_val = None
-    
     for key in time_keys:
         if key in summary_dict:
             time_val = summary_dict[key]
@@ -59,11 +57,38 @@ def calculate_financial_kpis(history_df, summary_dict):
         elif key in history_df.columns:
             time_val = history_df[key].max()
             break
-            
+    
     if time_val:
-        kpis["Est. Training Time"] = f"{float(time_val) / 3600:.1f} Hours"
-    else:
-        kpis["Est. Training Time"] = "N/A"
+        kpis["Training Duration"] = f"{float(time_val) / 3600:.1f} Hours"
+
+    # --- 4. Financial Metrics (From new Callback) ---
+    # Sharpe Ratio
+    sharpe = summary_dict.get('financial/sharpe_ratio')
+    if sharpe is not None:
+        kpis["Sharpe Ratio"] = f"{sharpe:.2f}"
+    
+    # Max Drawdown
+    mdd = summary_dict.get('financial/max_drawdown')
+    if mdd is not None:
+        kpis["Max Drawdown"] = f"<span style='color:red'>{mdd:.2%}</span>"
+
+    # --- 5. Benchmark Comparison (Alpha) ---
+    strat_ret = summary_dict.get('financial/strategy_return')
+    bench_ret = summary_dict.get('financial/benchmark_return')
+    
+    if strat_ret is not None:
+        color = "green" if strat_ret > 0 else "red"
+        kpis["Strategy Return"] = f"<span style='color:{color}'>{strat_ret:.2%}</span>"
+        
+    if bench_ret is not None:
+        color = "green" if bench_ret > 0 else "red"
+        kpis["Buy & Hold"] = f"<span style='color:{color}'>{bench_ret:.2%}</span>"
+
+    if strat_ret is not None and bench_ret is not None:
+        alpha = strat_ret - bench_ret
+        color = "#00ff00" if alpha > 0 else "#ff4444" # Bright Green or Red
+        sign = "+" if alpha > 0 else ""
+        kpis["Alpha (vs B&H)"] = f"<span style='color:{color}; font-weight:bold'>{sign}{alpha:.2%}</span>"
 
     return kpis
 
@@ -73,7 +98,7 @@ def create_html_report(metrics_df, summary_dict):
     # 1. KPIs Section
     kpis = calculate_financial_kpis(metrics_df, summary_dict)
     
-    # 2. Interactive Chart: Robust Column Selection
+    # 2. Interactive Chart: Training Reward Over Time
     # We look for ANY of these columns to plot the main line
     potential_cols = [
         'best_eval/mean_reward',  # Best metric (Validation)
@@ -94,12 +119,22 @@ def create_html_report(metrics_df, summary_dict):
         chart_title = f"Performance: {plot_col}"
         
         # Filter NaNs
-        plot_df = metrics_df[['global_step', plot_col]].dropna() if 'global_step' in metrics_df.columns else metrics_df[[plot_col]].dropna()
+        # Use global_step for X axis if available, else index
+        x_col = 'global_step' if 'global_step' in metrics_df.columns else None
+        
+        if x_col:
+            plot_df = metrics_df[[x_col, plot_col]].dropna()
+            x_data = plot_df[x_col]
+        else:
+            plot_df = metrics_df[[plot_col]].dropna()
+            x_data = plot_df.index
+
+        y_data = plot_df[plot_col]
         
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=plot_df['global_step'] if 'global_step' in plot_df.columns else plot_df.index, 
-            y=plot_df[plot_col], 
+            x=x_data, 
+            y=y_data, 
             mode='lines', 
             name='Reward',
             line=dict(color='#00ff00', width=2)
@@ -108,13 +143,15 @@ def create_html_report(metrics_df, summary_dict):
             title=chart_title,
             template="plotly_dark",
             height=400,
-            margin=dict(l=20, r=20, t=40, b=20)
+            margin=dict(l=20, r=20, t=40, b=20),
+            xaxis_title="Steps",
+            yaxis_title="Reward"
         )
         chart_html = fig.to_html(full_html=False, include_plotlyjs='cdn')
 
     # 3. Find Images
     feature_imp_files = glob.glob("results/feature_importance*.png")
-    trade_chart_files = glob.glob("results/trade_analysis*.png") # Renamed files
+    trade_chart_files = glob.glob("results/thread_0_chart*.png") # Look for flattened names
 
     # --- HTML GENERATION ---
     html_content = f"""
@@ -126,42 +163,47 @@ def create_html_report(metrics_df, summary_dict):
             body {{ background-color: #1e1e1e; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; }}
             .container {{ max_width: 1200px; margin: auto; }}
             .header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 20px; }}
-            .kpi-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin: 20px 0; }}
-            .kpi-card {{ background: #2d2d2d; padding: 20px; border-radius: 8px; text-align: center; }}
-            .kpi-value {{ font-size: 24px; font-weight: bold; color: #00ff00; }}
-            .kpi-label {{ font-size: 14px; color: #888; }}
+            .kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }}
+            .kpi-card {{ background: #2d2d2d; padding: 20px; border-radius: 8px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }}
+            .kpi-value {{ font-size: 24px; font-weight: bold; color: #fff; margin-top: 10px; }}
+            .kpi-label {{ font-size: 14px; color: #aaa; text-transform: uppercase; letter-spacing: 1px; }}
             .section {{ background: #2d2d2d; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
-            h2 {{ border-bottom: 2px solid #444; padding-bottom: 10px; margin-top: 0; }}
-            .img-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; }}
+            h2 {{ border-bottom: 2px solid #444; padding-bottom: 10px; margin-top: 0; color: #00ff00; }}
+            .img-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 20px; }}
             img {{ max-width: 100%; border-radius: 5px; border: 1px solid #444; }}
-            table {{ width: 100%; border-collapse: collapse; }}
-            td, th {{ padding: 10px; border-bottom: 1px solid #444; text-align: left; }}
+            table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
+            td, th {{ padding: 12px; border-bottom: 1px solid #444; text-align: left; }}
+            tr:hover {{ background-color: #383838; }}
+            .footer {{ text-align: center; color: #666; margin-top: 40px; font-size: 12px; }}
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
-                <h1>🤖 AI Trading Bot Analysis Report</h1>
-                <p>Generated by fetch_metrics.py</p>
+                <div>
+                    <h1>🤖 AI Trading Bot Report</h1>
+                    <span style="color: #888;">Run ID: {summary_dict.get('run_id', 'N/A')} | {summary_dict.get('_timestamp', '')}</span>
+                </div>
             </div>
 
+            <!-- Dynamic KPI Grid -->
             <div class="kpi-grid">
+    """
+    
+    # Loop through all calculated KPIs and create cards
+    for key, val in kpis.items():
+        html_content += f"""
                 <div class="kpi-card">
-                    <div class="kpi-label">Reward Metric</div>
-                    <div class="kpi-value">{kpis.get('Final Eval Reward', kpis.get('Final Mean Reward', 'N/A'))}</div>
+                    <div class="kpi-label">{key}</div>
+                    <div class="kpi-value">{val}</div>
                 </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Total Training Steps</div>
-                    <div class="kpi-value">{kpis.get('Total Steps', 'N/A')}</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Training Duration</div>
-                    <div class="kpi-value">{kpis.get('Est. Training Time', 'N/A')}</div>
-                </div>
+        """
+
+    html_content += f"""
             </div>
 
             <div class="section">
-                <h2>📈 Training Progress</h2>
+                <h2>📈 Training Performance</h2>
                 {chart_html}
             </div>
 
@@ -170,42 +212,53 @@ def create_html_report(metrics_df, summary_dict):
                 <div class="img-grid">
     """
     
-    # Sort feature importance by date/number usually embedded in filename
+    # Sort feature importance by name
     for f in sorted(feature_imp_files):
         b64 = get_base64_image(f)
-        html_content += f'<div><img src="data:image/png;base64,{b64}" /></div>'
+        if b64:
+            html_content += f'<div><img src="data:image/png;base64,{b64}" /></div>'
 
     html_content += """
                 </div>
             </div>
 
             <div class="section">
-                <h2>🐂🐻 Regime Analysis (Bull vs Bear)</h2>
+                <h2>🐂🐻 Regime Analysis (Price vs Action)</h2>
+                <p style="color:#888; font-size: 0.9em;">Top: Price (Black) + EMA (Orange) | Bottom: Agent Action (Green=Buy, Red=Sell)</p>
                 <div class="img-grid">
     """
-    # Sort and show last 4 trade charts
+    # Sort trade charts by modification time to show progression (newest last)
     trade_chart_files.sort(key=os.path.getmtime)
-    for f in trade_chart_files[-4:]:
+    
+    # Show last 6 charts to see evolution
+    for f in trade_chart_files[-6:]:
         b64 = get_base64_image(f)
         fname = os.path.basename(f)
-        html_content += f'<div><p>{fname}</p><img src="data:image/png;base64,{b64}" /></div>'
+        if b64:
+            html_content += f'<div><p style="margin:5px 0; color:#aaa;">{fname}</p><img src="data:image/png;base64,{b64}" /></div>'
 
     html_content += """
                 </div>
             </div>
 
             <div class="section">
-                <h2>⚙️ Configuration (Hyperparameters)</h2>
+                <h2>⚙️ System Configuration</h2>
                 <table>
                     <tr><th>Parameter</th><th>Value</th></tr>
     """
-    # Add Summary Table
-    for key, val in summary_dict.items():
-        if isinstance(val, (int, float, str)): # Skip complex objects
+    
+    # Filter summary dict for interesting config values (exclude large arrays/objects)
+    exclude_keys = ['_wandb', 'graph', 'code', 'media']
+    for key, val in sorted(summary_dict.items()):
+        if key not in exclude_keys and isinstance(val, (int, float, str, bool)):
             html_content += f"<tr><td>{key}</td><td>{val}</td></tr>"
 
     html_content += """
                 </table>
+            </div>
+            
+            <div class="footer">
+                Generated by fetch_metrics.py
             </div>
         </div>
     </body>
@@ -216,6 +269,7 @@ def create_html_report(metrics_df, summary_dict):
         f.write(html_content)
     print("✅ Successfully generated: results/quant_report.html")
 
+    
 def _generate_metrics_worker():
     api = wandb.Api()
     # Ensure this matches your project
