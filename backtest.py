@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from flask import Flask, render_template_string, Response
+from flask import Flask, render_template, Response
 from flask_socketio import SocketIO, emit
 from stable_baselines3 import PPO, SAC
 import threading
@@ -43,7 +43,7 @@ def find_model_once():
                     print(f"🔍 Found model (shared): {MODEL_PATH}")
                     ALGORITHM = "SAC" if "sac" in MODEL_PATH.lower() else "PPO"
                     break
-        return MODEL_PATH, ALGORITHM
+    return MODEL_PATH, ALGORITHM
 
 # Initialize globals for thread safety
 MODEL_PATH = None
@@ -51,11 +51,6 @@ ALGORITHM = None
 
 # Find model once (thread-safe)
 MODEL_PATH, ALGORITHM = find_model_once()
-if not MODEL_PATH:
-    raise FileNotFoundError(f"No model files found. Searched patterns: {MODEL_PATH_WILDCARD}")
-
-if not MODEL_PATH:
-    raise FileNotFoundError(f"No model files found. Searched patterns: {MODEL_PATH_WILDCARD}")
 
 # Store results globally
 GLOBAL_RESULTS = None
@@ -67,16 +62,29 @@ def load_data():
     print(f"Reading {DATA_PATH}...")
     if not os.path.exists(DATA_PATH):
         raise FileNotFoundError(f"Data not found at {DATA_PATH}")
-    path = DATA_PATH
-        
-    df = pd.read_csv(path)
+    
+    df = pd.read_csv(DATA_PATH)
     df.columns = [c.lower() for c in df.columns]
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    
+    # Handle Binance raw data format if needed
+    if 'open_time' in df.columns and 'date' not in df.columns:
+        df['date'] = pd.to_datetime(df['open_time'], unit='ms')
+    elif 'timestamp' in df.columns:
+        df['date'] = pd.to_datetime(df['timestamp'])
+    else:
+        df['date'] = pd.to_datetime(df['date'])
+        
+    # Unify column name to timestamp for internal consistency
+    df['timestamp'] = df['date']
     df = df.sort_values('timestamp').reset_index(drop=True)
     return df
 
 def run_simulation():
     """Runs the simulation ONCE at startup."""
+    if not MODEL_PATH:
+        print("❌ No model found, skipping simulation.")
+        return None
+
     print("--- STARTING BACKTEST SIMULATION ---")
     df = load_data()
     
@@ -85,16 +93,13 @@ def run_simulation():
     env = EnhancedTradingEnv(df, initial_balance=1000, lookback_window=50, vp_bins=40, vp_days=[7, 30])
     
     print(f"Loading Model from {MODEL_PATH}...")
-    if not os.path.exists(MODEL_PATH):
-        print("❌ Model not found!")
-        return None
-        
+    
     try:
-        if "sac" in MODEL_PATH.lower() or ALGORITHM.lower() == 'sac':
+        if "sac" in MODEL_PATH.lower() or (ALGORITHM and ALGORITHM.lower() == 'sac'):
             model = SAC.load(MODEL_PATH, env=env)
         else:
             model = PPO.load(MODEL_PATH, env=env)
-        print(f"Model loaded successfully. Model observation space: {model.observation_space.shape}")
+        print(f"Model loaded successfully. Observation space: {model.observation_space.shape}")
     except Exception as e:
         print(f"❌ Error loading model: {e}")
         return None
@@ -108,7 +113,15 @@ def run_simulation():
 
     # Run full history
     while not done:
+        # 1. Get deterministic prediction
         action, _ = model.predict(obs, deterministic=True)
+        
+        # 2. --- CRITICAL FIX: ACTION THRESHOLD ---
+        # Prevents overtrading on weak signals (noise)
+        # If the agent isn't confident (action < 0.15), we force a HOLD (0)
+        if abs(action[0]) < 0.15:
+            action[0] = 0.0
+
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
@@ -140,14 +153,18 @@ def run_simulation():
         initial_balance = 1000
         final_balance = df_hist['net_worth'].iloc[-1]
         total_return = ((final_balance - initial_balance) / initial_balance) * 100
+        
         cumulative = df_hist['net_worth']
         peak = cumulative.cummax()
         drawdown = (cumulative - peak) / peak
         max_drawdown = drawdown.min() * 100
+        
         actions = df_hist['action']
-        buys = (actions > 0.1).sum()
-        sells = (actions < -0.1).sum()
+        # Count only actual trades (thresholded)
+        buys = (actions > 0).sum()
+        sells = (actions < 0).sum()
         num_trades = buys + sells
+        
         print(f"Simulation Period: {start_timestamp} to {end_timestamp}")
         print(f"Initial Balance: ${initial_balance:.2f}")
         print(f"Final Balance: ${final_balance:.2f}")
@@ -156,45 +173,42 @@ def run_simulation():
         print(f"Total Steps: {len(history)}")
         print(f"Number of Trades: {num_trades}")
         print(f"Buys: {buys}, Sells: {sells}")
-        print(f"Actions: min={actions.min():.4f}, max={actions.max():.4f}, mean={actions.mean():.4f}")
-    return pd.DataFrame(history)
+        
+        return pd.DataFrame(history)
+    return None
 
 def create_plot(df, start_timestamp=None, end_timestamp=None, include_plotlyjs=True):
     """Creates the Plotly interactive chart."""
     if start_timestamp or end_timestamp:
         df = df.copy()
-        # Safe column access for filtering
         time_col = 'timestamp' if 'timestamp' in df.columns else 'date' if 'date' in df.columns else None
         if time_col and start_timestamp:
             df = df[df[time_col] >= pd.to_datetime(start_timestamp)]
         if time_col and end_timestamp:
             df = df[df[time_col] <= pd.to_datetime(end_timestamp)]
-        if df.empty:
-            # Return empty plot
-            fig = make_subplots(
-                rows=4, cols=1,
-                shared_xaxes=True,
-                vertical_spacing=0.03,
-                row_heights=[0.5, 0.2, 0.15, 0.15],
-                subplot_titles=("Price Action & Trades", "Net Worth", "USDT", "BTC")
-            )
-            return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs, div_id='chart')
+    
+    if df.empty:
+        fig = make_subplots(rows=1, cols=1)
+        fig.update_layout(title="No Data Selected")
+        return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs, div_id='chart')
 
-    # Resample to daily to reduce data points for plotting
+    # Resample to daily to reduce data points for plotting if dataset is huge
     time_col = 'timestamp' if 'timestamp' in df.columns else 'date' if 'date' in df.columns else None
+    
+    # NOTE: You can adjust resampling rule to '4h' or '1h' if you want more detail on zoom
     if time_col:
         df = df.set_index(time_col)
-    df_daily = df.resample('D').agg({
-        'open': 'first',
-        'high': 'max',
-        'low': 'min',
-        'close': 'last',
-        'action': 'mean',
-        'net_worth': 'last',
-        'balance_usdt': 'last',
-        'shares_held': 'last'
-    }).dropna()
-    df = df_daily.reset_index()
+        df_daily = df.resample('D').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'action': 'mean', # Average action intensity for the day
+            'net_worth': 'last',
+            'balance_usdt': 'last',
+            'shares_held': 'last'
+        }).dropna()
+        df = df_daily.reset_index()
 
     fig = make_subplots(
         rows=4, cols=1,
@@ -205,52 +219,61 @@ def create_plot(df, start_timestamp=None, end_timestamp=None, include_plotlyjs=T
     )
 
     # 1. Price
-    time_col = 'timestamp' if 'timestamp' in df.reset_index().columns else 'date'
     fig.add_trace(go.Candlestick(
-        x=df.index, open=df['open'], high=df['high'],
+        x=df[time_col], open=df['open'], high=df['high'],
         low=df['low'], close=df['close'], name='Price'
     ), row=1, col=1)
 
-    # Markers
-    buys = df[df['action'] > 0.1]
+    # Markers (Simple aggregation for visualization)
+    # Note: On daily aggregation, action is mean, so > 0.05 suggests Buying pressure
+    buys = df[df['action'] > 0.05]
     fig.add_trace(go.Scatter(
-        x=buys.index, y=buys['close'], mode='markers',
-        marker=dict(symbol='triangle-up', color='green', size=12), name='Buy'
+        x=buys[time_col], y=buys['close'], mode='markers',
+        marker=dict(symbol='triangle-up', color='green', size=10), name='Buy',
+        text=[f"Shares: {s:.6f}" for s in buys['shares_held']],
+        hovertemplate='%{text}<br>Price: %{y}<extra></extra>'
     ), row=1, col=1)
 
-    sells = df[df['action'] < -0.1]
+    sells = df[df['action'] < -0.05]
     fig.add_trace(go.Scatter(
-        x=sells.index, y=sells['close'], mode='markers',
-        marker=dict(symbol='triangle-down', color='red', size=12), name='Sell'
+        x=sells[time_col], y=sells['close'], mode='markers',
+        marker=dict(symbol='triangle-down', color='red', size=10), name='Sell',
+        text=[f"Shares: {s:.6f}" for s in sells['shares_held']],
+        hovertemplate='%{text}<br>Price: %{y}<extra></extra>'
     ), row=1, col=1)
 
     # 2. Net Worth
     fig.add_trace(go.Scatter(
-        x=df.index, y=df['net_worth'], line=dict(color='#00bfff', width=2), name='Net Worth'
+        x=df[time_col], y=df['net_worth'], line=dict(color='#00bfff', width=2), name='Net Worth'
     ), row=2, col=1)
 
     # 3. USDT
     fig.add_trace(go.Scatter(
-        x=df.index, y=df['balance_usdt'], line=dict(color='#00ff00', width=1), fill='tozeroy', name='USDT'
+        x=df[time_col], y=df['balance_usdt'], line=dict(color='#00ff00', width=1), fill='tozeroy', name='USDT'
     ), row=3, col=1)
 
     # 4. BTC
     fig.add_trace(go.Scatter(
-        x=df.index, y=df['shares_held'], line=dict(color='#ffa500', width=1), fill='tozeroy', name='BTC'
+        x=df[time_col], y=df['shares_held'], line=dict(color='#ffa500', width=1), fill='tozeroy', name='BTC'
     ), row=4, col=1)
+
+    # Vertical lines for hover (one per subplot)
+    for row in [1, 2, 3, 4]:
+        fig.add_trace(go.Scatter(
+            x=[], y=[], mode='lines', line=dict(color='white', width=1),
+            showlegend=False, hoverinfo='skip'
+        ), row=row, col=1)
 
     fig.update_layout(
         title=f"AI Bot Backtest Results",
         height=1200,
         template="plotly_dark",
-        hovermode="x unified",
+        hovermode="x",
         dragmode='pan',
         margin=dict(l=40, r=40, t=70, b=40),
-        xaxis=dict(range=[df['timestamp'].min(), df['timestamp'].max()]),
         xaxis_rangeslider_visible=False
     )
-    fig.update_xaxes(type='date')
-    # Ensure autoscaling for y-axes
+    fig.update_xaxes(spikemode='across', spikesnap='cursor', showspikes=True)
     fig.update_yaxes(autorange=True)
 
     return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs, div_id='chart')
@@ -270,7 +293,7 @@ def get_trace_data(df):
         'yaxis': 'y'
     }
 
-    buys = df[df['action'] > 0.1]
+    buys = df[df['action'] > 0.05]
     buys_data = {
         'x': [d.isoformat() for d in buys['timestamp']],
         'y': buys['close'].tolist(),
@@ -278,10 +301,12 @@ def get_trace_data(df):
         'marker': {'symbol': 'triangle-up', 'color': 'green', 'size': 12},
         'name': 'Buy',
         'xaxis': 'x',
-        'yaxis': 'y'
+        'yaxis': 'y',
+        'text': [f"Shares: {s:.6f}" for s in buys['shares_held']],
+        'hovertemplate': '%{text}<br>Price: %{y}<extra></extra>'
     }
 
-    sells = df[df['action'] < -0.1]
+    sells = df[df['action'] < -0.05]
     sells_data = {
         'x': [d.isoformat() for d in sells['timestamp']],
         'y': sells['close'].tolist(),
@@ -289,7 +314,9 @@ def get_trace_data(df):
         'marker': {'symbol': 'triangle-down', 'color': 'red', 'size': 12},
         'name': 'Sell',
         'xaxis': 'x',
-        'yaxis': 'y'
+        'yaxis': 'y',
+        'text': [f"Shares: {s:.6f}" for s in sells['shares_held']],
+        'hovertemplate': '%{text}<br>Price: %{y}<extra></extra>'
     }
 
     net_worth = {
@@ -321,16 +348,22 @@ def get_trace_data(df):
         'yaxis': 'y4'
     }
 
+    # Vertical lines (empty initially)
+    vline1 = {'x': [], 'y': [], 'mode': 'lines', 'line': {'color': 'white', 'width': 1}, 'showlegend': False, 'hoverinfo': 'skip', 'xaxis': 'x', 'yaxis': 'y'}
+    vline2 = {'x': [], 'y': [], 'mode': 'lines', 'line': {'color': 'white', 'width': 1}, 'showlegend': False, 'hoverinfo': 'skip', 'xaxis': 'x2', 'yaxis': 'y2'}
+    vline3 = {'x': [], 'y': [], 'mode': 'lines', 'line': {'color': 'white', 'width': 1}, 'showlegend': False, 'hoverinfo': 'skip', 'xaxis': 'x3', 'yaxis': 'y3'}
+    vline4 = {'x': [], 'y': [], 'mode': 'lines', 'line': {'color': 'white', 'width': 1}, 'showlegend': False, 'hoverinfo': 'skip', 'xaxis': 'x4', 'yaxis': 'y4'}
+
     layout = {
         'title': 'AI Bot Backtest Results',
         'height': 1200,
         'template': 'plotly_dark',
-        'hovermode': 'x unified',
+        'hovermode': 'x',
         'dragmode': 'pan',
         'margin': {'l': 40, 'r': 40, 't': 70, 'b': 40},
         'paper_bgcolor': '#111111',
         'plot_bgcolor': '#111111',
-        'xaxis': {'type': 'date', 'range': [timestamps_iso[0], timestamps_iso[-1]], 'domain': [0, 1], 'rangeslider': {'visible': False}},
+        'xaxis': {'type': 'date', 'range': [timestamps_iso[0], timestamps_iso[-1]], 'domain': [0, 1], 'rangeslider': {'visible': False}, 'spikemode': 'across', 'spikesnap': 'cursor', 'showspikes': True},
         'yaxis': {'domain': [0.5, 1], 'autorange': True},
         'xaxis2': {'matches': 'x', 'showticklabels': False, 'domain': [0, 1]},
         'yaxis2': {'domain': [0.35, 0.5], 'autorange': True},
@@ -341,7 +374,7 @@ def get_trace_data(df):
     }
 
     return {
-        'traces': [candlestick, buys_data, sells_data, net_worth, balance, shares],
+        'traces': [candlestick, buys_data, sells_data, net_worth, balance, shares, vline1, vline2, vline3, vline4],
         'layout': layout
     }
 
@@ -357,10 +390,7 @@ def serve_csv():
     if GLOBAL_RESULTS is None or GLOBAL_RESULTS.empty:
         return "No data available", 404
 
-    # Filter from default test-split date
-    start_timestamp = pd.to_datetime("2024-01-01")
-    filtered_df = GLOBAL_RESULTS[GLOBAL_RESULTS['timestamp'] >= start_timestamp].copy()
-    csv_data = filtered_df.to_csv(index=False)
+    csv_data = GLOBAL_RESULTS.to_csv(index=False)
     return csv_data, 200, {'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename=backtest_data.csv'}
 
 @app.route('/')
@@ -375,113 +405,26 @@ def index():
     if GLOBAL_RESULTS is None or GLOBAL_RESULTS.empty:
         return "<h1>Simulation Failed or Returned No Data. Check Console.</h1>"
 
-    # Initially show 5 months of data - SAFE column access
+    # Initially show last 5 months
     if 'timestamp' in GLOBAL_RESULTS.columns:
         max_timestamp = GLOBAL_RESULTS['timestamp'].max()
-    elif 'date' in GLOBAL_RESULTS.columns:
-        max_timestamp = GLOBAL_RESULTS['date'].max()
     else:
         max_timestamp = pd.Timestamp.now()
     
     global current_start, current_end
     current_end = max_timestamp
     current_start = max_timestamp - pd.DateOffset(months=5)
+    
     initial = GLOBAL_RESULTS.iloc[0]['net_worth']
     final = GLOBAL_RESULTS.iloc[-1]['net_worth']
     roi = ((final - initial) / initial) * 100 if initial > 0 else 0
 
     html_chart = create_plot(GLOBAL_RESULTS, start_timestamp=current_start, end_timestamp=current_end)
 
-    html = render_template_string("""
-        <!doctype html>
-        <html>
-            <head>
-                <title>AI Bot Backtest</title>
-                <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-                <style>
-                    body { font-family: sans-serif; margin: 0; padding: 0; background: #111; color: #eee; }
-                    .stats { display: flex; gap: 20px; background: #222; padding: 15px; border-bottom: 1px solid #333; justify-content: center; }
-                    .stat-box { text-align: center; }
-                    .val { font-size: 1.5em; font-weight: bold; }
-                    .pos { color: #4caf50; }
-                    .neg { color: #f44336; }
-                </style>
-            </head>
-            <body>
-                <div class="stats">
-                    <div class="stat-box">
-                        <div>Initial</div>
-                        <div class="val">${{ "%.2f"|format(initial) }}</div>
-                    </div>
-                    <div class="stat-box">
-                        <div>Final</div>
-                        <div class="val">${{ "%.2f"|format(final) }}</div>
-                    </div>
-                    <div class="stat-box">
-                        <div>ROI</div>
-                        <div class="val {{ 'pos' if roi > 0 else 'neg' }}">{{ "%.2f"|format(roi) }}%</div>
-                    </div>
-                </div>
-                <div class="controls" style="text-align: center; padding: 10px; background: #222; border-bottom: 1px solid #333;">
-                    <button id="pan_left" style="margin: 0 10px; padding: 10px 20px; background: #444; color: #eee; border: none; cursor: pointer;">← Pan Left (1 Month)</button>
-                    <button id="pan_right" style="margin: 0 10px; padding: 10px 20px; background: #444; color: #eee; border: none; cursor: pointer;">Pan Right (1 Month) →</button>
-                </div>
-                <div style="padding: 20px;">
-                    {{ chart|safe }}
-                </div>
-                <script>
-                    var socket = io();
-                    var currentStart = null;
-                    var currentEnd = null;
-                    function attachListener() {
-                        var plotDiv = document.getElementById('chart');
-                        if (plotDiv) {
-                            plotDiv.on('plotly_relayout', function(data) {
-                                console.log('relayout data:', data);
-                                if (data['xaxis.range[0]'] && data['xaxis.range[1]']) {
-                                    var newStart = data['xaxis.range[0]'];
-                                    var newEnd = data['xaxis.range[1]'];
-                                    if (newStart !== currentStart || newEnd !== currentEnd) {
-                                        currentStart = newStart;
-                                        currentEnd = newEnd;
-                                        console.log('Emitting range_change', {start: newStart, end: newEnd});
-                                        socket.emit('range_change', {start: newStart, end: newEnd});
-                                    }
-                                }
-                            });
-                        }
-                    }
-                    attachListener();
-                    document.getElementById('pan_left').addEventListener('click', function() {
-                        socket.emit('pan', {direction: 'left'});
-                    });
-                    document.getElementById('pan_right').addEventListener('click', function() {
-                        socket.emit('pan', {direction: 'right'});
-                    });
-                    socket.on('update_traces', function(data) {
-                        console.log('Received update_traces, updating chart');
-                        console.log('Received data:', data);
-                        var plotDiv = document.getElementById('chart');
-                        if (plotDiv) {
-                            console.log('Using full layout from data');
-                            Plotly.react(plotDiv, data.traces, data.layout);
-                            console.log('Chart updated');
-                        }
-                    });
-                </script>
-            </body>
-        </html>
-    """, chart=html_chart, initial=initial, final=final, roi=roi)
-
-    response = Response(html, mimetype='text/html')
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    response.headers['Pragma'] = 'no-cache'
-    response.headers['Expires'] = '0'
-    return response
+    return render_template('index.html', chart=html_chart, initial=initial, final=final, roi=roi)
 
 @socketio.on('range_change')
 def handle_range(data):
-    print(f"Received range_change: {data}")
     global current_start, current_end, GLOBAL_RESULTS
     if GLOBAL_RESULTS is None:
         try:
@@ -489,15 +432,17 @@ def handle_range(data):
                 GLOBAL_RESULTS = pickle.load(f)
         except FileNotFoundError:
             return
+
     start = pd.to_datetime(data.get('start'))
     end = pd.to_datetime(data.get('end'))
-    print(f"Parsed start: {start}, end: {end}")
     current_start = start
     current_end = end
+    
     df_filtered = GLOBAL_RESULTS[(GLOBAL_RESULTS['timestamp'] >= current_start) & (GLOBAL_RESULTS['timestamp'] <= current_end)]
-    print(f"Filtered df shape: {df_filtered.shape}")
+    
     if df_filtered.empty:
         return
+
     df = df_filtered.set_index('timestamp')
     df_daily = df.resample('D').agg({
         'open': 'first',
@@ -510,11 +455,8 @@ def handle_range(data):
         'shares_held': 'last'
     }).dropna()
     df = df_daily.reset_index()
-    print(f"Daily df shape: {df.shape}")
-    print("First row:", df.iloc[0].to_dict())
-    print("Last row:", df.iloc[-1].to_dict())
+    
     data_dict = get_trace_data(df)
-    print("Emitting update_traces")
     emit('update_traces', data_dict)
 
 @socketio.on('pan')
@@ -526,17 +468,22 @@ def handle_pan(data):
                 GLOBAL_RESULTS = pickle.load(f)
         except FileNotFoundError:
             return
+
     direction = data.get('direction')
     delta = pd.DateOffset(months=1)
+    
     if direction == 'left':
         current_start -= delta
         current_end -= delta
     elif direction == 'right':
         current_start += delta
         current_end += delta
+        
     df_filtered = GLOBAL_RESULTS[(GLOBAL_RESULTS['timestamp'] >= current_start) & (GLOBAL_RESULTS['timestamp'] <= current_end)]
+    
     if df_filtered.empty:
         return
+
     df = df_filtered.set_index('timestamp')
     df_daily = df.resample('D').agg({
         'open': 'first',
@@ -549,11 +496,8 @@ def handle_pan(data):
         'shares_held': 'last'
     }).dropna()
     df = df_daily.reset_index()
-    print(f"Pan daily df shape: {df.shape}")
-    print("Pan first row:", df.iloc[0].to_dict())
-    print("Pan last row:", df.iloc[-1].to_dict())
+    
     data_dict = get_trace_data(df)
-    print("Emitting update_traces for pan")
     emit('update_traces', data_dict)
 
 if __name__ == "__main__":
@@ -567,4 +511,4 @@ if __name__ == "__main__":
 
     print("Starting Server...")
     print("Open http://127.0.0.1:5000 in your browser.")
-    socketio.run(app, debug=False, use_reloader=True)
+    socketio.run(app, debug=False, use_reloader=False)

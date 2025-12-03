@@ -172,8 +172,10 @@ def main():
         env_kwargs=train_env_kwargs
     )
     
-    # Normalize Observations and Rewards
-    env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+    # --- CRITICAL FIX: DISABLED NORMALIZATION ---
+    # We commented this out to ensure the model learns on RAW data.
+    # This makes the model compatible with the Backtester which uses raw data.
+    # env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
     
     # Evaluation Env (Dummy for Single Process)
     from stable_baselines3.common.vec_env import DummyVecEnv

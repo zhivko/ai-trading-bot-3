@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+    <title>AI Bot Backtest</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body { font-family: sans-serif; margin: 0; padding: 0; background: #111; color: #eee; }
+        .stats { display: flex; gap: 20px; background: #222; padding: 15px; border-bottom: 1px solid #333; justify-content: center; }
+        .stat-box { text-align: center; }
+        .val { font-size: 1.5em; font-weight: bold; }
+        .pos { color: #4caf50; }
+        .neg { color: #f44336; }
+    </style>
+</head>
+<body>
+    <div class="stats">
+        <div class="stat-box">
+            <div>Initial</div>
+            <div class="val">{{ "%.2f"|format(initial) }}</div>
+        </div>
+        <div class="stat-box">
+            <div>Final</div>
+            <div class="val">{{ "%.2f"|format(final) }}</div>
+        </div>
+        <div class="stat-box">
+            <div>ROI</div>
+            <div class="val {{ 'pos' if roi > 0 else 'neg' }}">{{ "%.2f"|format(roi) }}%</div>
+        </div>
+    </div>
+    <div class="controls" style="text-align: center; padding: 10px; background: #222; border-bottom: 1px solid #333;">
+        <button id="pan_left" style="margin: 0 10px; padding: 10px 20px; background: #444; color: #eee; border: none; cursor: pointer;">← Pan Left (1 Month)</button>
+        <button id="pan_right" style="margin: 0 10px; padding: 10px 20px; background: #444; color: #eee; border: none; cursor: pointer;">Pan Right (1 Month) →</button>
+    </div>
+    <div style="padding: 20px;">
+        {{ chart|safe }}
+    </div>
+    <script src="{{ url_for('static', filename='js/backtest.js') }}"></script>
+</body>
+</html>
