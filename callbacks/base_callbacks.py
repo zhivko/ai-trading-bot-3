@@ -107,7 +107,7 @@ class TensorboardCallback(BaseCallback):
         return True
 
     def _calculate_financial_metrics(self):
-        """Calculates Sharpe, Drawdown, and Benchmark comparison."""
+        """Calculates Sharpe, Sortino, Drawdown, Calmar, and Benchmark comparison."""
         if len(self.ep_portfolio) < 2:
             return
 
@@ -118,7 +118,7 @@ class TensorboardCallback(BaseCallback):
         # 1. Calculate Returns
         # pct_change = (now - prev) / prev
         returns = np.diff(portfolio) / portfolio[:-1]
-        
+
         # 2. Sharpe Ratio (Annualized assuming hourly data)
         # periods_per_year = 365 * 24 = 8760
         std_dev = np.std(returns)
@@ -126,6 +126,14 @@ class TensorboardCallback(BaseCallback):
             sharpe = (np.mean(returns) / std_dev) * np.sqrt(8760)
         else:
             sharpe = 0
+
+        # 2.5 Sortino Ratio (Annualized assuming hourly data)
+        downside_returns = returns[returns < 0]
+        if len(downside_returns) > 0:
+            downside_std = np.std(downside_returns)
+            sortino = (np.mean(returns) / downside_std) * np.sqrt(8760) if downside_std > 0 else 0
+        else:
+            sortino = 0
 
         # 3. Max Drawdown
         # Peak so far
@@ -142,15 +150,29 @@ class TensorboardCallback(BaseCallback):
             bnh_return = 0
             strategy_return = 0
 
+        # 4.5 Calmar Ratio
+        if len(returns) > 0:
+            periods_per_year = 8760
+            annualized_return = (1 + strategy_return) ** (periods_per_year / len(returns)) - 1
+            calmar = annualized_return / abs(max_drawdown) if max_drawdown < 0 else 0
+        else:
+            annualized_return = 0
+            calmar = 0
+
         # 5. Log to WandB
         try:
             if wandb.run is not None:
                 wandb.log({
                     "financial/sharpe_ratio": sharpe,
+                    "financial/sortino_ratio": sortino,
                     "financial/max_drawdown": max_drawdown,
+                    "financial/calmar_ratio": calmar,
+                    "financial/annualized_return": annualized_return,
                     "financial/strategy_return": strategy_return,
                     "financial/benchmark_return": bnh_return,
-                    "financial/outperformance": strategy_return - bnh_return
+                    "financial/outperformance": strategy_return - bnh_return,
+                    "financial/initial_capital": portfolio[0],
+                    "financial/final_networth": portfolio[-1]
                 })
         except Exception:
             pass
@@ -206,6 +228,9 @@ class CustomEvalCallback(EvalCallback):
     Custom EvalCallback that logs evaluation metrics including portfolio (networth) to WandB.
     """
     def __init__(self, *args, **kwargs):
+        self.test_split = kwargs.pop('test_split', None)
+        self.pair = kwargs.pop('pair', None)
+        self.initial_balance = kwargs.pop('initial_balance', None)
         super().__init__(*args, **kwargs)
         self.callback_on_new_best = None  # Avoid init_callback error by not setting to function
         self.best_mean_portfolio = -np.inf
@@ -255,7 +280,12 @@ class CustomEvalCallback(EvalCallback):
                 self.best_mean_portfolio = mean_portfolio
                 self.best_std_portfolio = std_portfolio
                 if self.best_model_save_path is not None:
-                    self.model.save(os.path.join(self.best_model_save_path, 'best_model'))
+                    metadata = {}
+                    if self.test_split: metadata["test_split"] = self.test_split
+                    if self.pair: metadata["pair"] = self.pair
+                    if self.initial_balance: metadata["initial_balance"] = self.initial_balance
+                    metadata["end_networth"] = self.best_mean_portfolio
+                    self.model.save(os.path.join(self.best_model_save_path, 'best_model'), metadata=metadata)
                 self._log_best_to_wandb(mean_reward, std_reward)
             # Generate metrics after evaluation
             if wandb.run is not None:

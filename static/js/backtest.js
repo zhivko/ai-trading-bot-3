@@ -63,5 +63,9 @@ socket.on('update_traces', function(data) {
     var plotDiv = document.getElementById('chart');
     if (plotDiv) {
         Plotly.react(plotDiv, data.traces, data.layout);
+        if (data.start && data.end) {
+            currentStart = data.start;
+            currentEnd = data.end;
+        }
     }
 });

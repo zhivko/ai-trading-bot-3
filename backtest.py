@@ -48,6 +48,7 @@ def find_model_once():
 # Initialize globals for thread safety
 MODEL_PATH = None
 ALGORITHM = None
+TEST_SPLIT = None
 
 # Find model once (thread-safe)
 MODEL_PATH, ALGORITHM = find_model_once()
@@ -77,6 +78,11 @@ def load_data():
     # Unify column name to timestamp for internal consistency
     df['timestamp'] = df['date']
     df = df.sort_values('timestamp').reset_index(drop=True)
+
+    # Filter data from test split date to last entry
+    test_split_date = pd.to_datetime(TEST_SPLIT)
+    df = df[df['timestamp'] >= test_split_date].reset_index(drop=True)
+
     return df
 
 def run_simulation():
@@ -86,6 +92,16 @@ def run_simulation():
         return None
 
     print("--- STARTING BACKTEST SIMULATION ---")
+
+    # Load metadata from model to get test_split
+    try:
+        model_temp, metadata = SAC.load(MODEL_PATH, return_metadata=True)
+        TEST_SPLIT = metadata.get("test_split", "2023-01-01")
+        print(f"Loaded model metadata: {metadata}")
+    except Exception as e:
+        print(f"Could not load model metadata: {e}. Using default test_split.")
+        TEST_SPLIT = "2023-01-01"
+
     df = load_data()
     
     print("Initializing Environment (Forcing vp_bins=40)...")
@@ -95,10 +111,9 @@ def run_simulation():
     print(f"Loading Model from {MODEL_PATH}...")
     
     try:
-        if "sac" in MODEL_PATH.lower() or (ALGORITHM and ALGORITHM.lower() == 'sac'):
-            model = SAC.load(MODEL_PATH, env=env)
-        else:
-            model = PPO.load(MODEL_PATH, env=env)
+        # Force SAC since the error indicates SAC model
+        model = SAC.load(MODEL_PATH, custom_objects={'use_sde': False})
+        model.set_env(env)
         print(f"Model loaded successfully. Observation space: {model.observation_space.shape}")
     except Exception as e:
         print(f"❌ Error loading model: {e}")
@@ -437,9 +452,9 @@ def handle_range(data):
     end = pd.to_datetime(data.get('end'))
     current_start = start
     current_end = end
-    
+
     df_filtered = GLOBAL_RESULTS[(GLOBAL_RESULTS['timestamp'] >= current_start) & (GLOBAL_RESULTS['timestamp'] <= current_end)]
-    
+
     if df_filtered.empty:
         return
 
@@ -455,8 +470,10 @@ def handle_range(data):
         'shares_held': 'last'
     }).dropna()
     df = df_daily.reset_index()
-    
+
     data_dict = get_trace_data(df)
+    data_dict['start'] = current_start.isoformat()
+    data_dict['end'] = current_end.isoformat()
     emit('update_traces', data_dict)
 
 @socketio.on('pan')
@@ -471,16 +488,16 @@ def handle_pan(data):
 
     direction = data.get('direction')
     delta = pd.DateOffset(months=1)
-    
+
     if direction == 'left':
         current_start -= delta
         current_end -= delta
     elif direction == 'right':
         current_start += delta
         current_end += delta
-        
+
     df_filtered = GLOBAL_RESULTS[(GLOBAL_RESULTS['timestamp'] >= current_start) & (GLOBAL_RESULTS['timestamp'] <= current_end)]
-    
+
     if df_filtered.empty:
         return
 
@@ -496,8 +513,10 @@ def handle_pan(data):
         'shares_held': 'last'
     }).dropna()
     df = df_daily.reset_index()
-    
+
     data_dict = get_trace_data(df)
+    data_dict['start'] = current_start.isoformat()
+    data_dict['end'] = current_end.isoformat()
     emit('update_traces', data_dict)
 
 if __name__ == "__main__":

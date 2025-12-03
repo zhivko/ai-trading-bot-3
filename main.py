@@ -228,7 +228,10 @@ def main():
         log_path="./logs/",
         best_model_save_path="./models/",
         deterministic=True,
-        render=False
+        render=False,
+        test_split=args.test_split,
+        pair=args.pair,
+        initial_balance=args.initial_balance
     )
     callbacks.append(eval_callback)
 
@@ -334,13 +337,13 @@ def main():
         # Save Final Model
         if not os.path.exists(os.path.dirname(model_path)):
             os.makedirs(os.path.dirname(model_path))
-            
-        model.save(model_path)
+
+        model.save(model_path, metadata={"test_split": args.test_split, "pair": args.pair, "initial_balance": args.initial_balance})
         print(f"✅  Training Complete. Model saved to {model_path}")
 
     except KeyboardInterrupt:
         print("\n🛑  Training interrupted manually. Saving model...")
-        model.save(model_path)
+        model.save(model_path, metadata={"test_split": args.test_split, "pair": args.pair, "initial_balance": args.initial_balance})
         print("    Model saved.")
 
     finally:

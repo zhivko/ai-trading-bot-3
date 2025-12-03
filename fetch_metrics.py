@@ -56,11 +56,27 @@ def calculate_financial_kpis(history_df, summary_dict):
     sharpe = summary_dict.get('financial/sharpe_ratio')
     if sharpe is not None:
         kpis["Sharpe Ratio"] = f"{sharpe:.2f}"
-    
+
+    # Sortino Ratio
+    sortino = summary_dict.get('financial/sortino_ratio')
+    if sortino is not None:
+        kpis["Sortino Ratio"] = f"{sortino:.2f}"
+
+    # Calmar Ratio
+    calmar = summary_dict.get('financial/calmar_ratio')
+    if calmar is not None:
+        kpis["Calmar Ratio"] = f"{calmar:.2f}"
+
     # Max Drawdown
     mdd = summary_dict.get('financial/max_drawdown')
     if mdd is not None:
         kpis["Max Drawdown"] = f"<span style='color:red'>{mdd:.2%}</span>"
+
+    # Annualized Return
+    ann_ret = summary_dict.get('financial/annualized_return')
+    if ann_ret is not None:
+        color = "green" if ann_ret > 0 else "red"
+        kpis["Annualized Return"] = f"<span style='color:{color}'>{ann_ret:.2%}</span>"
 
     # --- 5. Benchmark Comparison (Alpha) ---
     strat_ret = summary_dict.get('financial/strategy_return')
@@ -79,6 +95,16 @@ def calculate_financial_kpis(history_df, summary_dict):
         color = "#00ff00" if alpha > 0 else "#ff4444" # Bright Green or Red
         sign = "+" if alpha > 0 else ""
         kpis["Alpha (vs B&H)"] = f"<span style='color:{color}; font-weight:bold'>{sign}{alpha:.2%}</span>"
+
+    # Initial Capital
+    initial_cap = summary_dict.get('financial/initial_capital')
+    if initial_cap is not None:
+        kpis["Initial Capital"] = f"${initial_cap:,.2f}"
+
+    # Final Net Worth
+    final_nw = summary_dict.get('financial/final_networth')
+    if final_nw is not None:
+        kpis["Final Net Worth"] = f"${final_nw:,.2f}"
 
     return kpis
 

@@ -69,14 +69,18 @@ class EnhancedTradingEnv(gym.Env):
         div = max_rsi - min_rsi
         div[div == 0] = 1e-8
         self.df['stoch_rsi'] = (self.df['rsi'] - min_rsi) / div
-        self.df['stoch_rsi_norm'] = self.df['stoch_rsi'].fillna(0.5) 
+        raw_stoch = self.df['stoch_rsi']
+        self.df['stoch_rsi_norm'] = raw_stoch
+        mask = pd.isna(raw_stoch) | ((self.df.index < 20) & (raw_stoch == 0))
+        self.df.loc[mask, 'stoch_rsi_norm'] = 0.5
+        self.df['stoch_rsi_norm'] = np.clip(self.df['stoch_rsi_norm'], 0.0, 1.0)
 
         ema12 = self.df['close'].ewm(span=12, adjust=False).mean()
         ema26 = self.df['close'].ewm(span=26, adjust=False).mean()
         self.df['macd'] = ema12 - ema26
         self.df['macd_signal'] = self.df['macd'].ewm(span=9, adjust=False).mean()
-        self.df['macd_norm'] = self.df['macd'] / self.df['close']
-        self.df['macd_sig_norm'] = self.df['macd_signal'] / self.df['close']
+        self.df['macd_norm'] = (self.df['macd'] / self.df['close']) * 100
+        self.df['macd_sig_norm'] = (self.df['macd_signal'] / self.df['close']) * 100
 
         # EMA 50 for trend
         self.df['ema_50'] = self.df['close'].ewm(span=50, adjust=False).mean()
@@ -224,6 +228,10 @@ class EnhancedTradingEnv(gym.Env):
             vp_sample = self.vp_data[first_day]['heatmap'][self.current_step]
             print(f"  > VP Heatmap Max:      {np.max(vp_sample):.2f} (Now normalized by sum, max <=1.0)")
             print(f"  > VP Heatmap Values:   {vp_sample}")
+
+        # DEBUG: Check if StochRSI is alive
+        if self.current_step % 100 == 0:
+            print(f"DEBUG StochRSI History: {self.df['stoch_rsi'].iloc[self.current_step-5:self.current_step].values}")
 
         return full_obs.astype(np.float32)
 
