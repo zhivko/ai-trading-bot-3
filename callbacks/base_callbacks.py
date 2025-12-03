@@ -80,7 +80,7 @@ class TensorboardCallback(BaseCallback):
         current_price = info.get('current_price', info.get('price', 0))
         ema_50 = info.get('ema50', 0)
         portfolio_value = info.get('portfolio_value', 0)
-        current_date = info.get('date', f"{self.n_calls}")
+        current_date = info.get('timestamp', f"{self.n_calls}")
 
         # 3. Store
         self.ep_prices.append(current_price)
@@ -199,7 +199,7 @@ class TensorboardCallback(BaseCallback):
             if wandb.run is not None: wandb.log({"trade_analysis/thread_0_chart": wandb.Image(fig)})
         except Exception: pass
         plt.close(fig)
-        
+
 
 class CustomEvalCallback(EvalCallback):
     """

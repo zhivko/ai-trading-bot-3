@@ -8,6 +8,7 @@ from plotly.subplots import make_subplots
 from flask import Flask, render_template_string, Response
 from flask_socketio import SocketIO, emit
 from stable_baselines3 import PPO, SAC
+import threading
 
 # Import your custom environment
 from trading_env import TradingEnv
@@ -18,18 +19,43 @@ socketio = SocketIO(app)
 CRYPTO_PAIR = "BTCUSDT"
 
 # --- CONFIGURATION ---
-MODEL_PATH_WILDCARD = os.path.join(".\\models\\", f"{CRYPTO_PAIR}_best_eval\\*_{CRYPTO_PAIR}_*.zip")
-DATA_PATH = os.path.join("", f"{CRYPTO_PAIR}_data.csv")
+MODEL_PATH_WILDCARD = [
+    f"./models/sac_{CRYPTO_PAIR}_final.zip",
+    f"./models/{CRYPTO_PAIR}_best_eval/*_{CRYPTO_PAIR}_*.zip",
+    "./logs/best_model.zip",
+    f"./models/sac_{CRYPTO_PAIR}.zip"
+]
+DATA_PATH = f"{CRYPTO_PAIR}_data.csv"
 
+# THREAD-SAFE GLOBAL MODEL CACHE
+_model_cache = {}
+_model_lock = threading.Lock()
 
-# Find the first model file matching the wildcard
-model_files = glob.glob(MODEL_PATH_WILDCARD)
-if model_files:
-    MODEL_PATH = model_files[0]
-    print(f"Found model: {MODEL_PATH}")
-    ALGORITHM = "SAC" if "sac" in MODEL_PATH.lower()[0:3] else "PPO"
-else:
-    raise FileNotFoundError(f"No model files found matching pattern: {MODEL_PATH_WILDCARD}")
+def find_model_once():
+    """Find model ONCE, share across ALL threads/workers"""
+    global MODEL_PATH, ALGORITHM
+    with _model_lock:
+        if MODEL_PATH is None:
+            for pattern in MODEL_PATH_WILDCARD:
+                model_files = glob.glob(pattern) if '*' in pattern else [pattern] if os.path.exists(pattern) else []
+                if model_files:
+                    MODEL_PATH = model_files[0]
+                    print(f"🔍 Found model (shared): {MODEL_PATH}")
+                    ALGORITHM = "SAC" if "sac" in MODEL_PATH.lower() else "PPO"
+                    break
+        return MODEL_PATH, ALGORITHM
+
+# Initialize globals for thread safety
+MODEL_PATH = None
+ALGORITHM = None
+
+# Find model once (thread-safe)
+MODEL_PATH, ALGORITHM = find_model_once()
+if not MODEL_PATH:
+    raise FileNotFoundError(f"No model files found. Searched patterns: {MODEL_PATH_WILDCARD}")
+
+if not MODEL_PATH:
+    raise FileNotFoundError(f"No model files found. Searched patterns: {MODEL_PATH_WILDCARD}")
 
 # Store results globally
 GLOBAL_RESULTS = None
@@ -40,20 +66,13 @@ def load_data():
     """Loads and prepares data."""
     print(f"Reading {DATA_PATH}...")
     if not os.path.exists(DATA_PATH):
-        # Fallback check
-        if os.path.exists("BTCUSDT_data.csv"):
-             path = "BTCUSDT_data.csv"
-        else:
-            raise FileNotFoundError(f"Data not found at {DATA_PATH}")
-    else:
-        path = DATA_PATH
+        raise FileNotFoundError(f"Data not found at {DATA_PATH}")
+    path = DATA_PATH
         
     df = pd.read_csv(path)
     df.columns = [c.lower() for c in df.columns]
-    if 'timestamp' in df.columns:
-        df.rename(columns={'timestamp': 'date'}, inplace=True)
-    df['date'] = pd.to_datetime(df['date'])
-    df = df.sort_values('date').reset_index(drop=True)
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df = df.sort_values('timestamp').reset_index(drop=True)
     return df
 
 def run_simulation():
@@ -94,6 +113,7 @@ def run_simulation():
         done = terminated or truncated
 
         step_data = {
+            "timestamp": info.get("date"),
             "date": info.get("date"),
             "close": info.get('price'),
             "net_worth": info.get('portfolio_value'),
@@ -115,8 +135,8 @@ def run_simulation():
     print("--- SIMULATION COMPLETE ---")
     if history:
         df_hist = pd.DataFrame(history)
-        start_date = df_hist['date'].iloc[0]
-        end_date = df_hist['date'].iloc[-1]
+        start_timestamp = df_hist['timestamp'].iloc[0]
+        end_timestamp = df_hist['timestamp'].iloc[-1]
         initial_balance = 1000
         final_balance = df_hist['net_worth'].iloc[-1]
         total_return = ((final_balance - initial_balance) / initial_balance) * 100
@@ -128,7 +148,7 @@ def run_simulation():
         buys = (actions > 0.1).sum()
         sells = (actions < -0.1).sum()
         num_trades = buys + sells
-        print(f"Simulation Period: {start_date} to {end_date}")
+        print(f"Simulation Period: {start_timestamp} to {end_timestamp}")
         print(f"Initial Balance: ${initial_balance:.2f}")
         print(f"Final Balance: ${final_balance:.2f}")
         print(f"Total Return: {total_return:.2f}%")
@@ -139,14 +159,14 @@ def run_simulation():
         print(f"Actions: min={actions.min():.4f}, max={actions.max():.4f}, mean={actions.mean():.4f}")
     return pd.DataFrame(history)
 
-def create_plot(df, start_date=None, end_date=None, include_plotlyjs=True):
+def create_plot(df, start_timestamp=None, end_timestamp=None, include_plotlyjs=True):
     """Creates the Plotly interactive chart."""
-    if start_date or end_date:
+    if start_timestamp or end_timestamp:
         df = df.copy()
-        if start_date:
-            df = df[df['date'] >= pd.to_datetime(start_date)]
-        if end_date:
-            df = df[df['date'] <= pd.to_datetime(end_date)]
+        if start_timestamp:
+            df = df[df['timestamp'] >= pd.to_datetime(start_timestamp)]
+        if end_timestamp:
+            df = df[df['timestamp'] <= pd.to_datetime(end_timestamp)]
         if df.empty:
             # Return empty plot
             fig = make_subplots(
@@ -159,7 +179,7 @@ def create_plot(df, start_date=None, end_date=None, include_plotlyjs=True):
             return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs, div_id='chart')
 
     # Resample to daily to reduce data points for plotting
-    df = df.set_index('date')
+    df = df.set_index('timestamp')
     df_daily = df.resample('D').agg({
         'open': 'first',
         'high': 'max',
@@ -182,36 +202,36 @@ def create_plot(df, start_date=None, end_date=None, include_plotlyjs=True):
 
     # 1. Price
     fig.add_trace(go.Candlestick(
-        x=df['date'], open=df['open'], high=df['high'],
+        x=df['timestamp'], open=df['open'], high=df['high'],
         low=df['low'], close=df['close'], name='Price'
     ), row=1, col=1)
 
     # Markers
-    buys = df[df['action'] > 0.1] 
+    buys = df[df['action'] > 0.1]
     fig.add_trace(go.Scatter(
-        x=buys['date'], y=buys['close'], mode='markers',
+        x=buys['timestamp'], y=buys['close'], mode='markers',
         marker=dict(symbol='triangle-up', color='green', size=12), name='Buy'
     ), row=1, col=1)
 
-    sells = df[df['action'] < -0.1] 
+    sells = df[df['action'] < -0.1]
     fig.add_trace(go.Scatter(
-        x=sells['date'], y=sells['close'], mode='markers',
+        x=sells['timestamp'], y=sells['close'], mode='markers',
         marker=dict(symbol='triangle-down', color='red', size=12), name='Sell'
     ), row=1, col=1)
 
     # 2. Net Worth
     fig.add_trace(go.Scatter(
-        x=df['date'], y=df['net_worth'], line=dict(color='#00bfff', width=2), name='Net Worth'
+        x=df['timestamp'], y=df['net_worth'], line=dict(color='#00bfff', width=2), name='Net Worth'
     ), row=2, col=1)
 
     # 3. USDT
     fig.add_trace(go.Scatter(
-        x=df['date'], y=df['balance_usdt'], line=dict(color='#00ff00', width=1), fill='tozeroy', name='USDT'
+        x=df['timestamp'], y=df['balance_usdt'], line=dict(color='#00ff00', width=1), fill='tozeroy', name='USDT'
     ), row=3, col=1)
 
     # 4. BTC
     fig.add_trace(go.Scatter(
-        x=df['date'], y=df['shares_held'], line=dict(color='#ffa500', width=1), fill='tozeroy', name='BTC'
+        x=df['timestamp'], y=df['shares_held'], line=dict(color='#ffa500', width=1), fill='tozeroy', name='BTC'
     ), row=4, col=1)
 
     fig.update_layout(
@@ -221,7 +241,7 @@ def create_plot(df, start_date=None, end_date=None, include_plotlyjs=True):
         hovermode="x unified",
         dragmode='pan',
         margin=dict(l=40, r=40, t=70, b=40),
-        xaxis=dict(range=[df['date'].min(), df['date'].max()]),
+        xaxis=dict(range=[df['timestamp'].min(), df['timestamp'].max()]),
         xaxis_rangeslider_visible=False
     )
     fig.update_xaxes(type='date')
@@ -232,9 +252,9 @@ def create_plot(df, start_date=None, end_date=None, include_plotlyjs=True):
 
 def get_trace_data(df):
     """Prepares trace data for websocket updates."""
-    dates_iso = [d.isoformat() for d in df['date']]
+    timestamps_iso = [d.isoformat() for d in df['timestamp']]
     candlestick = {
-        'x': dates_iso,
+        'x': timestamps_iso,
         'open': df['open'].tolist(),
         'high': df['high'].tolist(),
         'low': df['low'].tolist(),
@@ -247,7 +267,7 @@ def get_trace_data(df):
 
     buys = df[df['action'] > 0.1]
     buys_data = {
-        'x': [d.isoformat() for d in buys['date']],
+        'x': [d.isoformat() for d in buys['timestamp']],
         'y': buys['close'].tolist(),
         'mode': 'markers',
         'marker': {'symbol': 'triangle-up', 'color': 'green', 'size': 12},
@@ -258,7 +278,7 @@ def get_trace_data(df):
 
     sells = df[df['action'] < -0.1]
     sells_data = {
-        'x': [d.isoformat() for d in sells['date']],
+        'x': [d.isoformat() for d in sells['timestamp']],
         'y': sells['close'].tolist(),
         'mode': 'markers',
         'marker': {'symbol': 'triangle-down', 'color': 'red', 'size': 12},
@@ -268,7 +288,7 @@ def get_trace_data(df):
     }
 
     net_worth = {
-        'x': dates_iso,
+        'x': timestamps_iso,
         'y': df['net_worth'].tolist(),
         'line': {'color': '#00bfff', 'width': 2},
         'name': 'Net Worth',
@@ -277,7 +297,7 @@ def get_trace_data(df):
     }
 
     balance = {
-        'x': dates_iso,
+        'x': timestamps_iso,
         'y': df['balance_usdt'].tolist(),
         'line': {'color': '#00ff00', 'width': 1},
         'fill': 'tozeroy',
@@ -287,7 +307,7 @@ def get_trace_data(df):
     }
 
     shares = {
-        'x': dates_iso,
+        'x': timestamps_iso,
         'y': df['shares_held'].tolist(),
         'line': {'color': '#ffa500', 'width': 1},
         'fill': 'tozeroy',
@@ -305,7 +325,7 @@ def get_trace_data(df):
         'margin': {'l': 40, 'r': 40, 't': 70, 'b': 40},
         'paper_bgcolor': '#111111',
         'plot_bgcolor': '#111111',
-        'xaxis': {'type': 'date', 'range': [dates_iso[0], dates_iso[-1]], 'domain': [0, 1], 'rangeslider': {'visible': False}},
+        'xaxis': {'type': 'date', 'range': [timestamps_iso[0], timestamps_iso[-1]], 'domain': [0, 1], 'rangeslider': {'visible': False}},
         'yaxis': {'domain': [0.5, 1], 'autorange': True},
         'xaxis2': {'matches': 'x', 'showticklabels': False, 'domain': [0, 1]},
         'yaxis2': {'domain': [0.35, 0.5], 'autorange': True},
@@ -333,8 +353,8 @@ def serve_csv():
         return "No data available", 404
 
     # Filter from default test-split date
-    start_date = pd.to_datetime("2024-01-01")
-    filtered_df = GLOBAL_RESULTS[GLOBAL_RESULTS['date'] >= start_date].copy()
+    start_timestamp = pd.to_datetime("2024-01-01")
+    filtered_df = GLOBAL_RESULTS[GLOBAL_RESULTS['timestamp'] >= start_timestamp].copy()
     csv_data = filtered_df.to_csv(index=False)
     return csv_data, 200, {'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename=backtest_data.csv'}
 
@@ -351,15 +371,15 @@ def index():
         return "<h1>Simulation Failed or Returned No Data. Check Console.</h1>"
 
     # Initially show 5 months of data
-    max_date = GLOBAL_RESULTS['date'].max()
+    max_timestamp = GLOBAL_RESULTS['timestamp'].max()
     global current_start, current_end
-    current_end = max_date
-    current_start = max_date - pd.DateOffset(months=5)
+    current_end = max_timestamp
+    current_start = max_timestamp - pd.DateOffset(months=5)
     initial = GLOBAL_RESULTS.iloc[0]['net_worth']
     final = GLOBAL_RESULTS.iloc[-1]['net_worth']
     roi = ((final - initial) / initial) * 100
 
-    html_chart = create_plot(GLOBAL_RESULTS, start_date=current_start, end_date=current_end)
+    html_chart = create_plot(GLOBAL_RESULTS, start_timestamp=current_start, end_timestamp=current_end)
 
     html = render_template_string("""
         <!doctype html>
@@ -463,11 +483,11 @@ def handle_range(data):
     print(f"Parsed start: {start}, end: {end}")
     current_start = start
     current_end = end
-    df_filtered = GLOBAL_RESULTS[(GLOBAL_RESULTS['date'] >= current_start) & (GLOBAL_RESULTS['date'] <= current_end)]
+    df_filtered = GLOBAL_RESULTS[(GLOBAL_RESULTS['timestamp'] >= current_start) & (GLOBAL_RESULTS['timestamp'] <= current_end)]
     print(f"Filtered df shape: {df_filtered.shape}")
     if df_filtered.empty:
         return
-    df = df_filtered.set_index('date')
+    df = df_filtered.set_index('timestamp')
     df_daily = df.resample('D').agg({
         'open': 'first',
         'high': 'max',
@@ -503,10 +523,10 @@ def handle_pan(data):
     elif direction == 'right':
         current_start += delta
         current_end += delta
-    df_filtered = GLOBAL_RESULTS[(GLOBAL_RESULTS['date'] >= current_start) & (GLOBAL_RESULTS['date'] <= current_end)]
+    df_filtered = GLOBAL_RESULTS[(GLOBAL_RESULTS['timestamp'] >= current_start) & (GLOBAL_RESULTS['timestamp'] <= current_end)]
     if df_filtered.empty:
         return
-    df = df_filtered.set_index('date')
+    df = df_filtered.set_index('timestamp')
     df_daily = df.resample('D').agg({
         'open': 'first',
         'high': 'max',

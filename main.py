@@ -1,334 +1,320 @@
 import os
 import argparse
+import glob
+import shutil
 import pandas as pd
 import numpy as np
 import torch
-import warnings
-import sys
-import shutil
-import glob
-from stable_baselines3.common.utils import get_system_info
+import time
 
-# --- WARNING SUPPRESSION ---
-warnings.filterwarnings("ignore", category=UserWarning, module="stable_baselines3.common.vec_env")
-warnings.simplefilter(action='ignore', category=FutureWarning)
-
-# SB3 Imports
-from stable_baselines3 import PPO, SAC
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
-from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, EvalCallback
+# RL & Gym
+import gymnasium as gym
+from stable_baselines3 import SAC, PPO, A2C, TD3
+from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
+from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
+from stable_baselines3.common.utils import set_random_seed
 
 # WandB
 import wandb
 from wandb.integration.sb3 import WandbCallback
 
-# Local Imports
+# Custom Modules
 from enhanced_trading_env import EnhancedTradingEnv
-from callbacks.base_callbacks import SaveOnBestTrainingRewardCallback, TensorboardCallback, CustomEvalCallback
-from callbacks.feature_saliency import FeatureSaliencyCallback
-from fetch_metrics import generate_metrics
+from callbacks.base_callbacks import TensorboardCallback
+from volume_profile import get_rolling_vp
 
-# --- WARNING SUPPRESSION ---
-warnings.filterwarnings("ignore", category=UserWarning, module="stable_baselines3.common.vec_env")
-warnings.simplefilter(action='ignore', category=FutureWarning)
+# --- Custom Callback for Train Reward Logging ---
+class TrainRewardCallback(BaseCallback):
+    def __init__(self, check_freq):
+        super(TrainRewardCallback, self).__init__(verbose=1)
+        self.check_freq = check_freq
 
-# Create directories
-os.makedirs("models", exist_ok=True)
-os.makedirs("logs", exist_ok=True)
-os.makedirs("checkpoints", exist_ok=True)
+    def _on_step(self) -> bool:
+        if self.n_calls % self.check_freq == 0:
+            # Retrieve training reward (approximation)
+            # 'rollout/ep_rew_mean' is usually available in self.logger.name_to_value
+            # But direct access via locals is harder in SB3.
+            # We rely on standard logging.
+            pass
+        return True
 
+# ---------------------------------------------------------
+# 1. Configuration & Arguments
+# ---------------------------------------------------------
 def parse_args():
-    parser = argparse.ArgumentParser(description="Deep Learning Trading Bot")
+    parser = argparse.ArgumentParser(description="RL Trading Bot - Main Trainer")
     
-    # Data & Config
-    parser.add_argument("--pair", type=str, default="BTCUSDT", help="Trading pair")
-    parser.add_argument("--data-path", type=str, default="data/BTCUSDT_1h.csv", help="Path to CSV data")
+    # Trading Config
+    parser.add_argument("--pair", type=str, default="BTCUSDT", help="Trading pair symbol")
+    parser.add_argument("--timeframe", type=str, default="1h", help="Data timeframe")
+    parser.add_argument("--initial-balance", type=float, default=10000, help="Starting money")
+    parser.add_argument("--trading-fee", type=float, default=0.00075, help="Trading fee (0.075% default)")
+    parser.add_argument("--buy-threshold", type=float, default=0.1, help="Threshold to trigger buy action")
+    parser.add_argument("--sell-threshold", type=float, default=-0.1, help="Threshold to trigger sell action")
     
-    # Environment
+    # Environment Config
+    # REVERTED TO YOUR DEFAULT: [7, 30]
     parser.add_argument("--vp-days", type=int, nargs='+', default=[7, 30], help="Volume Profile days (e.g. 7 30)")
-    parser.add_argument("--vp-bins", type=int, default=40, help="Number of bins for VP Heatmap")
-    parser.add_argument("--initial-balance", type=float, default=1000, help="Starting cash")
-    parser.add_argument("--n-envs", type=int, default=12, help="Number of parallel environments (Threads)")
+    parser.add_argument("--vp-bins", type=int, default=40, help="Volume Profile bins")
+    parser.add_argument("--window-size", type=int, default=50, help="Observation window size")
+    parser.add_argument("--n-envs", type=int, default=15, help="Number of parallel environments")
     
-    # Thresholds
-    parser.add_argument("--buy-threshold", type=float, default=0.5, help="Threshold to Buy (> X)")
-    parser.add_argument("--sell-threshold", type=float, default=-0.5, help="Threshold to Sell (< X)")
+    # RL Config
+    parser.add_argument("--algo", type=str, default="sac", choices=["sac", "ppo", "a2c", "td3", "recurrentppo"], help="RL Algorithm")
+    parser.add_argument("--total-timesteps", type=int, default=1_000_000, help="Total training steps")
+    parser.add_argument("--batch-size", type=int, default=4096, help="Batch size for training")
+    parser.add_argument("--learning-rate", type=float, default=0.0001, help="Learning rate")
     
-    # Training
-    parser.add_argument("--algo", type=str, default="ppo", choices=["ppo", "sac"], help="RL Algorithm")
-    parser.add_argument("--total-timesteps", type=int, default=5_000_000, help="Total training steps")
-    parser.add_argument("--batch-size", type=int, default=4096, help="Batch size")
-    parser.add_argument("--learning-rate", type=float, default=3e-4, help="Learning Rate")
-    parser.add_argument("--gamma", type=float, default=0.999, help="Discount factor (High for long-term)")
-    parser.add_argument("--device", type=str, default="auto", help="cuda or cpu")
-    
-    # Validation & Resume
-    parser.add_argument("--test-split", type=str, default=None, help="Date to split Train/Test (e.g. '2023-01-01')")
-    parser.add_argument("--resume", action="store_true", help="Resume training from existing model")
-    parser.add_argument("--model-path", type=str, default=None, help="Path to specific model to load")
-    
-    # Logging
+    # System Config
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Training device")
     parser.add_argument("--wandb", action="store_true", help="Enable WandB logging")
-    parser.add_argument("--project-name", type=str, default="ai-trading-bot", help="WandB Project Name")
-    
+    parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
+    parser.add_argument("--test-split", type=str, default="2023-01-01", help="Date to split Train/Test data")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+
     return parser.parse_args()
 
-def load_and_process_data(csv_path):
-    if not os.path.exists(csv_path):
-        if os.path.exists("BTCUSDT_data.csv"):
-            csv_path = "BTCUSDT_data.csv"
-        else:
-            raise FileNotFoundError(f"Data not found at {csv_path}")
-            
-    print(f"Loading data from {csv_path}...")
-    df = pd.read_csv(csv_path)
+# Algorithm Mapping
+ALGO_MAP = {
+    "sac": SAC,
+    "ppo": PPO,
+    "a2c": A2C,
+    "td3": TD3,
+    "recurrentppo": RecurrentPPO
+}
+
+# ---------------------------------------------------------
+# 2. Data Preprocessing
+# ---------------------------------------------------------
+def load_and_process_data(filepath):
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"Data file not found: {filepath}")
     
+    print(f"Loading data from {filepath}...")
+    df = pd.read_csv(filepath)
+    
+    # Ensure standard columns
     df.columns = [c.lower() for c in df.columns]
-    if 'timestamp' in df.columns:
-        df.rename(columns={'timestamp': 'date'}, inplace=True)
+    required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'ema_50']
+    for col in required_cols:
+        if col not in df.columns:
+            raise ValueError(f"Missing column: {col}")
+            
+    df = df.sort_values('timestamp').reset_index(drop=True)
+
+    # Minimal preprocessing before passing to Env (Env handles indicators)
+    # But we ensure no NaNs and sort by date
+    df = df.fillna(method='bfill').fillna(method='ffill')
     
-    df['date'] = pd.to_datetime(df['date'])
-    df = df.sort_values('date').reset_index(drop=True)
     return df
 
+# ---------------------------------------------------------
+# 3. Main Execution Flow
+# ---------------------------------------------------------
 def main():
     args = parse_args()
+    set_random_seed(args.seed)
     
-    # 1. Initialize WandB
-    if args.wandb:
-        run_name = f"{args.algo}_{args.pair}_VP{args.vp_bins}_Envs{args.n_envs}"
-        wandb.init(
-            project=args.project_name,
-            config=vars(args),
-            name=run_name,
-            sync_tensorboard=True, 
-            monitor_gym=True
-        )
+    # Paths
+    data_file = f"{args.pair}_data.csv"
+    log_dir = "./logs/"
+    tensorboard_log = f"./{args.algo}_tb/"
     
-    # 2. Load Data
-    df = load_and_process_data(args.data_path)
+    # --- Load Data ---
+    df = load_and_process_data(data_file)
     
-    train_df = df.copy()
-    test_df = None
+    # Split Train/Test
+    split_idx = df[df['timestamp'] >= args.test_split].index[0]
+    train_df = df.iloc[:split_idx].reset_index(drop=True)
+    test_df = df.iloc[split_idx:].reset_index(drop=True)
     
-    if args.test_split:
-        mask = df['date'] < args.test_split
-        train_df = df[mask].reset_index(drop=True)
-        test_df = df[~mask].reset_index(drop=True)
-        print(f"Split Data: Train ({len(train_df)}) | Test ({len(test_df)})")
-    
-    # 1. Calculate VP once in the main process
-    from volume_profile import get_rolling_vp
-    print("Pre-calculating Volume Profile...")
-    vp_data = {}
-    for d in args.vp_days:
-        vp_data[d] = get_rolling_vp(train_df, d, bins=args.vp_bins)
+    print(f"Split Data: Train ({len(train_df)}) | Test ({len(test_df)})")
 
-    # 3. Create Vectorized Environment (Training)
+    # --- Pre-Calculate Volume Profile (Multiprocessing Fix) ---
+    print(f"Creating {args.n_envs} parallel environments...")
+    
+    print(f"--- Initializing EnhancedTradingEnv (Target Bins: {args.vp_bins}) ---")
+    
+    # 1. Train VP
+    vp_data_train = {}
+    for days in args.vp_days:
+        print(f"⚙️ [VP] Calculating Rolling VP for {days} days (Bins: {args.vp_bins})...")
+        vp_data_train[days] = get_rolling_vp(train_df, days, bins=args.vp_bins)
+
+    # 2. Test VP
+    vp_data_test = {}
+    for days in args.vp_days:
+        vp_data_test[days] = get_rolling_vp(test_df, days, bins=args.vp_bins)
+
+    # --- Environment Setup ---
     env_kwargs = {
         'initial_balance': args.initial_balance,
         'vp_days': args.vp_days,
         'vp_bins': args.vp_bins,
+        'lookback_window': args.window_size,
         'buy_threshold': args.buy_threshold,
         'sell_threshold': args.sell_threshold,
-        'precalculated_vp': vp_data,  # Pass it here
-        'trading_fee_multiplier': 0.002,  # 0.2% fee (Simulates slippage + fee)
+        'trading_fee_multiplier': args.trading_fee
     }
-    
+
+    # Training Env
     train_env_kwargs = env_kwargs.copy()
     train_env_kwargs['df'] = train_df
-    vec_env_cls = SubprocVecEnv if args.n_envs > 1 else DummyVecEnv
-    
+    train_env_kwargs['precalculated_vp'] = vp_data_train
+
     env = make_vec_env(
-        EnhancedTradingEnv, 
-        n_envs=args.n_envs, 
-        env_kwargs=train_env_kwargs,
-        vec_env_cls=vec_env_cls,
-        monitor_dir="./logs/"
+        EnhancedTradingEnv,
+        n_envs=args.n_envs,
+        seed=args.seed,
+        vec_env_cls=SubprocVecEnv,
+        env_kwargs=train_env_kwargs
     )
     
-    # 4. Create Evaluation Environment
-    eval_env = None
-    if test_df is not None and not test_df.empty:
-        print("Pre-calculating Volume Profile for eval...")
-        vp_data_test = {}
-        for d in args.vp_days:
-            vp_data_test[d] = get_rolling_vp(test_df, d, bins=args.vp_bins)
-        print("Creating Evaluation environment...")
-        eval_env_kwargs = env_kwargs.copy()
-        eval_env_kwargs['precalculated_vp'] = vp_data_test
-        eval_env_kwargs['df'] = test_df
-        eval_env = make_vec_env(EnhancedTradingEnv, n_envs=1, env_kwargs=eval_env_kwargs)
-    else:
-        print("⚠️ WARNING: Test dataset is EMPTY. Evaluation charts will remain blank.")
-        print(f"   Please check your --test-split date ({args.test_split}) vs your CSV data range.")
-
-    # 5. Create Single Instance for Saliency
-    dummy_saliency_env = EnhancedTradingEnv(**train_env_kwargs)
-
-    # 6. Model Setup
-    policy_kwargs = dict(net_arch=[512, 512, 512]) if args.algo == 'sac' else dict(net_arch=[dict(pi=[256, 256], vf=[256, 256])])
+    # Normalize Observations and Rewards
+    env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
     
-    tensorboard_log = f"./{args.algo}_tb/"
-    model = None
+    # Evaluation Env (Dummy for Single Process)
+    from stable_baselines3.common.vec_env import DummyVecEnv
     
-    # --- RESUME LOGIC ---
-    if args.resume:
-        load_path = args.model_path
-        if load_path is None:
-            # 1. Try Best Model
-            default_best = f"logs/best_model.zip"
-            if os.path.exists(default_best):
-                load_path = default_best
-            # 2. Try Latest Checkpoint
-            else:
-                chk_dir = f"checkpoints/{args.algo}_{args.pair}"
-                if os.path.exists(chk_dir):
-                    files = glob.glob(f"{chk_dir}/*.zip")
-                    if files:
-                        load_path = max(files, key=os.path.getctime)
-        
-        if load_path and os.path.exists(load_path):
-            print(f"📥 RESUMING: Loading model from {load_path}")
-            if args.algo == 'sac':
-                model = SAC.load(load_path, env=env, print_system_info=True, device=args.device, tensorboard_log=tensorboard_log)
-            else:
-                model = PPO.load(load_path, env=env, print_system_info=True, device=args.device, tensorboard_log=tensorboard_log)
-        else:
-             print("⚠️ Resume requested but no model found. Starting fresh.")
-    else:
-        # delete directory for {algo}_tb
-        if os.path.exists(tensorboard_log):
-            shutil.rmtree(tensorboard_log)  
-
-        # remove also checkpoints for this algo/pair to avoid confusion
-        chk_dir = f"checkpoints/{args.algo}_{args.pair}"
-        if os.path.exists(chk_dir):
-            shutil.rmtree(chk_dir)
-
-        # remove also models for this models/{args.algo}_{args.pair}*.* using glob
-
-        model_files = glob.glob(f"models/{args.algo}_{args.pair}*.*")
-        for file in model_files:
-            os.remove(file)
-        #remove /{algo}_tb directory if it exists
-        tb_dir = f"{args.algo}_tb"
-        if os.path.exists(tb_dir):
-            shutil.rmtree(tb_dir)
-
-    # --- FRESH START LOGIC ---
-    if model is None:
-        if not args.resume:
-            if os.path.exists(tensorboard_log):
-                shutil.rmtree(tensorboard_log)
-
-        print(f"✨ Creating NEW {args.algo.upper()} Model")
-        if args.algo == 'sac':
-            model = SAC(
-                "MlpPolicy",
-                env,
-                learning_rate=args.learning_rate,
-                buffer_size=100_000,
-                batch_size=args.batch_size,
-                ent_coef='auto',
-                gamma=args.gamma,
-                tau=0.005,
-                train_freq=1,
-                gradient_steps=1,
-                policy_kwargs=policy_kwargs,
-                verbose=1,
-                tensorboard_log=tensorboard_log,
-                device=args.device
-            )
-        else:
-            model = PPO(
-                "MlpPolicy",
-                env,
-                learning_rate=args.learning_rate,
-                n_steps=2048,
-                batch_size=args.batch_size,
-                n_epochs=10,
-                gamma=args.gamma,
-                gae_lambda=0.95,
-                clip_range=0.2,
-                policy_kwargs=policy_kwargs,
-                verbose=1,
-                tensorboard_log=tensorboard_log,
-                device=args.device
-            )
+    eval_env_kwargs = env_kwargs.copy()
+    eval_env_kwargs['df'] = test_df
+    eval_env_kwargs['precalculated_vp'] = vp_data_test
     
-    # --- RESTORED SYSTEM INFO BLOCK ---
-    sysinfo = get_system_info()
-    print("System Information:")
-    if torch.cuda.is_available():
-        sysinfo[0]['GPU'] = torch.cuda.get_device_name()
-    for key, value in sorted(sysinfo[0].items()):
-        print(f"- {key}: {value}")
-    # ----------------------------------
-
-    # 7. Callbacks Setup
+    eval_env = DummyVecEnv([lambda: EnhancedTradingEnv(**eval_env_kwargs)])
+    # For Eval, we usually wrap in VecNormalize but set training=False to use stats from train env
+    # However, keeping it simple here for now or syncing stats manually later.
     
-    # A. Checkpoint (Saves every 50k steps)
-    checkpoint_path = f"checkpoints/{args.algo}_{args.pair}"
+    # --- W&B Setup ---
+    if args.wandb:
+        wandb.init(
+            project="ai-trading-bot",
+            entity="zhivko",
+            config=vars(args),
+            name=f"{args.algo}_{args.pair}_VP{args.vp_bins}_Envs{args.n_envs}",
+            monitor_gym=True,
+            save_code=True,
+            sync_tensorboard=True
+        )
+
+    # --- Callbacks ---
     checkpoint_callback = CheckpointCallback(
         save_freq=20000, 
-        save_path=checkpoint_path,
-        name_prefix=f"{args.algo}_vp{args.vp_bins}"
+        save_path=f"./checkpoints/{args.algo}_{args.pair}", 
+        name_prefix=args.algo
     )
-
-    # B. Best Training Reward (Saved separately)
-    train_reward_callback = SaveOnBestTrainingRewardCallback(check_freq=10000, log_dir="./logs/")
-    train_reward_callback.save_path = os.path.join("./logs/", "best_training_model")
-
-    callbacks = [
-        TensorboardCallback(),
-        FeatureSaliencyCallback(dummy_saliency_env, check_freq=50000),
-        checkpoint_callback,
-        train_reward_callback
-    ]
-
-    # C. Evaluation Callback
-    if eval_env is not None:
-        print("✅ EvalCallback attached. Validation will run every 20,000 steps.")
-        print("   -> Best performing model on TEST data will be saved as 'logs/best_model.zip'")
-        eval_callback = CustomEvalCallback(
-            eval_env,
-            best_model_save_path='./logs/',
-            log_path='./logs/',
-            eval_freq=20000,
-            n_eval_episodes=1,
-            deterministic=True,
-            render=False,
-            verbose=1
-        )
-        callbacks.append(eval_callback)
+    
+    tensorboard_callback = TensorboardCallback(verbose=1)
+    
+    callbacks = [tensorboard_callback, checkpoint_callback]
     
     if args.wandb:
         callbacks.append(WandbCallback(
-            gradient_save_freq=20000,
-            model_save_path=f"models/{args.algo}_{args.pair}",
+            gradient_save_freq=0, 
+            model_save_path=f"models/{args.algo}_{args.pair}_wb",
             verbose=2
         ))
         
     callback_list = CallbackList(callbacks)
-    
-    # 8. Learn
-    print(f"🚀 Starting Training for {args.total_timesteps} steps...")
-    try:
-        model.learn(total_timesteps=args.total_timesteps, callback=callback_list, progress_bar=True)
-    except KeyboardInterrupt:
-        print("🛑 Training interrupted. Saving...")
-        model.save(f"models/{args.algo}_{args.pair}_interrupted")
-    # 9. Save Final
-    final_path = f"models/{args.algo}_{args.pair}_final"
-    model.save(final_path)
-    print(f"✅ Model saved to {final_path}")
 
-    if args.wandb:
-        generate_metrics()
-        wandb.finish()
+    # --- Model Initialization ---
+    AlgoClass = ALGO_MAP.get(args.algo.lower())
+    if not AlgoClass:
+        raise ValueError(f"Unknown algorithm: {args.algo}")
+
+    # Hyperparameters
+    policy_kwargs = dict(net_arch=dict(pi=[256, 256], qf=[256, 256]))
+    
+    # Resume Logic
+    model_path = f"./models/{args.algo}_{args.pair}"
+    best_model_path = f"{log_dir}/best_model.zip"
+    
+    model = None
+    reset_num_timesteps = True
+
+    if args.resume:
+        # 1. Try Best Model
+        if os.path.exists(best_model_path):
+            load_path = best_model_path
+        # 2. Try Last Model
+        elif os.path.exists(model_path + ".zip"):
+            load_path = model_path + ".zip"
+        # 3. Try Checkpoints
+        else:
+            chk_files = glob.glob(f"./checkpoints/{args.algo}_{args.pair}/*.zip")
+            if chk_files:
+                load_path = max(chk_files, key=os.path.getctime)
+            else:
+                load_path = None
+        
+        if load_path:
+            print(f"♻️  RESUMING training from: {load_path}")
+            # Pass tensorboard_log to continue writing to same graph
+            model = AlgoClass.load(load_path, env=env, device=args.device, tensorboard_log=tensorboard_log)
+            
+            # CRITICAL: Do not reset steps when resuming
+            reset_num_timesteps = False
+            print(f"   > Resuming from Global Step: {model.num_timesteps}")
+        else:
+            print("⚠️  Resume requested but no model found. Starting FRESH.")
+            # Clean logs if we failed to find a model to resume
+            if os.path.exists(tensorboard_log):
+                shutil.rmtree(tensorboard_log)
+
+    if model is None:
+        print(f"🆕  Initializing new {args.algo.upper()} model...")
+        
+        # Clean old logs only if starting fresh
+        if os.path.exists(tensorboard_log):
+            shutil.rmtree(tensorboard_log)
+            
+        # Clean old checkpoints
+        chk_dir = f"checkpoints/{args.algo}_{args.pair}"
+        if os.path.exists(chk_dir):
+            shutil.rmtree(chk_dir)
+
+        model = AlgoClass(
+            "MlpPolicy",
+            env,
+            verbose=1,
+            tensorboard_log=tensorboard_log,
+            device=args.device,
+            batch_size=args.batch_size,
+            learning_rate=args.learning_rate,
+            policy_kwargs=policy_kwargs,
+            buffer_size=100000 if args.algo == 'sac' else None, # SAC specific
+            ent_coef='auto' if args.algo == 'sac' else None,    # SAC specific
+        )
+        reset_num_timesteps = True
+
+    # --- Train ---
+    print(f"🚀  Training started... Target: {args.total_timesteps} steps")
+    
+    try:
+        model.learn(
+            total_timesteps=args.total_timesteps, 
+            callback=callback_list, 
+            progress_bar=True,
+            reset_num_timesteps=reset_num_timesteps # <--- Handles the resumption of step count
+        )
+        
+        # Save Final Model
+        if not os.path.exists(os.path.dirname(model_path)):
+            os.makedirs(os.path.dirname(model_path))
+            
+        model.save(model_path)
+        print(f"✅  Training Complete. Model saved to {model_path}")
+
+    except KeyboardInterrupt:
+        print("\n🛑  Training interrupted manually. Saving model...")
+        model.save(model_path)
+        print("    Model saved.")
+
+    finally:
+        env.close()
+        if args.wandb:
+            wandb.finish()
 
 if __name__ == "__main__":
     main()

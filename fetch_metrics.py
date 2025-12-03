@@ -1,20 +1,10 @@
 import wandb
 import subprocess
 import os
-import shutil
 import time
 import pandas as pd
 import plotly.graph_objects as go
-import glob
-import base64
 import threading
-
-def get_base64_image(image_path):
-    """Convert image to base64 for embedding in HTML"""
-    if not os.path.exists(image_path):
-        return ""
-    with open(image_path, "rb") as img_file:
-        return base64.b64encode(img_file.read()).decode('utf-8')
 
 def calculate_financial_kpis(history_df, summary_dict):
     """
@@ -149,10 +139,6 @@ def create_html_report(metrics_df, summary_dict):
         )
         chart_html = fig.to_html(full_html=False, include_plotlyjs='cdn')
 
-    # 3. Find Images
-    feature_imp_files = glob.glob("results/feature_importance*.png")
-    trade_chart_files = glob.glob("results/thread_0_chart*.png") # Look for flattened names
-
     # --- HTML GENERATION ---
     html_content = f"""
     <!DOCTYPE html>
@@ -208,40 +194,6 @@ def create_html_report(metrics_df, summary_dict):
             </div>
 
             <div class="section">
-                <h2>🧠 Feature Importance</h2>
-                <div class="img-grid">
-    """
-    
-    # Sort feature importance by name
-    for f in sorted(feature_imp_files):
-        b64 = get_base64_image(f)
-        if b64:
-            html_content += f'<div><img src="data:image/png;base64,{b64}" /></div>'
-
-    html_content += """
-                </div>
-            </div>
-
-            <div class="section">
-                <h2>🐂🐻 Regime Analysis (Price vs Action)</h2>
-                <p style="color:#888; font-size: 0.9em;">Top: Price (Black) + EMA (Orange) | Bottom: Agent Action (Green=Buy, Red=Sell)</p>
-                <div class="img-grid">
-    """
-    # Sort trade charts by modification time to show progression (newest last)
-    trade_chart_files.sort(key=os.path.getmtime)
-    
-    # Show last 6 charts to see evolution
-    for f in trade_chart_files[-6:]:
-        b64 = get_base64_image(f)
-        fname = os.path.basename(f)
-        if b64:
-            html_content += f'<div><p style="margin:5px 0; color:#aaa;">{fname}</p><img src="data:image/png;base64,{b64}" /></div>'
-
-    html_content += """
-                </div>
-            </div>
-
-            <div class="section">
                 <h2>⚙️ System Configuration</h2>
                 <table>
                     <tr><th>Parameter</th><th>Value</th></tr>
@@ -290,52 +242,10 @@ def _generate_metrics_worker():
         summary_dict = run.summary._json_dict
         pd.DataFrame(list(summary_dict.items()), columns=["key", "value"]).to_csv("results/summary.csv", index=False)
 
-        # 3. Download Images (Robust)
-        files = run.files()
-        image_files = [f for f in files if hasattr(f, 'mimetype') and f.mimetype and f.mimetype.startswith('image/')]
-
-        for img_file in image_files:
-            try:
-                img_file.download(root="results", replace=True)
-                time.sleep(0.2)
-
-                filename = os.path.basename(img_file.name)
-                downloaded_path = os.path.normpath(os.path.join("results", img_file.name))
-                destination_path = os.path.join("results", filename)
-
-                if os.path.exists(downloaded_path):
-                    if os.path.exists(destination_path):
-                        try:
-                            os.remove(destination_path)
-                        except PermissionError:
-                            time.sleep(1)
-                            try: os.remove(destination_path)
-                            except: continue
-                    try:
-                        os.rename(downloaded_path, destination_path)
-                    except Exception:
-                        pass
-            except Exception as e:
-                print(f"Failed to download {img_file.name}: {e}")
-
-        # Cleanup media
-        if os.path.exists(os.path.join("results", "media")):
-            try: shutil.rmtree(os.path.join("results", "media"))
-            except: pass
-
-        # 4. Generate Report
+        # 3. Generate Report
         create_html_report(history_df, summary_dict)
 
-        # 5. Remove images before committing (since they are embedded in HTML)
-        image_files_to_remove = glob.glob("results/*.png")
-        for img in image_files_to_remove:
-            try:
-                os.remove(img)
-                print(f"Removed image: {img}")
-            except Exception as e:
-                print(f"Failed to remove {img}: {e}")
-
-        # 6. Git Push
+        # 4. Git Push
         try:
             print("Pushing to Git...")
             subprocess.run(["git", "add", "results/"], check=True)

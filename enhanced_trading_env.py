@@ -377,7 +377,7 @@ class EnhancedTradingEnv(gym.Env):
             "price": current_price,
             "current_price": current_price,  # Required for charting
             "ema50": ema_50,                 # Required for charting
-            "date": self.raw_df.iloc[self.current_step]['date'],
+            "timestamp": self.raw_df.iloc[self.current_step]['timestamp'],
             "vp_heatmap": heatmap
         }
 

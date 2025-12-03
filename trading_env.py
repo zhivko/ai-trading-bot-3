@@ -223,7 +223,7 @@ class TradingEnv(gym.Env):
             "action": action_val,
             "reward": reward,
             "price": current_price,
-            "date": self.raw_df.iloc[self.current_step]['date'], 
+            "date": self.raw_df.iloc[self.current_step]['timestamp'],
             "vp_heatmap": self.vp_data[self.vp_days[0]]['heatmap'][self.current_step]
         }
 
