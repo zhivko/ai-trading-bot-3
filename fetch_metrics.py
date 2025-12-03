@@ -11,16 +11,18 @@ def generate_metrics():
         run = runs[0]  # Latest run
 
         # save the metrics for the run to a csv file
-        metrics_dataframe = run.history()
-        metrics_dataframe.to_csv("metrics.csv")
+        run.history().to_csv("metrics.csv")
         print("Metrics saved to metrics.csv")
 
-        # Commit and push metrics.csv
+        run.summary.to_csv("summary.csv")
+        print("Summary saved to summary.csv")
+
+        # Commit and push metrics.csv and summary.csv to git
         try:
-            subprocess.run(["git", "add", "metrics.csv"], check=True)
-            subprocess.run(["git", "commit", "-m", "Update metrics.csv"], check=True)
+            subprocess.run(["git", "add", "metrics.csv", "summary.csv"], check=True)
+            subprocess.run(["git", "commit", "-m", "Update metrics and summary"], check=True)
             subprocess.run(["git", "push"], check=True)
-            print("metrics.csv committed and pushed to remote")
+            print("metrics.csv and summary.csv  committed and pushed to remote")
         except subprocess.CalledProcessError as e:
             print(f"Git operation failed: {e}")
     else:

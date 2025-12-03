@@ -198,15 +198,32 @@ class EnhancedTradingEnv(gym.Env):
             trend_val = self.df.iloc[self.current_step]['trend_ema50']
             print(f"  > Trend EMA Input:     {trend_val:.5f}  (Now scaled and clipped -1 to 1)")
 
-            # 3. Check VP Heatmap Magnitude
+            # 3. Check Close Pct
+            close_pct_val = self.df.iloc[self.current_step]['close_pct']
+            print(f"  > Close Pct Input:     {close_pct_val:.5f}")
+
+            # 4. Check RSI Norm
+            rsi_norm_val = self.df.iloc[self.current_step]['rsi_norm']
+            print(f"  > RSI Norm Input:      {rsi_norm_val:.5f}")
+
+            # 5. Check Stoch RSI
+            stoch = self.df.iloc[self.current_step]['stoch_rsi_norm']
+            print(f"  > Stoch RSI Input:     {stoch:.5f}")
+
+            # 6. Check MACD Norm
+            macd_norm_val = self.df.iloc[self.current_step]['macd_norm']
+            print(f"  > MACD Norm Input:     {macd_norm_val:.5f}")
+
+            # 7. Check MACD Sig Norm
+            macd_sig_norm_val = self.df.iloc[self.current_step]['macd_sig_norm']
+            print(f"  > MACD Sig Norm Input: {macd_sig_norm_val:.5f}")
+
+            # 8. Check VP Heatmap Magnitude
             # Access the first available VP day key
             first_day = self.vp_days[0]
             vp_sample = self.vp_data[first_day]['heatmap'][self.current_step]
             print(f"  > VP Heatmap Max:      {np.max(vp_sample):.2f} (Now normalized by sum, max <=1.0)")
-
-            # 4. Check Stoch RSI
-            stoch = self.df.iloc[self.current_step]['stoch_rsi_norm']
-            print(f"  > Stoch RSI Input:     {stoch:.5f}")
+            print(f"  > VP Heatmap Values:   {vp_sample}")
 
         return full_obs.astype(np.float32)
 
