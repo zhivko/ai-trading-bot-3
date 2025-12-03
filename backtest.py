@@ -11,7 +11,7 @@ from stable_baselines3 import PPO, SAC
 import threading
 
 # Import your custom environment
-from trading_env import TradingEnv
+from enhanced_trading_env import EnhancedTradingEnv
 
 app = Flask(__name__)
 socketio = SocketIO(app)
@@ -81,8 +81,8 @@ def run_simulation():
     df = load_data()
     
     print("Initializing Environment (Forcing vp_bins=40)...")
-    # CRITICAL: vp_bins=40 makes observation space 388, matching your trained model.
-    env = TradingEnv(df, initial_balance=1000, lookback_window=50, vp_bins=40, vp_days=[7, 30])
+    # CRITICAL: Use EnhancedTradingEnv to match trained model (438 dims)
+    env = EnhancedTradingEnv(df, initial_balance=1000, lookback_window=50, vp_bins=40, vp_days=[7, 30])
     
     print(f"Loading Model from {MODEL_PATH}...")
     if not os.path.exists(MODEL_PATH):
@@ -113,8 +113,8 @@ def run_simulation():
         done = terminated or truncated
 
         step_data = {
-            "timestamp": info.get("date"),
-            "date": info.get("date"),
+            "timestamp": info.get("date") or info.get("timestamp"),
+            "date": info.get("date") or info.get("timestamp"),
             "close": info.get('price'),
             "net_worth": info.get('portfolio_value'),
             "balance_usdt": info.get('balance'),
@@ -163,10 +163,12 @@ def create_plot(df, start_timestamp=None, end_timestamp=None, include_plotlyjs=T
     """Creates the Plotly interactive chart."""
     if start_timestamp or end_timestamp:
         df = df.copy()
-        if start_timestamp:
-            df = df[df['timestamp'] >= pd.to_datetime(start_timestamp)]
-        if end_timestamp:
-            df = df[df['timestamp'] <= pd.to_datetime(end_timestamp)]
+        # Safe column access for filtering
+        time_col = 'timestamp' if 'timestamp' in df.columns else 'date' if 'date' in df.columns else None
+        if time_col and start_timestamp:
+            df = df[df[time_col] >= pd.to_datetime(start_timestamp)]
+        if time_col and end_timestamp:
+            df = df[df[time_col] <= pd.to_datetime(end_timestamp)]
         if df.empty:
             # Return empty plot
             fig = make_subplots(
@@ -179,7 +181,9 @@ def create_plot(df, start_timestamp=None, end_timestamp=None, include_plotlyjs=T
             return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs, div_id='chart')
 
     # Resample to daily to reduce data points for plotting
-    df = df.set_index('timestamp')
+    time_col = 'timestamp' if 'timestamp' in df.columns else 'date' if 'date' in df.columns else None
+    if time_col:
+        df = df.set_index(time_col)
     df_daily = df.resample('D').agg({
         'open': 'first',
         'high': 'max',
@@ -201,37 +205,38 @@ def create_plot(df, start_timestamp=None, end_timestamp=None, include_plotlyjs=T
     )
 
     # 1. Price
+    time_col = 'timestamp' if 'timestamp' in df.reset_index().columns else 'date'
     fig.add_trace(go.Candlestick(
-        x=df['timestamp'], open=df['open'], high=df['high'],
+        x=df.index, open=df['open'], high=df['high'],
         low=df['low'], close=df['close'], name='Price'
     ), row=1, col=1)
 
     # Markers
     buys = df[df['action'] > 0.1]
     fig.add_trace(go.Scatter(
-        x=buys['timestamp'], y=buys['close'], mode='markers',
+        x=buys.index, y=buys['close'], mode='markers',
         marker=dict(symbol='triangle-up', color='green', size=12), name='Buy'
     ), row=1, col=1)
 
     sells = df[df['action'] < -0.1]
     fig.add_trace(go.Scatter(
-        x=sells['timestamp'], y=sells['close'], mode='markers',
+        x=sells.index, y=sells['close'], mode='markers',
         marker=dict(symbol='triangle-down', color='red', size=12), name='Sell'
     ), row=1, col=1)
 
     # 2. Net Worth
     fig.add_trace(go.Scatter(
-        x=df['timestamp'], y=df['net_worth'], line=dict(color='#00bfff', width=2), name='Net Worth'
+        x=df.index, y=df['net_worth'], line=dict(color='#00bfff', width=2), name='Net Worth'
     ), row=2, col=1)
 
     # 3. USDT
     fig.add_trace(go.Scatter(
-        x=df['timestamp'], y=df['balance_usdt'], line=dict(color='#00ff00', width=1), fill='tozeroy', name='USDT'
+        x=df.index, y=df['balance_usdt'], line=dict(color='#00ff00', width=1), fill='tozeroy', name='USDT'
     ), row=3, col=1)
 
     # 4. BTC
     fig.add_trace(go.Scatter(
-        x=df['timestamp'], y=df['shares_held'], line=dict(color='#ffa500', width=1), fill='tozeroy', name='BTC'
+        x=df.index, y=df['shares_held'], line=dict(color='#ffa500', width=1), fill='tozeroy', name='BTC'
     ), row=4, col=1)
 
     fig.update_layout(
@@ -370,14 +375,20 @@ def index():
     if GLOBAL_RESULTS is None or GLOBAL_RESULTS.empty:
         return "<h1>Simulation Failed or Returned No Data. Check Console.</h1>"
 
-    # Initially show 5 months of data
-    max_timestamp = GLOBAL_RESULTS['timestamp'].max()
+    # Initially show 5 months of data - SAFE column access
+    if 'timestamp' in GLOBAL_RESULTS.columns:
+        max_timestamp = GLOBAL_RESULTS['timestamp'].max()
+    elif 'date' in GLOBAL_RESULTS.columns:
+        max_timestamp = GLOBAL_RESULTS['date'].max()
+    else:
+        max_timestamp = pd.Timestamp.now()
+    
     global current_start, current_end
     current_end = max_timestamp
     current_start = max_timestamp - pd.DateOffset(months=5)
     initial = GLOBAL_RESULTS.iloc[0]['net_worth']
     final = GLOBAL_RESULTS.iloc[-1]['net_worth']
-    roi = ((final - initial) / initial) * 100
+    roi = ((final - initial) / initial) * 100 if initial > 0 else 0
 
     html_chart = create_plot(GLOBAL_RESULTS, start_timestamp=current_start, end_timestamp=current_end)
 
