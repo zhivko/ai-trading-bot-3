@@ -23,6 +23,9 @@ from wandb.integration.sb3 import WandbCallback
 # Custom Modules
 from enhanced_trading_env import EnhancedTradingEnv
 from callbacks.base_callbacks import TensorboardCallback
+
+from callbacks.base_callbacks import CustomEvalCallback
+
 from volume_profile import get_rolling_vp
 
 # --- Custom Callback for Train Reward Logging ---
@@ -217,7 +220,18 @@ def main():
             model_save_path=f"models/{args.algo}_{args.pair}_wb",
             verbose=2
         ))
-        
+
+    # Add after eval_env setup
+    eval_callback = CustomEvalCallback(
+        eval_env=eval_env,
+        eval_freq=10000,  # Evaluate every 10k steps
+        log_path="./logs/",
+        best_model_save_path="./models/",
+        deterministic=True,
+        render=False
+    )
+    callbacks.append(eval_callback)
+
     callback_list = CallbackList(callbacks)
 
     # --- Model Initialization ---
@@ -263,6 +277,22 @@ def main():
             # Clean logs if we failed to find a model to resume
             if os.path.exists(tensorboard_log):
                 shutil.rmtree(tensorboard_log)
+    else:
+        # Delete all models for algo
+        model_pattern = f"./models/{args.algo}_*.zip"
+        model_files = glob.glob(model_pattern)
+        for f in model_files:
+            os.remove(f)
+
+        # delete checkpoints for algo
+        chk_pattern = f"./checkpoints/{args.algo}_*/**/*.zip"
+        chk_files = glob.glob(chk_pattern, recursive=True)
+        for f in chk_files:
+            os.remove(f)    
+
+        # delete tensorboard logs for algo
+        if os.path.exists(tensorboard_log):
+            shutil.rmtree(tensorboard_log)
 
     if model is None:
         print(f"🆕  Initializing new {args.algo.upper()} model...")
