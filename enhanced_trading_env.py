@@ -186,8 +186,8 @@ class EnhancedTradingEnv(gym.Env):
         full_obs = np.concatenate((std_features, account_features, vp_features))
 
         # --- DEBUG LOGGING ---
-        # Print stats every 5000 steps to avoid spamming, but see what's happening
-        if self.current_step % 5000 == 0:
+        # Print stats every 10000 steps to avoid spamming, but see what's happening
+        if self.current_step % 10000 == 0:
             print(f"\n[DEBUG Step {self.current_step}] Feature Magnitudes:")
 
             # 1. Check Volume Magnitude
