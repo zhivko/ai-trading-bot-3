@@ -21,3 +21,7 @@ python-socketio
 python-dotenv
 
 captum
+yfinance
+websockets
+
+mplfinance

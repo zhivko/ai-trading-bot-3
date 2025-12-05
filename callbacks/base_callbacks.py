@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import json
 import wandb # Import wandb
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from stable_baselines3.common.results_plotter import load_results, ts2xy
@@ -286,6 +287,8 @@ class CustomEvalCallback(EvalCallback):
                     if self.initial_balance: metadata["initial_balance"] = self.initial_balance
                     metadata["end_networth"] = self.best_mean_portfolio
                     self.model.save(os.path.join(self.best_model_save_path, 'best_model'), metadata=metadata)
+                    with open(os.path.join(self.best_model_save_path, 'best_model.zip.meta'), 'w') as f:
+                        json.dump(metadata, f)
                 self._log_best_to_wandb(mean_reward, std_reward)
             # Generate metrics after evaluation
             if wandb.run is not None:

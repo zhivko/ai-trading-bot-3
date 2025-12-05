@@ -9,6 +9,7 @@ from flask import Flask, render_template, Response
 from flask_socketio import SocketIO, emit
 from stable_baselines3 import PPO, SAC
 import threading
+import json
 
 # Import your custom environment
 from enhanced_trading_env import EnhancedTradingEnv
@@ -87,6 +88,7 @@ def load_data():
 
 def run_simulation():
     """Runs the simulation ONCE at startup."""
+    global TEST_SPLIT
     if not MODEL_PATH:
         print("❌ No model found, skipping simulation.")
         return None
@@ -95,7 +97,8 @@ def run_simulation():
 
     # Load metadata from model to get test_split
     try:
-        model_temp, metadata = SAC.load(MODEL_PATH, return_metadata=True)
+        with open(MODEL_PATH + ".meta", 'r') as f:
+            metadata = json.load(f)
         TEST_SPLIT = metadata.get("test_split", "2023-01-01")
         print(f"Loaded model metadata: {metadata}")
     except Exception as e:
@@ -281,7 +284,7 @@ def create_plot(df, start_timestamp=None, end_timestamp=None, include_plotlyjs=T
 
     fig.update_layout(
         title=f"AI Bot Backtest Results",
-        height=1200,
+        autosize=True,
         template="plotly_dark",
         hovermode="x",
         dragmode='pan',
@@ -291,7 +294,7 @@ def create_plot(df, start_timestamp=None, end_timestamp=None, include_plotlyjs=T
     fig.update_xaxes(spikemode='across', spikesnap='cursor', showspikes=True)
     fig.update_yaxes(autorange=True)
 
-    return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs, div_id='chart')
+    return fig.to_html(full_html=False, include_plotlyjs=False, div_id='chart', config={'responsive': True})
 
 def get_trace_data(df):
     """Prepares trace data for websocket updates."""
@@ -371,7 +374,7 @@ def get_trace_data(df):
 
     layout = {
         'title': 'AI Bot Backtest Results',
-        'height': 1200,
+        'autosize': True,
         'template': 'plotly_dark',
         'hovermode': 'x',
         'dragmode': 'pan',

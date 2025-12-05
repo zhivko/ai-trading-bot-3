@@ -2,6 +2,7 @@ import os
 import argparse
 import glob
 import shutil
+import json
 import pandas as pd
 import numpy as np
 import torch
@@ -339,6 +340,8 @@ def main():
             os.makedirs(os.path.dirname(model_path))
 
         model.save(model_path, metadata={"test_split": args.test_split, "pair": args.pair, "initial_balance": args.initial_balance})
+        with open(model_path + ".meta", 'w') as f:
+            json.dump({"test_split": args.test_split, "pair": args.pair, "initial_balance": args.initial_balance}, f)
         print(f"✅  Training Complete. Model saved to {model_path}")
 
     except KeyboardInterrupt:
