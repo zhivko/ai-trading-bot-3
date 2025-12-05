@@ -301,15 +301,27 @@ def main():
         
         if load_path:
             print(f"RESUMING training from: {load_path}")
-            # Load model
-            model = AlgoClass.load(load_path, env=train_env, device=args.device, tensorboard_log=tensorboard_log)
-            # Sync VecNormalize stats
-            if os.path.exists(f"{load_path}.pkl"):
-                train_env = VecNormalize.load(f"{load_path}.pkl", train_env)
-                train_env.training = True
-            # CRITICAL: Do not reset steps when resuming
-            reset_num_timesteps = False
-            print(f"   > Resuming from Global Step: {model.num_timesteps}")
+            try:
+                # Load model
+                model = AlgoClass.load(load_path, env=train_env, device=args.device, tensorboard_log=tensorboard_log)
+                # Sync VecNormalize stats
+                if os.path.exists(f"{load_path}.pkl"):
+                    train_env = VecNormalize.load(f"{load_path}.pkl", train_env)
+                    train_env.training = True
+                # CRITICAL: Do not reset steps when resuming
+                reset_num_timesteps = False
+                print(f"   > Resuming from Global Step: {model.num_timesteps}")
+            except ValueError as e:
+                if "Observation spaces do not match" in str(e):
+                    print(f"Model incompatible due to env changes: {e}")
+                    print("Starting fresh training.")
+                    model = None
+                    reset_num_timesteps = True
+                    # Clean old logs if incompatible
+                    if os.path.exists(tensorboard_log):
+                        shutil.rmtree(tensorboard_log)
+                else:
+                    raise
         else:
             print("Resume requested but no model found. Starting FRESH.")
             # Clean logs if we failed to find a model to resume
@@ -331,6 +343,8 @@ def main():
         # delete tensorboard logs for algo
         if os.path.exists(tensorboard_log):
             shutil.rmtree(tensorboard_log)
+
+     
 
     if model is None:
         print(f"Initializing new {args.algo.upper()} model...")
