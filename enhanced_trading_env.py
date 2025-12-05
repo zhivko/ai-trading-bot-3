@@ -153,19 +153,18 @@ class EnhancedTradingEnv(gym.Env):
         self.interaction_penalty = 0.0
         self.reward_scaling = 1.0
 
-        # --- DYNAMIC CHURN SETTINGS (THE HEAVY SEDATIVE) ---
-        # Target: Force agent to look for 3-day swings.
-        # Anything less than 72 hours is penalized.
-        self.target_hold_duration = 72       # INCREASED: 24 -> 72
-        
-        # Max Penalty: 5.0 (Equivalent to a 5% instant loss).
-        # This makes quick flipping practically suicide for the reward score.
-        self.churn_penalty_max = 5.0         # INCREASED: 1.0 -> 5.0
-        
-        # Trade Friction: Massive 'Cost to Click'.
-        # The agent loses 0.5 points just for entering/exiting.
-        # It must expect >0.5% profit just to break even on the decision.
-        self.trade_fee_penalty = 0.5         # INCREASED: 0.05 -> 0.50
+        # --- DYNAMIC CHURN SETTINGS ---
+        self.target_hold_duration = 48       # 48 Hours target hold
+
+        # COOLDOWN (The "Hard" Constraint)
+        # The agent cannot trade again for this many steps after a trade.
+        # This prevents "machine gun" firing.
+        self.cooldown_steps = 4
+
+        # REWARD PENALTIES
+        # We switch to a PURE PnL model, but we add a fixed "Cost of Living"
+        # for trading to simulate spread/slippage anxiety.
+        self.trade_fee_penalty = 0.1
 
         self.prev_actions = deque(maxlen=3)
 
@@ -237,6 +236,28 @@ class EnhancedTradingEnv(gym.Env):
         return names
 
     def _take_action(self, action):
+        trade_occurred = False
+
+        # 1. COOLDOWN CHECK
+        # If we traded recently, we BLOCK any new trade attempts.
+        # We force the 'action' effectively to match the previous position (Holding).
+        if self.steps_since_last_trade < self.cooldown_steps and self.steps_since_last_trade > 0:
+            # We are locked. No trade allowed.
+            return False
+
+        # 2. Detect Trade
+        # We use a threshold (e.g. 0.3) to ignore tiny noise adjustments
+        current_sign = np.sign(action) if abs(action) > 0.3 else 0 # Raised threshold slightly
+
+        # Get last valid action (or 0 if start)
+        prev_act = self.prev_actions[-1] if self.prev_actions else 0.0
+        prev_sign = np.sign(prev_act) if abs(prev_act) > 0.3 else 0
+
+        if current_sign != prev_sign:
+            trade_occurred = True
+            self.trades_in_episode += 1  # Increment counter
+
+        # ... existing logic ...
         action_val = float(action[0])
         current_price = self.raw_prices[self.current_step]
 
@@ -249,7 +270,7 @@ class EnhancedTradingEnv(gym.Env):
         atr_idx = self.features.index('atr_norm')
         atr_norm = self.market_features[self.current_step, atr_idx]
         thresh_mult = 1 + (atr_norm * 0.5)  # Higher vol → higher threshold (needs stronger action)
-        
+
         dynamic_buy_threshold = self.buy_threshold * thresh_mult
         dynamic_sell_threshold = self.sell_threshold * thresh_mult  # More negative in high vol
 
@@ -261,7 +282,7 @@ class EnhancedTradingEnv(gym.Env):
                 fee = amount_to_invest * self.trading_fee_multiplier
                 self.balance -= amount_to_invest + fee
                 self.shares_held += shares_bought
-        
+
         elif action_val < dynamic_sell_threshold: # Sell
             shares_to_sell = self.shares_held * abs(action_val)
             if shares_to_sell * current_price > 10:
@@ -276,40 +297,33 @@ class EnhancedTradingEnv(gym.Env):
         if self.net_worth > self.max_net_worth:
             self.max_net_worth = self.net_worth
 
-    def _calculate_reward(self, action, trade_occurred=False):
-        step_reward = 0.0
-        
-        # 1. Returns (The basics)
-        pct_change = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
-        step_reward += pct_change * 100
-        
-        # 2. Stability Penalty (Dampen jitter)
-        if len(self.prev_actions) > 1:
-            prev_act = self.prev_actions[-2]
-            step_reward -= abs(action - prev_act) * self.stability_penalty_coef
+        return trade_occurred
 
-        # 3. Dynamic Churn Penalty (The "Sedative")
+    def _calculate_reward(self, action, trade_occurred=False):
+        """
+        Revised Reward: Pure PnL with explicit Fee Punishment.
+        """
+        # 1. Log Returns (The Truth)
+        # We use Log returns because they are symmetric.
+        # If NetWorth is 0 (bankruptcy), handle gracefully.
+        current_val = max(self.net_worth, 1e-6)
+        prev_val = max(self.prev_net_worth, 1e-6)
+
+        # Base Reward = % Change in Portfolio
+        # e.g. +1% gain = +1.0 reward
+        step_reward = np.log(current_val / prev_val) * 100
+
+        # 2. The Fee (Real Cost)
+        # If a trade occurred, we subtract a fixed "mental friction" cost
+        # on TOP of the actual financial fee loss (which is already in net_worth).
         if trade_occurred:
-            # A. Calculate Premature Exit Penalty
-            duration = self.steps_since_last_trade
-            if duration < self.target_hold_duration:
-                # Linear decay: Trades at step 1 cost -5.0.
-                # Trades at step 72 cost 0.0.
-                penalty_factor = 1.0 - (duration / self.target_hold_duration)
-                churn_cost = self.churn_penalty_max * penalty_factor
-                step_reward -= churn_cost
-            
-            # B. Fixed Trade "Friction" Cost
-            # Even if duration is healthy, punish the act of trading slightly
-            # to simulate slippage anxiety.
-            step_reward -= self.trade_fee_penalty
-        
-        # 4. Holding Bonus (New)
-        # If we have a position and we DIDN'T trade, reward patience.
-        # This counters the bias to "do something".
-        # abs(self.position) > 0 implies we are Long or Short (not neutral)
-        elif abs(self.shares_held) > 0:
-            step_reward += 0.01  # Small "drip" reward for holding
+            step_reward -= self.trade_fee_penalty # e.g. -0.1
+
+        # 3. Holding Bonus (Positive Reinforcement)
+        # If we have a position and hold it, give a tiny drip.
+        # This helps the agent "wait out" the cooldown without feeling zero reward.
+        if abs(self.shares_held) > 0 and not trade_occurred:
+            step_reward += 0.005
 
         return step_reward
 
@@ -336,6 +350,7 @@ class EnhancedTradingEnv(gym.Env):
             self.current_step = self.max_lookback
 
         self.steps_since_last_trade = 0
+        self.trades_in_episode = 0
         self.prev_actions = deque(maxlen=3)
 
         return self._next_observation(), {}
@@ -481,15 +496,8 @@ class EnhancedTradingEnv(gym.Env):
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
 
-        # 1. Detect if a Trade (Sign Flip) is happening
-        prev_action = self.prev_actions[-1] if len(self.prev_actions) > 0 else 0.0
-        trade_occurred = False
-        if abs(action_val) > 0.1:
-            if np.sign(action_val) != np.sign(prev_action):
-                trade_occurred = True
-
         # 2. Execute action
-        self._take_action(action)
+        trade_occurred = self._take_action(action)
 
         # 3. Calculate reward
         reward = self._calculate_reward(action_val, trade_occurred)
@@ -530,7 +538,8 @@ class EnhancedTradingEnv(gym.Env):
             "current_price": current_price,
             "ema50": self.df.iloc[self.current_step].get('ema_50', 0),
             "timestamp": self.raw_df.iloc[self.current_step]['timestamp'],
-            "vp_heatmap": heatmap
+            "vp_heatmap": heatmap,
+            "trades_per_episode": self.trades_in_episode
         }
 
         return obs, reward, terminated, truncated, info
