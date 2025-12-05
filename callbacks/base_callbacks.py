@@ -301,12 +301,7 @@ class CustomEvalCallback(EvalCallback):
                 self.best_mean_portfolio = mean_portfolio
                 self.best_std_portfolio = std_portfolio
                 if self.best_model_save_path is not None:
-                    metadata = {}
-                    if self.test_split: metadata["test_split"] = self.test_split
-                    if self.pair: metadata["pair"] = self.pair
-                    if self.initial_balance: metadata["initial_balance"] = self.initial_balance
-                    metadata["end_networth"] = self.best_mean_portfolio
-                    self.model.save(os.path.join(self.best_model_save_path, 'best_model'), metadata=metadata)
+                    self.model.save(os.path.join(self.best_model_save_path, 'best_model'))
                 self._log_best_to_wandb(mean_reward, std_reward)
             # Generate metrics after evaluation
             if wandb.run is not None:
