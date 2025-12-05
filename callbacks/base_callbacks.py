@@ -282,7 +282,7 @@ class CustomEvalCallback(EvalCallback):
                 new_phase = min(current_phase + 1, 3)  # Up to phase 3
                 # Broadcast to train env (works for Subproc via attr access)
                 if hasattr(self.model.env, 'set_attr'):
-                    self.model.env.set_attr(phase=new_phase)
+                    self.model.env.set_attr('phase', new_phase)
                 else:
                     # Fallback: Set on wrapped env
                     self.model.env.phase = new_phase
