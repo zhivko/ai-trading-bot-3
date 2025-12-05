@@ -142,52 +142,48 @@ class EnhancedTradingEnv(gym.Env):
         self.prev_sign = 0  # Initialize for switch penalty
         self.reset()
 
-    def _detect_divergences(self, series, price_series, window=40, tolerance=5):
-        """
-        Returns two values:
-          - bullish_div:  1.0 if bullish regular divergence detected in last `tolerance` bars
-          - bearish_div:  1.0 if bearish regular divergence detected
-        """
-        bullish = 0.0
-        bearish = 0.0
-        
-        if self.current_step < window + tolerance:
-            return bullish, bearish
+    def _detect_divergences(self, series, price_series, window=40, tolerance=8):
+        if self.current_step < window + 20:
+            return 0.0, 0.0
 
-        recent_prices = price_series[self.current_step - window:self.current_step + 1]
-        recent_series = series[self.current_step - window:self.current_step + 1]
+        start_idx = self.current_step - window
+        recent_prices = price_series[start_idx: self.current_step + 1]
+        recent_series = series[start_idx: self.current_step + 1]
 
-        # Find swing lows/highs in price
-        price_lows_idx  = argrelextrema(recent_prices, np.less, order=3)[0]
+        # Find swing lows and highs in price
+        price_lows_idx = argrelextrema(recent_prices, np.less, order=3)[0]
         price_highs_idx = argrelextrema(recent_prices, np.greater, order=3)[0]
 
-        # Find swing lows/highs in oscillator
-        osc_lows_idx  = argrelextrema(recent_series, np.less, order=3)[0]
-        osc_highs_idx = argrelextrema(recent_series, np.greater, order=3)[0]
+        bullish = bearish = 0.0
 
-        # Bullish divergence: price lower low + oscillator higher low
-        for i in range(len(price_lows_idx)-1):
-            p1, p2 = price_lows_idx[-2], price_lows_idx[-1]
-            if p2 < tolerance:  # only recent
-                continue
-            if recent_prices[p2] < recent_prices[p1]:  # lower low in price
-                # find corresponding oscillator lows near these points
-                osc_near_p1 = [x for x in osc_lows_idx if abs(x - p1) < 8]
-                osc_near_p2 = [x for x in osc_lows_idx if abs(x - p2) < 8]
-                if osc_near_p1 and osc_near_p2:
-                    if recent_series[osc_near_p2[0]] > recent_series[osc_near_p1[0]]:
+        # Helper to check if swing is recent enough (within last `tolerance` bars from end)
+        is_recent = lambda idx: (len(recent_prices) - 1 - idx) <= tolerance
+
+        # Bullish divergence: lower low in price, higher low in oscillator
+        if len(price_lows_idx) >= 2:
+            p2 = price_lows_idx[-1]   # most recent low
+            p1 = price_lows_idx[-2]   # previous low
+
+            if is_recent(p2) and recent_prices[p2] < recent_prices[p1]:
+                # Find oscillator lows near price lows
+                osc_lows_idx = argrelextrema(recent_series, np.less, order=3)[0]
+                near_p1 = [i for i in osc_lows_idx if abs(i - p1) <= 8]
+                near_p2 = [i for i in osc_lows_idx if abs(i - p2) <= 8]
+                if near_p1 and near_p2:
+                    if recent_series[near_p2[0]] > recent_series[near_p1[0]]:
                         bullish = 1.0
 
-        # Bearish divergence
-        for i in range(len(price_highs_idx)-1):
-            p1, p2 = price_highs_idx[-2], price_highs_idx[-1]
-            if p2 < tolerance:
-                continue
-            if recent_prices[p2] > recent_prices[p1]:  # higher high in price
-                osc_near_p1 = [x for x in osc_highs_idx if abs(x - p1) < 8]
-                osc_near_p2 = [x for x in osc_highs_idx if abs(x - p2) < 8]
-                if osc_near_p1 and osc_near_p2:
-                    if recent_series[osc_near_p2[0]] < recent_series[osc_near_p1[0]]:
+        # Bearish divergence: higher high in price, lower high in oscillator
+        if len(price_highs_idx) >= 2 and bullish == 0.0:  # avoid double signal
+            p2 = price_highs_idx[-1]
+            p1 = price_highs_idx[-2]
+
+            if is_recent(p2) and recent_prices[p2] > recent_prices[p1]:
+                osc_highs_idx = argrelextrema(recent_series, np.greater, order=3)[0]
+                near_p1 = [i for i in osc_highs_idx if abs(i - p1) <= 8]
+                near_p2 = [i for i in osc_highs_idx if abs(i - p2) <= 8]
+                if near_p1 and near_p2:
+                    if recent_series[near_p2[0]] < recent_series[near_p1[0]]:
                         bearish = 1.0
 
         return bullish, bearish
@@ -272,15 +268,15 @@ class EnhancedTradingEnv(gym.Env):
         bull9, bear9 = self._detect_divergences(
             self.df['stoch_rsi_norm'].values,
             self.raw_prices,
-            window=40, tolerance=10
+            window=40, tolerance=8
         )
         bull14, bear14 = self._detect_divergences(
             self.df['stoch_14'].values,
-            self.raw_prices, window=40, tolerance=10
+            self.raw_prices, window=40, tolerance=8
         )
         bull_rsi, bear_rsi = self._detect_divergences(
             self.df['rsi_norm'].values,
-            self.raw_prices, window=50, tolerance=12
+            self.raw_prices, window=40, tolerance=8
         )
 
         div_vector = np.array([
