@@ -63,6 +63,16 @@ class FeatureSaliencyCallback(BaseCallback):
             attributions = ig.attribute(obs_tensor, baselines=torch.zeros_like(obs_tensor))
             mean_attr = attributions.mean(dim=0).cpu().detach().numpy()
 
+            # --- UPDATED: Temporal Aggregation ---
+            lw = self.dummy_env.lookback_window
+            nf = len(self.dummy_env.features)
+            if len(mean_attr) >= lw * nf:
+                market_attr = mean_attr[:lw * nf].reshape(lw, nf).mean(axis=0)  # Avg over time window
+                # Log temporal saliency as dict for WandB bar
+                temporal_grouped = {feat: abs(market_attr[i]) for i, feat in enumerate(self.dummy_env.features)}
+                if wandb.run is not None:
+                    wandb.log({"temporal_saliency": wandb.plot.bar(temporal_grouped, title="Temporal Feature Importance")})
+
             # 4. Get Names
             try:
                 full_names = self.dummy_env.get_feature_names()
@@ -94,7 +104,7 @@ class FeatureSaliencyCallback(BaseCallback):
             self.plot_importance(list(agg_map.keys()), list(agg_map.values()), self.num_timesteps)
             
         except Exception as e:
-            print(f"⚠️ Saliency Error during calculation: {e}")
+            print(f"Warning: Saliency Error during calculation: {e}")
 
     def plot_importance(self, names, values, step):
         # Sort desc

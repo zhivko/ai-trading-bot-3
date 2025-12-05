@@ -2,18 +2,19 @@ import os
 import argparse
 import glob
 import shutil
-import json
 import pandas as pd
 import numpy as np
 import torch
 import time
+import datetime
+import subprocess
 
 # RL & Gym
 import gymnasium as gym
 from stable_baselines3 import SAC, PPO, A2C, TD3
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize, DummyVecEnv
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
 from stable_baselines3.common.utils import set_random_seed
 
@@ -23,10 +24,7 @@ from wandb.integration.sb3 import WandbCallback
 
 # Custom Modules
 from enhanced_trading_env import EnhancedTradingEnv
-from callbacks.base_callbacks import TensorboardCallback
-
-from callbacks.base_callbacks import CustomEvalCallback
-
+from callbacks.base_callbacks import TensorboardCallback, CustomEvalCallback
 from volume_profile import get_rolling_vp
 
 # --- Custom Callback for Train Reward Logging ---
@@ -64,6 +62,7 @@ def parse_args():
     parser.add_argument("--vp-bins", type=int, default=40, help="Volume Profile bins")
     parser.add_argument("--window-size", type=int, default=50, help="Observation window size")
     parser.add_argument("--n-envs", type=int, default=15, help="Number of parallel environments")
+    parser.add_argument("--phase", type=int, default=1, help="Curriculum phase (1=profit, 2=sortino, 3=mdd)")
     
     # RL Config
     parser.add_argument("--algo", type=str, default="sac", choices=["sac", "ppo", "a2c", "td3", "recurrentppo"], help="RL Algorithm")
@@ -118,8 +117,11 @@ def load_and_process_data(filepath):
 # 3. Main Execution Flow
 # ---------------------------------------------------------
 def main():
+    print("Starting main function...")
     args = parse_args()
+    print(f"Parsed args: {args}")
     set_random_seed(args.seed)
+    print("Random seed set.")
     
     # Paths
     data_file = f"{args.pair}_data.csv"
@@ -138,21 +140,26 @@ def main():
 
     # --- Pre-Calculate Volume Profile (Multiprocessing Fix) ---
     print(f"Creating {args.n_envs} parallel environments...")
-    
+
     print(f"--- Initializing EnhancedTradingEnv (Target Bins: {args.vp_bins}) ---")
-    
+
     # 1. Train VP
+    print("Calculating VP for training data...")
     vp_data_train = {}
     for days in args.vp_days:
-        print(f"⚙️ [VP] Calculating Rolling VP for {days} days (Bins: {args.vp_bins})...")
+        print(f"Calculating Rolling VP for {days} days (Bins: {args.vp_bins})...")
         vp_data_train[days] = get_rolling_vp(train_df, days, bins=args.vp_bins)
+    print("Train VP calculation complete.")
 
     # 2. Test VP
+    print("Calculating VP for test data...")
     vp_data_test = {}
     for days in args.vp_days:
         vp_data_test[days] = get_rolling_vp(test_df, days, bins=args.vp_bins)
+    print("Test VP calculation complete.")
 
     # --- Environment Setup ---
+    print("Setting up environments...")
     env_kwargs = {
         'initial_balance': args.initial_balance,
         'vp_days': args.vp_days,
@@ -160,49 +167,64 @@ def main():
         'lookback_window': args.window_size,
         'buy_threshold': args.buy_threshold,
         'sell_threshold': args.sell_threshold,
-        'trading_fee_multiplier': args.trading_fee
+        'trading_fee_multiplier': args.trading_fee,
+        'phase': args.phase  # New: Pass phase
     }
+    print(f"Env kwargs: {env_kwargs}")
 
     # Training Env
+    print("Creating training environment...")
     train_env_kwargs = env_kwargs.copy()
     train_env_kwargs['df'] = train_df
     train_env_kwargs['precalculated_vp'] = vp_data_train
 
-    env = make_vec_env(
+    train_env = make_vec_env(
         EnhancedTradingEnv,
         n_envs=args.n_envs,
         seed=args.seed,
         vec_env_cls=SubprocVecEnv,
         env_kwargs=train_env_kwargs
     )
-    
-    # --- CRITICAL FIX: DISABLED NORMALIZATION ---
-    # We commented this out to ensure the model learns on RAW data.
-    # This makes the model compatible with the Backtester which uses raw data.
-    # env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
-    
-    # Evaluation Env (Dummy for Single Process)
-    from stable_baselines3.common.vec_env import DummyVecEnv
-    
+    print("Training environment created.")
+
+    # --- Reactivate Normalization for Training ---
+    print("Applying VecNormalize to training env...")
+    train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., clip_reward=10.)
+    print("VecNormalize applied.")
+
+    # Evaluation Env (Raw for accurate metrics)
+    print("Creating evaluation environment...")
     eval_env_kwargs = env_kwargs.copy()
     eval_env_kwargs['df'] = test_df
     eval_env_kwargs['precalculated_vp'] = vp_data_test
-    
+
     eval_env = DummyVecEnv([lambda: EnhancedTradingEnv(**eval_env_kwargs)])
-    # For Eval, we usually wrap in VecNormalize but set training=False to use stats from train env
-    # However, keeping it simple here for now or syncing stats manually later.
+    print("Evaluation environment created.")
+    # Optional: Load train stats for eval (set training=False)
+    # eval_env = VecNormalize.load(f"{log_dir}/vec_normalize.pkl", eval_env); eval_env.training = False
     
     # --- W&B Setup ---
+    print("Setting up W&B..." if args.wandb else "Skipping W&B setup.")
     if args.wandb:
+        # Get git branch name
+        try:
+            git_branch = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD']).decode('utf-8').strip()
+        except:
+            git_branch = "unknown"
+
+        # Get timestamp
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
         wandb.init(
             project="ai-trading-bot",
             entity="zhivko",
             config=vars(args),
-            name=f"{args.algo}_{args.pair}_VP{args.vp_bins}_Envs{args.n_envs}",
+            name=f"{git_branch}_{timestamp}_{args.algo}_{args.pair}_VP{args.vp_bins}_Envs{args.n_envs}",
             monitor_gym=True,
             save_code=True,
             sync_tensorboard=True
         )
+        print("W&B initialized.")
 
     # --- Callbacks ---
     checkpoint_callback = CheckpointCallback(
@@ -217,15 +239,15 @@ def main():
     
     if args.wandb:
         callbacks.append(WandbCallback(
-            gradient_save_freq=0, 
+            gradient_save_freq=0,
             model_save_path=f"models/{args.algo}_{args.pair}_wb",
-            verbose=2
+            verbose=0  # Reduced from 2 to minimize logging overhead
         ))
 
     # Add after eval_env setup
     eval_callback = CustomEvalCallback(
         eval_env=eval_env,
-        eval_freq=10000,  # Evaluate every 10k steps
+        eval_freq=50000,  # Reduced from 10k to 50k steps to reduce overhead
         log_path="./logs/",
         best_model_save_path="./models/",
         deterministic=True,
@@ -243,12 +265,16 @@ def main():
     if not AlgoClass:
         raise ValueError(f"Unknown algorithm: {args.algo}")
 
-    # Hyperparameters
-    policy_kwargs = dict(net_arch=dict(pi=[256, 256], qf=[256, 256]))
+    # Hyperparameters - Algorithm-specific net_arch
+    if args.algo.lower() in ['sac', 'td3']:
+        policy_kwargs = dict(net_arch=dict(pi=[256, 256], qf=[256, 256]))
+    else:
+        policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
     
     # Resume Logic
     model_path = f"./models/{args.algo}_{args.pair}"
     best_model_path = f"{log_dir}/best_model.zip"
+    norm_path = f"{log_dir}/vec_normalize.pkl"
     
     model = None
     reset_num_timesteps = True
@@ -269,15 +295,18 @@ def main():
                 load_path = None
         
         if load_path:
-            print(f"♻️  RESUMING training from: {load_path}")
-            # Pass tensorboard_log to continue writing to same graph
-            model = AlgoClass.load(load_path, env=env, device=args.device, tensorboard_log=tensorboard_log)
-            
+            print(f"RESUMING training from: {load_path}")
+            # Load model
+            model = AlgoClass.load(load_path, env=train_env, device=args.device, tensorboard_log=tensorboard_log)
+            # Sync VecNormalize stats
+            if os.path.exists(f"{load_path}.pkl"):
+                train_env = VecNormalize.load(f"{load_path}.pkl", train_env)
+                train_env.training = True
             # CRITICAL: Do not reset steps when resuming
             reset_num_timesteps = False
             print(f"   > Resuming from Global Step: {model.num_timesteps}")
         else:
-            print("⚠️  Resume requested but no model found. Starting FRESH.")
+            print("Resume requested but no model found. Starting FRESH.")
             # Clean logs if we failed to find a model to resume
             if os.path.exists(tensorboard_log):
                 shutil.rmtree(tensorboard_log)
@@ -299,7 +328,7 @@ def main():
             shutil.rmtree(tensorboard_log)
 
     if model is None:
-        print(f"🆕  Initializing new {args.algo.upper()} model...")
+        print(f"Initializing new {args.algo.upper()} model...")
         
         # Clean old logs only if starting fresh
         if os.path.exists(tensorboard_log):
@@ -312,7 +341,7 @@ def main():
 
         model = AlgoClass(
             "MlpPolicy",
-            env,
+            train_env,
             verbose=1,
             tensorboard_log=tensorboard_log,
             device=args.device,
@@ -325,8 +354,9 @@ def main():
         reset_num_timesteps = True
 
     # --- Train ---
-    print(f"🚀  Training started... Target: {args.total_timesteps} steps")
-    
+    print(f"Training started... Target: {args.total_timesteps} steps")
+    print(f"Model: {args.algo.upper()}, Device: {args.device}")
+
     try:
         model.learn(
             total_timesteps=args.total_timesteps, 
@@ -335,24 +365,18 @@ def main():
             reset_num_timesteps=reset_num_timesteps # <--- Handles the resumption of step count
         )
         
-        # Save Final Model
+        # Save Final Model + Normalize
         if not os.path.exists(os.path.dirname(model_path)):
             os.makedirs(os.path.dirname(model_path))
 
-        model.save(model_path, metadata={"test_split": args.test_split, "pair": args.pair, "initial_balance": args.initial_balance})
-        with open(model_path + ".meta", 'w') as f:
-            json.dump({"test_split": args.test_split, "pair": args.pair, "initial_balance": args.initial_balance}, f)
-        print(f"✅  Training Complete. Model saved to {model_path}")
+        model.save(model_path)
+        train_env.save(f"{model_path}.pkl")
+        print(f"Training Complete. Model saved to {model_path}")
 
     except KeyboardInterrupt:
-        print("\n🛑  Training interrupted manually. Saving model...")
-        model.save(model_path, metadata={"test_split": args.test_split, "pair": args.pair, "initial_balance": args.initial_balance})
-        print("    Model saved.")
-
-    finally:
-        env.close()
-        if args.wandb:
-            wandb.finish()
+        print("\nTraining interrupted manually. Saving model...")
+        model.save(model_path)
+        train_env.save(f"{model_path}.pkl")
 
 if __name__ == "__main__":
     main()

@@ -2,6 +2,7 @@ import gymnasium as gym
 import numpy as np
 import pandas as pd
 from gymnasium import spaces
+from collections import deque
 
 # Delegating heavy lifting to volume_profile.py
 from volume_profile import get_rolling_vp
@@ -10,7 +11,7 @@ class EnhancedTradingEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
     def __init__(self, df, initial_balance=10000, lookback_window=50, vp_days=None, vp_bins=40,
-                 buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075):
+                 buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1):
         super(EnhancedTradingEnv, self).__init__()
         
         # --- CONFIGURATION ---
@@ -85,21 +86,31 @@ class EnhancedTradingEnv(gym.Env):
         # EMA 50 for trend
         self.df['ema_50'] = self.df['close'].ewm(span=50, adjust=False).mean()
 
-        # --- FIX: Aggressive Trend Scaling ---
-        # A 1% difference (0.01) is huge for Bitcoin.
-        # We want 1% to look like 0.5 to the network.
-        # Multiply by 50.
+        # --- UPDATED: Z-Score Trend Scaling ---
         raw_trend = (self.df['close'] - self.df['ema_50']) / self.df['ema_50']
-        self.df['trend_ema50'] = np.clip(raw_trend * 50.0, -1.0, 1.0)
+        std_roll = self.df['close'].rolling(100).std().fillna(1)  # Avoid div0
+        self.df['trend_ema50'] = (raw_trend / std_roll) * 0.5
+        self.df['trend_ema50'] = np.clip(self.df['trend_ema50'], -1, 1)
 
-        self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema50']
+        # --- NEW: ATR & Regime Features ---
+        high_low = self.df['high'] - self.df['low']
+        high_close = np.abs(self.df['high'] - self.df['close'].shift())
+        low_close = np.abs(self.df['low'] - self.df['close'].shift())
+        tr = np.maximum(high_low, np.maximum(high_close, low_close))
+        self.df['atr'] = tr.rolling(14).mean().fillna(0)
+        self.df['atr_norm'] = self.df['atr'] / self.df['close']
+
+        self.df['regime'] = self.df['trend_ema50'] / (self.df['atr_norm'] + 1e-8)
+        self.df['regime'] = np.clip(self.df['regime'], -2, 2)
+
+        self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema50', 'atr_norm', 'regime']
         self.df.fillna(0, inplace=True)
         
         self.market_features = self.df[self.features].values.astype(np.float32)
         self.raw_prices = self.df['close'].values.astype(np.float32)
         
 
-        # --- 3. SPACE DEFINITION ---
+        # --- 3. SPACE DEFINITION (Updated for new features) ---
         market_obs_size = self.lookback_window * len(self.features)
         account_obs_size = 2
         vp_obs_size = len(self.vp_days) * (3 + self.vp_bins) 
@@ -109,8 +120,8 @@ class EnhancedTradingEnv(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
         
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
-        
-        self.phase = 1
+
+        self.phase = phase
         self.prev_sign = 0  # Initialize for switch penalty
         self.reset()
 
@@ -141,6 +152,7 @@ class EnhancedTradingEnv(gym.Env):
         self.prev_action = 0
         self.prev_sign = 0  # Reset for switch penalty
         self.history_net_worth = [self.initial_balance]
+        self.episode_returns = deque(maxlen=24)  # For Sortino (last 24 hours)
         
         if len(self.df) > self.max_lookback + 1000:
             self.current_step = self.np_random.integers(self.max_lookback, len(self.df) - 1000)
@@ -200,7 +212,7 @@ class EnhancedTradingEnv(gym.Env):
 
             # 2. Check Trend Magnitude (The likely culprit)
             trend_val = self.df.iloc[self.current_step]['trend_ema50']
-            print(f"  > Trend EMA Input:     {trend_val:.5f}  (Now scaled and clipped -1 to 1)")
+            print(f"  > Trend EMA Input:     {trend_val:.5f}  (Now z-scored and clipped -1 to 1)")
 
             # 3. Check Close Pct
             close_pct_val = self.df.iloc[self.current_step]['close_pct']
@@ -222,16 +234,20 @@ class EnhancedTradingEnv(gym.Env):
             macd_sig_norm_val = self.df.iloc[self.current_step]['macd_sig_norm']
             print(f"  > MACD Sig Norm Input: {macd_sig_norm_val:.5f}")
 
-            # 8. Check VP Heatmap Magnitude
+            # 8. Check ATR Norm
+            atr_norm_val = self.df.iloc[self.current_step]['atr_norm']
+            print(f"  > ATR Norm Input:      {atr_norm_val:.5f}")
+
+            # 9. Check Regime
+            regime_val = self.df.iloc[self.current_step]['regime']
+            print(f"  > Regime Input:        {regime_val:.5f} (-2 to 2)")
+
+            # 10. Check VP Heatmap Magnitude
             # Access the first available VP day key
             first_day = self.vp_days[0]
             vp_sample = self.vp_data[first_day]['heatmap'][self.current_step]
             print(f"  > VP Heatmap Max:      {np.max(vp_sample):.2f} (Now normalized by sum, max <=1.0)")
             print(f"  > VP Heatmap Values:   {vp_sample}")
-
-        # DEBUG: Check if StochRSI is alive
-        if self.current_step % 100 == 0:
-            print(f"DEBUG StochRSI History: {self.df['stoch_rsi'].iloc[self.current_step-5:self.current_step].values}")
 
         return full_obs.astype(np.float32)
 
@@ -246,8 +262,9 @@ class EnhancedTradingEnv(gym.Env):
         # If prev was Buying (0.8) and now Holding (0.1), delta is 0.7
         action_delta = abs(action_val - self.prev_action)
 
-        # Define stability penalty (e.g. 0.05% per unit of change)
-        stability_penalty = action_delta * 0.00001 * self.balance
+        # --- UPDATED: Adaptive Stability Penalty ---
+        churn_rate = self.trade_count / (self.current_step - self.max_lookback + 1) if (self.current_step - self.max_lookback + 1) > 0 else 0
+        stability_penalty = action_delta * 0.0005 * self.balance * max(churn_rate, 0.1)  # Scale by churn if high
 
         # --- TRADE LOGIC ---
         trade_penalty = 0
@@ -256,8 +273,16 @@ class EnhancedTradingEnv(gym.Env):
             self.trade_count += 1
             self.prev_action = action_val
 
+        # --- UPDATED: Dynamic Thresholds via ATR ---
+        atr_idx = self.features.index('atr_norm')
+        atr_norm = self.market_features[self.current_step, atr_idx]
+        thresh_mult = 1 + (atr_norm * 0.5)  # Higher vol → higher threshold (needs stronger action)
+        
+        dynamic_buy_threshold = self.buy_threshold * thresh_mult
+        dynamic_sell_threshold = self.sell_threshold * thresh_mult  # More negative in high vol
+
         # --- CONFIGURABLE THRESHOLDS ---
-        if action_val > self.buy_threshold: # Buy
+        if action_val > dynamic_buy_threshold: # Buy
             amount_to_invest = self.balance * action_val
             if amount_to_invest > 10:
                 shares_bought = amount_to_invest / current_price
@@ -268,7 +293,7 @@ class EnhancedTradingEnv(gym.Env):
             else:
                 trade_penalty = 0.01
         
-        elif action_val < self.sell_threshold: # Sell
+        elif action_val < dynamic_sell_threshold: # Sell
             shares_to_sell = self.shares_held * abs(action_val)
             if shares_to_sell * current_price > 10:
                 trade_value = shares_to_sell * current_price
@@ -309,6 +334,9 @@ class EnhancedTradingEnv(gym.Env):
         reward -= stability_penalty # <--- Add this
         reward -= switch_penalty
 
+        # Append for phased rewards
+        self.episode_returns.append(step_reward)
+
         # --- HOLDING BONUS ---
         # Reward holding profitable positions to encourage swing trading
         holding_bonus = 0
@@ -322,10 +350,10 @@ class EnhancedTradingEnv(gym.Env):
         cur_stoch = self.df.iloc[self.current_step]['stoch_rsi']
         indicator_bonus = 0.0
 
-        if action_val > self.buy_threshold:
+        if action_val > dynamic_buy_threshold:
             if cur_rsi < 30: indicator_bonus += 0.5 
             if cur_stoch < 0.2: indicator_bonus += 0.3
-        elif action_val < self.sell_threshold:
+        elif action_val < dynamic_sell_threshold:
             if cur_rsi > 70: indicator_bonus += 0.5 
             if cur_stoch > 0.8: indicator_bonus += 0.3
         
@@ -354,6 +382,22 @@ class EnhancedTradingEnv(gym.Env):
         alignment_bonus = trend_diff * current_position * 0.1  # Weight it small
 
         reward += alignment_bonus
+
+        # --- UPDATED: Phased Reward Curriculum ---
+        if self.phase >= 2:
+            # Phase 2: Sortino Bonus
+            recent_returns = np.array(self.episode_returns)
+            downside_returns = recent_returns[recent_returns < 0]
+            downside_std = np.std(downside_returns) if len(downside_returns) > 0 else 1e-8
+            mean_return = np.mean(recent_returns)
+            sortino_bonus = (mean_return / downside_std) * 0.5
+            reward += sortino_bonus
+
+        if self.phase >= 3:
+            # Phase 3: MDD Penalty
+            drawdown = (self.net_worth - self.max_net_worth) / self.max_net_worth
+            if drawdown < -0.05:
+                reward -= abs(drawdown) * 20
 
         self.prev_net_worth = self.net_worth
         self.prev_shares_held = self.shares_held

@@ -1,6 +1,5 @@
 import os
 import numpy as np
-import json
 import wandb # Import wandb
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from stable_baselines3.common.results_plotter import load_results, ts2xy
@@ -269,6 +268,19 @@ class CustomEvalCallback(EvalCallback):
 
     def _on_step(self) -> bool:
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+            # --- UPDATED: Phase Switching ---
+            if self.num_timesteps % 250000 == 0:
+                current_phase = getattr(self.model.env, 'phase', 1)
+                new_phase = min(current_phase + 1, 3)  # Up to phase 3
+                # Broadcast to train env (works for Subproc via attr access)
+                if hasattr(self.model.env, 'set_attr'):
+                    self.model.env.set_attr(phase=new_phase)
+                else:
+                    # Fallback: Set on wrapped env
+                    self.model.env.phase = new_phase
+                if wandb.run is not None:
+                    wandb.log({'curriculum/phase': new_phase, 'step': self.num_timesteps})
+
             mean_reward, std_reward, mean_portfolio, std_portfolio = self._evaluate_with_portfolio()
             if self.log_path is not None:
                 self.logger.record("eval/mean_reward", mean_reward)
@@ -287,8 +299,6 @@ class CustomEvalCallback(EvalCallback):
                     if self.initial_balance: metadata["initial_balance"] = self.initial_balance
                     metadata["end_networth"] = self.best_mean_portfolio
                     self.model.save(os.path.join(self.best_model_save_path, 'best_model'), metadata=metadata)
-                    with open(os.path.join(self.best_model_save_path, 'best_model.zip.meta'), 'w') as f:
-                        json.dump(metadata, f)
                 self._log_best_to_wandb(mean_reward, std_reward)
             # Generate metrics after evaluation
             if wandb.run is not None:
