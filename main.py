@@ -53,8 +53,8 @@ def parse_args():
     parser.add_argument("--timeframe", type=str, default="1h", help="Data timeframe")
     parser.add_argument("--initial-balance", type=float, default=10000, help="Starting money")
     parser.add_argument("--trading-fee", type=float, default=0.00075, help="Trading fee (0.075% default)")
-    parser.add_argument("--buy-threshold", type=float, default=0.1, help="Threshold to trigger buy action")
-    parser.add_argument("--sell-threshold", type=float, default=-0.1, help="Threshold to trigger sell action")
+    parser.add_argument("--buy-threshold", type=float, default=0.3, help="Threshold to trigger buy action")
+    parser.add_argument("--sell-threshold", type=float, default=-0.3, help="Threshold to trigger sell action")
     
     # Environment Config
     # REVERTED TO YOUR DEFAULT: [7, 30]
@@ -233,7 +233,7 @@ def main():
         name_prefix=args.algo
     )
     
-    tensorboard_callback = TensorboardCallback(verbose=1)
+    tensorboard_callback = TensorboardCallback(verbose=1, buy_threshold=args.buy_threshold, sell_threshold=args.sell_threshold)
     
     callbacks = [tensorboard_callback, checkpoint_callback]
     

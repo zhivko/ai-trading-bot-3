@@ -49,13 +49,15 @@ class TensorboardCallback(BaseCallback):
     2. Financial Metrics (Sharpe, Drawdown, Benchmark Comparison)
     """
 
-    def __init__(self, verbose=0):
+    def __init__(self, verbose=0, buy_threshold=0.1, sell_threshold=-0.1):
         super().__init__(verbose)
+        self.buy_threshold = buy_threshold
+        self.sell_threshold = sell_threshold
         self.ep_prices = []
         self.ep_emas = []
         self.ep_actions = []
         self.ep_portfolio = []
-        self.ep_dates = [] 
+        self.ep_dates = []
 
     def _on_step(self) -> bool:
         # 1. Robust Info Extraction
@@ -178,9 +180,8 @@ class TensorboardCallback(BaseCallback):
             pass
 
     def _plot_regime_chart(self):
-        # (Keep your existing charting code exactly as it is)
         if len(self.ep_prices) < 10: return
-        steps = np.arange(len(self.ep_prices)) 
+        steps = np.arange(len(self.ep_prices))
         prices = np.array(self.ep_prices)
         emas = np.array(self.ep_emas)
         actions = np.array(self.ep_actions)
@@ -193,7 +194,14 @@ class TensorboardCallback(BaseCallback):
             min_len = min(len(prices), len(emas))
             ax1.fill_between(steps[:min_len], prices[:min_len], emas[:min_len], where=(prices[:min_len] > emas[:min_len]), color='green', alpha=0.1, label='Bull')
             ax1.fill_between(steps[:min_len], prices[:min_len], emas[:min_len], where=(prices[:min_len] <= emas[:min_len]), color='red', alpha=0.1, label='Bear')
-        
+
+        # Plot actions on top of price chart
+        for i, act in enumerate(actions):
+            if act >= self.buy_threshold:
+                ax1.scatter(steps[i], prices[i], color='green', marker='^', s=50, label='Buy' if i == 0 else "")
+            elif act <= self.sell_threshold:
+                ax1.scatter(steps[i], prices[i], color='red', marker='v', s=50, label='Sell' if i == 0 else "")
+
         last_pv = self.ep_portfolio[-1] if self.ep_portfolio else 0
         ax1.set_title(f"Thread 0 | PV: {last_pv:.2f}")
         ax1.legend(loc='upper left')
@@ -203,7 +211,7 @@ class TensorboardCallback(BaseCallback):
         ax2.bar(steps, actions, color=colors, width=1.0)
         ax2.axhline(0, color='black', linewidth=0.8)
         ax2.set_ylabel("Action")
-        
+
         # Date labels
         num_ticks = 8
         tick_indices = np.linspace(0, len(steps) - 1, num_ticks, dtype=int)
