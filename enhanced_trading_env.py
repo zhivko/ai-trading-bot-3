@@ -236,18 +236,23 @@ class EnhancedTradingEnv(gym.Env):
         return names
 
     def _take_action(self, action):
+        # 0. DEADBAND (Noise Filter)
+        # Use the class parameters to define the neutral zone.
+        # If action is between sell_threshold (-0.3) and buy_threshold (0.3), force it to 0.
+        action_val = action[0]
+        if action_val < self.buy_threshold and action_val > self.sell_threshold:
+            action_val = 0.0
+        action = np.array([action_val])
+
         trade_occurred = False
 
         # 1. COOLDOWN CHECK
-        # If we traded recently, we BLOCK any new trade attempts.
-        # We force the 'action' effectively to match the previous position (Holding).
         if self.steps_since_last_trade < self.cooldown_steps and self.steps_since_last_trade > 0:
-            # We are locked. No trade allowed.
             return False
 
         # 2. Detect Trade
-        # We use a threshold (e.g. 0.3) to ignore tiny noise adjustments
-        current_sign = np.sign(action) if abs(action) > 0.3 else 0 # Raised threshold slightly
+        # Now we just check the sign of the filtered action
+        current_sign = np.sign(action_val)
 
         # Get last valid action (or 0 if start)
         prev_act = self.prev_actions[-1] if self.prev_actions else 0.0
