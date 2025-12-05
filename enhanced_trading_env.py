@@ -121,6 +121,7 @@ class EnhancedTradingEnv(gym.Env):
             'bull_div_rsi',
             'bear_div_rsi'
         ]
+        self.div_scores = {k: 0.0 for k in self.div_features}  # Initialize state
         self.df.fillna(0, inplace=True)
         
         self.market_features = self.df[self.features].values.astype(np.float32)
@@ -189,16 +190,18 @@ class EnhancedTradingEnv(gym.Env):
         return bullish, bearish
 
     def get_feature_names(self):
-        names = []
-        for i in range(self.lookback_window):
-            for f in self.features:
-                names.append(f"{f}_t-{self.lookback_window - i}")
-        names.extend(['balance_norm', 'shares_held'])
-        for days in self.vp_days:
-            names.extend([f"VP_{days}d_Dist_POC", f"VP_{days}d_Dist_VAH", f"VP_{days}d_Dist_VAL"])
-            for i in range(self.vp_bins):
-                names.append(f"VP_{days}d_Bin_{i}")
-        names.extend(self.div_features)
+        """Returns a list of labels for the observation space."""
+        # This must match exactly the order of np.concatenate in _next_observation
+        names = [
+            "volume_norm", "trend_ema", "close_pct",
+            "rsi_norm", "stoch_rsi", "macd_norm", "macd_sig", "atr_norm",
+            "regime", "heatmap_max"
+        ]
+        # Add Heatmap buckets
+        names += [f"vp_bucket_{i}" for i in range(self.vp_bins)]
+        # Add Divergence features
+        names += self.div_features
+
         return names
 
     def set_phase(self, new_phase):
@@ -279,11 +282,23 @@ class EnhancedTradingEnv(gym.Env):
             self.raw_prices, window=40, tolerance=8
         )
 
-        div_vector = np.array([
-            bull9, bear9,
-            bull14, bear14,
-            bull_rsi, bear_rsi
-        ], dtype=np.float32)
+        # Decay the Signal
+        decay_rate = 0.95
+
+        # 1. Decay existing scores
+        for k in self.div_scores:
+            self.div_scores[k] *= decay_rate
+
+        # 2. Add new detections (if any)
+        if bull9 > 0: self.div_scores['bull_div_stoch9'] = 1.0
+        if bear9 > 0: self.div_scores['bear_div_stoch9'] = 1.0
+        if bull14 > 0: self.div_scores['bull_div_stoch14'] = 1.0
+        if bear14 > 0: self.div_scores['bear_div_stoch14'] = 1.0
+        if bull_rsi > 0: self.div_scores['bull_div_rsi'] = 1.0
+        if bear_rsi > 0: self.div_scores['bear_div_rsi'] = 1.0
+
+        # 3. Create vector from self.div_scores, NOT the raw detection variables
+        div_vector = np.array([self.div_scores[k] for k in self.div_features], dtype=np.float32)
 
         full_obs = np.concatenate((std_features, account_features, vp_features, div_vector))
 
@@ -335,12 +350,12 @@ class EnhancedTradingEnv(gym.Env):
             print(f"  > VP Heatmap Max:      {np.max(vp_sample):.2f} (Now normalized by sum, max <=1.0)")
             print(f"  > VP Heatmap Values:   {vp_sample}")
             
-            print(f"  > Bull Div Stoch9:    {bull9}")
-            print(f"  > Bear Div Stoch9:    {bear9}")
-            print(f"  > Bull Div Stoch14:   {bull14}")
-            print(f"  > Bear Div Stoch14:   {bear14}")
-            print(f"  > Bull Div RSI:       {bull_rsi}")
-            print(f"  > Bear Div RSI:       {bear_rsi}")
+            print(f"  > Bull Div Stoch9:    {div_vector[0]:.5f}")
+            print(f"  > Bear Div Stoch9:    {div_vector[1]:.5f}")
+            print(f"  > Bull Div Stoch14:   {div_vector[2]:.5f}")
+            print(f"  > Bear Div Stoch14:   {div_vector[3]:.5f}")
+            print(f"  > Bull Div RSI:       {div_vector[4]:.5f}")
+            print(f"  > Bear Div RSI:       {div_vector[5]:.5f}")
                         
         return full_obs.astype(np.float32)
 

@@ -26,6 +26,7 @@ from wandb.integration.sb3 import WandbCallback
 from enhanced_trading_env import EnhancedTradingEnv
 from callbacks.base_callbacks import TensorboardCallback, CustomEvalCallback
 from callbacks.feature_saliency import FeatureSaliencyCallback
+from callbacks.recurrent_saliency import RecurrentFeatureSaliencyCallback
 from volume_profile import get_rolling_vp
 
 # --- Custom Callback for Train Reward Logging ---
@@ -193,10 +194,7 @@ def main():
     train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., clip_reward=10.)
     print("VecNormalize applied.")
 
-    # Wrap with VecFrameStack for recurrent policies (helps with LSTM state management)
-    if args.algo.lower() == 'recurrentppo':
-        train_env = VecFrameStack(train_env, n_stack=1)
-        print("VecFrameStack applied to training env.")
+    # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
 
     # Evaluation Env (Raw for accurate metrics)
     print("Creating evaluation environment...")
@@ -207,17 +205,16 @@ def main():
     eval_env = DummyVecEnv([lambda: EnhancedTradingEnv(**eval_env_kwargs)])
     print("Evaluation environment created.")
 
-    # Wrap with VecFrameStack for recurrent policies (helps with LSTM state management)
-    if args.algo.lower() == 'recurrentppo':
-        eval_env = VecFrameStack(eval_env, n_stack=1)
-        print("VecFrameStack applied to evaluation env.")
+    # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
     # Optional: Load train stats for eval (set training=False)
     # eval_env = VecNormalize.load(f"{log_dir}/vec_normalize.pkl", eval_env); eval_env.training = False
 
-    # Create dummy env for saliency callback
-    dummy_env = eval_env.envs[0]
-    saliency_callback = FeatureSaliencyCallback(dummy_env=dummy_env, check_freq=50000)
-    
+    # Create dummy env for saliency callback (skip for RecurrentPPO due to LSTM compatibility issues)
+    saliency_callback = None
+    if args.algo.lower() != 'recurrentppo':
+        dummy_env = eval_env.envs[0]
+        saliency_callback = FeatureSaliencyCallback(dummy_env=dummy_env, check_freq=50000)
+
     # --- W&B Setup ---
     print("Setting up W&B..." if args.wandb else "Skipping W&B setup.")
     if args.wandb:
@@ -250,7 +247,9 @@ def main():
     
     tensorboard_callback = TensorboardCallback(verbose=1, buy_threshold=args.buy_threshold, sell_threshold=args.sell_threshold)
 
-    callbacks = [tensorboard_callback, checkpoint_callback, saliency_callback]
+    callbacks = [tensorboard_callback, checkpoint_callback]
+    if saliency_callback is not None:
+        callbacks.append(saliency_callback)
     
     if args.wandb:
         callbacks.append(WandbCallback(
@@ -272,6 +271,25 @@ def main():
         initial_balance=args.initial_balance
     )
     callbacks.append(eval_callback)
+
+    # Add Recurrent Saliency Callback for RecurrentPPO
+    if args.algo.lower() == 'recurrentppo':
+        # Get feature names from your environment
+        if hasattr(train_env, 'get_attr'):
+            # SubprocVecEnv or similar
+            feature_names = train_env.get_attr('feature_names', indices=0)[0]
+        else:
+            # Fallback if you can't get names automatically
+            feature_names = [f"feat_{i}" for i in range(train_env.observation_space.shape[0])]
+
+        # Initialize the callback
+        saliency_cb = RecurrentFeatureSaliencyCallback(
+            check_freq=10000,           # Check every 10k steps
+            save_path="./logs/saliency",
+            feature_names=feature_names,
+            verbose=1
+        )
+        callbacks.append(saliency_cb)
 
     callback_list = CallbackList(callbacks)
 

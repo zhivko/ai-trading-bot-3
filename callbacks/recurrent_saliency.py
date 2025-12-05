@@ -1,0 +1,129 @@
+import os
+import numpy as np
+import torch as th
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from stable_baselines3.common.callbacks import BaseCallback
+from captum.attr import IntegratedGradients
+
+class RecurrentFeatureSaliencyCallback(BaseCallback):
+    """
+    Computes Feature Saliency (Integrated Gradients) for RecurrentPPO.
+    Handles the LSTM hidden states injection required by the policy.
+    """
+    def __init__(
+        self,
+        check_freq: int = 5000,
+        save_path: str = "./logs/saliency",
+        feature_names: list = None,
+        verbose: int = 1
+    ):
+        super().__init__(verbose)
+        self.check_freq = check_freq
+        self.save_path = save_path
+        self.feature_names = feature_names
+        os.makedirs(save_path, exist_ok=True)
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.check_freq == 0:
+            self.compute_saliency()
+        return True
+
+    def compute_saliency(self):
+        """
+        Computes gradients of the action output with respect to the input features,
+        keeping LSTM states fixed at their current value.
+        """
+        # 1. Get current observation and convert to Tensor
+        # SB3 normalizes envs, so we use the stored 'new_obs' from locals
+        obs_array = self.locals['new_obs']  # Shape: (n_envs, n_features)
+        
+        # If using VecNormalize, this is already normalized. 
+        # If n_envs > 1, we just take the first environment for visualization.
+        obs_tensor = th.as_tensor(obs_array[0:1]).float().to(self.model.device)
+        obs_tensor.requires_grad = True
+
+        # 2. Get Current LSTM States and Episode Starts
+        # RecurrentPPO stores states in _last_lstm_states
+        # Structure: (hidden_state, cell_state)
+        # Shape of each: (n_layers, n_envs, hidden_size)
+        lstm_states = self.model._last_lstm_states
+        
+        # We need to slice the states for the first env to match our obs_tensor
+        # Tuple of tensors: (h, c)
+        single_env_lstm_states = (
+            lstm_states[0][:, 0:1, :].clone(), # Hidden
+            lstm_states[1][:, 0:1, :].clone()  # Cell
+        )
+        
+        # Episode start flag (usually False in middle of episode)
+        episode_starts = self.model._last_episode_starts[0:1]
+        episode_starts_tensor = th.tensor(episode_starts).float().to(self.model.device)
+
+        # 3. Define the Wrapper Function for Captum
+        # Captum expects: func(inputs) -> output
+        # It creates a batch of interpolated inputs (e.g., 50 steps), so we must 
+        # expand our LSTM states to match that batch size.
+        def forward_func(inputs):
+            batch_size = inputs.shape[0]
+            
+            # Repeat LSTM states to match Captum's internal batch size
+            # (n_layers, 1, hidden) -> (n_layers, batch_size, hidden)
+            h_expanded = single_env_lstm_states[0].repeat(1, batch_size, 1)
+            c_expanded = single_env_lstm_states[1].repeat(1, batch_size, 1)
+            expanded_states = (h_expanded, c_expanded)
+            
+            # Repeat episode starts
+            starts_expanded = episode_starts_tensor.repeat(batch_size)
+
+            # Get Action Distribution
+            # We use the policy to get the distribution, then take the Mean (Determininstic action)
+            # or the Value. Here we use the Actor's output (Mean action).
+            distribution = self.model.policy.get_distribution(inputs, expanded_states, starts_expanded)
+            
+            # For Continuous actions (Box), mode/mean is the action.
+            # If multiple actions, we sum them (magnitude) or pick the first dimension.
+            # Summing is a good proxy for "Total Action Impact".
+            action_mean = distribution.mode() 
+            return action_mean.sum(dim=1)
+
+        # 4. Compute Integrated Gradients
+        ig = IntegratedGradients(forward_func)
+        
+        try:
+            # Check baseline (zero vector)
+            baseline = th.zeros_like(obs_tensor)
+            
+            attributions, delta = ig.attribute(
+                obs_tensor,
+                baselines=baseline,
+                return_convergence_delta=True
+            )
+            
+            # 5. Process and Save Results
+            attrs = attributions.detach().cpu().numpy()[0]
+            
+            # Create DataFrame
+            if self.feature_names and len(self.feature_names) == len(attrs):
+                df_attrs = pd.DataFrame({'Feature': self.feature_names, 'Importance': attrs})
+            else:
+                df_attrs = pd.DataFrame({'Feature': [f'F_{i}' for i in range(len(attrs))], 'Importance': attrs})
+            
+            # Sort by absolute importance
+            df_attrs['Abs_Importance'] = df_attrs['Importance'].abs()
+            df_attrs = df_attrs.sort_values('Abs_Importance', ascending=False).head(20)
+
+            # Plot
+            plt.figure(figsize=(10, 6))
+            sns.barplot(x='Importance', y='Feature', data=df_attrs, palette='viridis')
+            plt.title(f"RecurrentPPO Feature Saliency (Step {self.n_calls})")
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.save_path, f"saliency_step_{self.n_calls}.png"))
+            plt.close()
+            
+            if self.verbose > 0:
+                print(f"[Saliency] Top feature: {df_attrs.iloc[0]['Feature']} ({df_attrs.iloc[0]['Importance']:.4f})")
+
+        except Exception as e:
+            print(f"[Saliency] Error computing gradients: {e}")
