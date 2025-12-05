@@ -136,7 +136,13 @@ class EnhancedTradingEnv(gym.Env):
         
         self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
-        
+
+        # --- FIX STARTS HERE ---
+        # 1. Define the method to generate names (if not already defined)
+        # 2. Call it immediately to store the list as an attribute
+        self.feature_names = self.get_feature_names()
+        # --- FIX ENDS HERE ---
+
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
 
         self.phase = phase

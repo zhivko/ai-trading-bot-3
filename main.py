@@ -277,12 +277,7 @@ def main():
     # Add Recurrent Saliency Callback for RecurrentPPO
     if args.algo.lower() == 'recurrentppo':
         # Get feature names from your environment
-        if hasattr(train_env, 'get_attr'):
-            # SubprocVecEnv or similar
-            feature_names = train_env.get_attr('feature_names', indices=0)[0]
-        else:
-            # Fallback if you can't get names automatically
-            feature_names = [f"feat_{i}" for i in range(train_env.observation_space.shape[0])]
+        feature_names = train_env.env_method("get_feature_names", indices=0)[0]
 
         # Initialize the callback
         saliency_cb = RecurrentFeatureSaliencyCallback(
