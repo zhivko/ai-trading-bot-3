@@ -87,11 +87,21 @@ class EnhancedTradingEnv(gym.Env):
         # EMA 50 for trend
         self.df['ema_50'] = self.df['close'].ewm(span=50, adjust=False).mean()
 
-        # --- UPDATED: Z-Score Trend Scaling ---
-        raw_trend = (self.df['close'] - self.df['ema_50']) / self.df['ema_50']
-        std_roll = self.df['close'].rolling(100).std().fillna(1)  # Avoid div0
-        self.df['trend_ema50'] = (raw_trend / std_roll) * 0.5
-        self.df['trend_ema50'] = np.clip(self.df['trend_ema50'], -1, 1)
+        # --- ROBUST TREND EMA CALCULATION ---
+        # 1. Calculate distance
+        dist = self.df['close'] - self.df['ema_50']
+
+        # 2. Normalize by Volatility (ATR)
+        # If we just divide by Price, the value is too small (0.003).
+        # By dividing by ATR (~500), we get a strong signal (e.g., 0.2 or -0.5).
+        # Fallback: If ATR is 0/NaN, use 1% of price to avoid crash.
+        denom = self.df['atr'].where((self.df['atr'] > 0) & (~self.df['atr'].isna()), self.df['close'] * 0.01)
+
+        trend_ema_norm = dist / denom
+
+        # 3. Clip to reasonable range for Neural Net (-1.0 to 1.0)
+        # This prevents a massive pump from exploding the gradient
+        self.df['trend_ema50'] = np.clip(trend_ema_norm, -1.0, 1.0)
 
         # --- NEW: ATR & Regime Features ---
         high_low = self.df['high'] - self.df['low']
