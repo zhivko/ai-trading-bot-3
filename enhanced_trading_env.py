@@ -87,6 +87,14 @@ class EnhancedTradingEnv(gym.Env):
         # EMA 50 for trend
         self.df['ema_50'] = self.df['close'].ewm(span=50, adjust=False).mean()
 
+        # --- NEW: ATR & Regime Features ---
+        high_low = self.df['high'] - self.df['low']
+        high_close = np.abs(self.df['high'] - self.df['close'].shift())
+        low_close = np.abs(self.df['low'] - self.df['close'].shift())
+        tr = np.maximum(high_low, np.maximum(high_close, low_close))
+        self.df['atr'] = tr.rolling(14).mean().fillna(0)
+        self.df['atr_norm'] = self.df['atr'] / self.df['close']
+
         # --- ROBUST TREND EMA CALCULATION ---
         # 1. Calculate distance
         dist = self.df['close'] - self.df['ema_50']
@@ -102,14 +110,6 @@ class EnhancedTradingEnv(gym.Env):
         # 3. Clip to reasonable range for Neural Net (-1.0 to 1.0)
         # This prevents a massive pump from exploding the gradient
         self.df['trend_ema50'] = np.clip(trend_ema_norm, -1.0, 1.0)
-
-        # --- NEW: ATR & Regime Features ---
-        high_low = self.df['high'] - self.df['low']
-        high_close = np.abs(self.df['high'] - self.df['close'].shift())
-        low_close = np.abs(self.df['low'] - self.df['close'].shift())
-        tr = np.maximum(high_low, np.maximum(high_close, low_close))
-        self.df['atr'] = tr.rolling(14).mean().fillna(0)
-        self.df['atr_norm'] = self.df['atr'] / self.df['close']
 
         self.df['regime'] = self.df['trend_ema50'] / (self.df['atr_norm'] + 1e-8)
         self.df['regime'] = np.clip(self.df['regime'], -2, 2)
