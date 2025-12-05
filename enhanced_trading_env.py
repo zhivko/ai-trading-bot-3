@@ -126,14 +126,16 @@ class EnhancedTradingEnv(gym.Env):
         
         self.market_features = self.df[self.features].values.astype(np.float32)
         self.raw_prices = self.df['close'].values.astype(np.float32)
-        
+
+        # --- FIX: Initialize feature names explicitly for Main.py ---
+        self.feature_names = self.get_feature_names()
 
         # --- 3. SPACE DEFINITION (Updated for new features) ---
         market_obs_size = self.lookback_window * len(self.features)
         account_obs_size = 2
         vp_obs_size = len(self.vp_days) * (3 + self.vp_bins)
         total_obs_size = market_obs_size + account_obs_size + vp_obs_size + len(self.div_features)
-        
+
         self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
 
@@ -148,9 +150,6 @@ class EnhancedTradingEnv(gym.Env):
         self.churn_penalty_max = 0.5
 
         self.prev_actions = deque(maxlen=3)
-
-        # --- FIX: Initialize feature names explicitly for Main.py ---
-        self.feature_names = self.get_feature_names()
 
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
 

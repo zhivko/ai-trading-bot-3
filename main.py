@@ -276,18 +276,22 @@ def main():
 
     # Add Recurrent Saliency Callback for RecurrentPPO
     if args.algo.lower() == 'recurrentppo':
-        # Get feature names (Robust Method)
+        # -----------------------------------------------------
+        # ROBUST FEATURE NAME RETRIEVAL
+        # -----------------------------------------------------
         try:
-            # Try retrieving variable directly
-            feature_names = train_env.get_attr('feature_names', indices=0)[0]
-        except Exception:
+            # Method A: Try calling the function directly (Best for SubprocVecEnv)
+            feature_names = train_env.env_method("get_feature_names", indices=0)[0]
+        except Exception as e:
+            print(f"Warning: env_method failed ({e}). Trying attribute access...")
             try:
-                # Try calling the method
-                feature_names = train_env.env_method('get_feature_names', indices=0)[0]
-            except Exception:
-                 # Fallback
-                print("Warning: Could not get feature names. Using generics.")
-                feature_names = [f"F_{i}" for i in range(56)]
+                # Method B: Try accessing the attribute
+                feature_names = train_env.get_attr("feature_names", indices=0)[0]
+            except Exception as e2:
+                # Method C: Fallback
+                print(f"Warning: Could not retrieve feature names ({e2}). Using generic labels.")
+                obs_dim = train_env.observation_space.shape[0]
+                feature_names = [f"F_{i}" for i in range(obs_dim)]
 
         # Initialize the callback
         saliency_cb = RecurrentFeatureSaliencyCallback(
