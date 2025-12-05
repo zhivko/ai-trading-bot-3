@@ -260,10 +260,12 @@ def main():
             verbose=0  # Reduced from 2 to minimize logging overhead
         ))
 
+    eval_freq_adjusted = max(50000 // args.n_envs, 1) # e.g., 50000 // 16 = 3125 calls
+
     # Add after eval_env setup
     eval_callback = CustomEvalCallback(
         eval_env=eval_env,
-        eval_freq=50000,  # Reduced from 10k to 50k steps to reduce overhead
+        eval_freq=eval_freq_adjusted,  # Reduced from 10k to 50k steps to reduce overhead
         log_path="./logs/",
         best_model_save_path="./models/",
         deterministic=True,
