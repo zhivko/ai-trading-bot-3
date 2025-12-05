@@ -338,7 +338,14 @@ class EnhancedTradingEnv(gym.Env):
             vp_sample = self.vp_data[first_day]['heatmap'][self.current_step]
             print(f"  > VP Heatmap Max:      {np.max(vp_sample):.2f} (Now normalized by sum, max <=1.0)")
             print(f"  > VP Heatmap Values:   {vp_sample}")
-
+            
+            print(f"  > Bull Div Stoch9:    {bull9}")
+            print(f"  > Bear Div Stoch9:    {bear9}")
+            print(f"  > Bull Div Stoch14:   {bull14}")
+            print(f"  > Bear Div Stoch14:   {bear14}")
+            print(f"  > Bull Div RSI:       {bull_rsi}")
+            print(f"  > Bear Div RSI:       {bear_rsi}")
+                        
         return full_obs.astype(np.float32)
 
     def step(self, action):
