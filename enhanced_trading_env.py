@@ -394,6 +394,11 @@ class EnhancedTradingEnv(gym.Env):
             trend_val = self.df.iloc[self.current_step]['trend_ema50']
             print(f"  > Trend EMA Input:     {trend_val:.5f}  (Now z-scored and clipped -1 to 1)")
 
+            # Debug suggestion:
+            current_close = current_price
+            ema_val = self.df.iloc[self.current_step]['ema_50']
+            print(f"DEBUG EMA: Close={current_close}, EMA={ema_val}, Diff={current_close - ema_val}")
+
             # 3. Check Close Pct
             close_pct_val = self.df.iloc[self.current_step]['close_pct']
             print(f"  > Close Pct Input:     {close_pct_val:.5f}")

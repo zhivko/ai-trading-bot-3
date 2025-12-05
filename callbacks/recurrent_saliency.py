@@ -45,16 +45,17 @@ class RecurrentFeatureSaliencyCallback(BaseCallback):
         obs_tensor.requires_grad = True
 
         # 2. Get Current LSTM States and Episode Starts
-        # RecurrentPPO stores states in _last_lstm_states
-        # Structure: (hidden_state, cell_state)
-        # Shape of each: (n_layers, n_envs, hidden_size)
+        # RecurrentPPO stores states in _last_lstm_states as RNNStates(pi=(h, c), vf=(h, c))
         lstm_states = self.model._last_lstm_states
         
-        # We need to slice the states for the first env to match our obs_tensor
-        # Tuple of tensors: (h, c)
+        # We need the Policy (Actor) states, which are at index 0 (or .pi)
+        # lstm_states[0] is the tuple (hidden_state, cell_state) for the Actor
+        actor_states = lstm_states[0]
+        
+        # Now we slice the TENSORS inside that tuple
         single_env_lstm_states = (
-            lstm_states[0][:, 0:1, :].clone(), # Hidden
-            lstm_states[1][:, 0:1, :].clone()  # Cell
+            actor_states[0][:, 0:1, :].clone(), # Hidden State Tensor
+            actor_states[1][:, 0:1, :].clone()  # Cell State Tensor
         )
         
         # Episode start flag (usually False in middle of episode)
