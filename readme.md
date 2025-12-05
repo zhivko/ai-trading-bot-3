@@ -325,3 +325,15 @@ or with resume if you break leaarning
 ```bash
 python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2023-01-01 --total-timesteps 5000000 --wandb --device cuda --resume --batch-size 4096
 ```
+
+## CODE for LLM's to comment on code
+Sources of project are available in https://github.com/zhivko/ai-trading-bot-3 project.
+
+For example to get main.py you can use:
+https://github.com/zhivko/ai-trading-bot-3/blob/feat/sane-action-reward-v3/main.py
+For enhanced_trading_env.py
+https://github.com/zhivko/ai-trading-bot-3/blob/feat/sane-action-reward-v3/enhanced_trading_env.py
+
+https://github.com/zhivko/ai-trading-bot-3/blob/feat/sane-action-reward-v3/callbacks/base_callbacks
+
+https://github.com/zhivko/ai-trading-bot-3/blob/feat/sane-action-reward-v3/callbacks/feature_saliency.py
