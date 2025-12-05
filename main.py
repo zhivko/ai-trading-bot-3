@@ -14,7 +14,7 @@ import gymnasium as gym
 from stable_baselines3 import SAC, PPO, A2C, TD3
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize, DummyVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize, DummyVecEnv, VecFrameStack
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
 from stable_baselines3.common.utils import set_random_seed
 
@@ -66,7 +66,7 @@ def parse_args():
     parser.add_argument("--phase", type=int, default=1, help="Curriculum phase (1=profit, 2=sortino, 3=mdd)")
     
     # RL Config
-    parser.add_argument("--algo", type=str, default="sac", choices=["sac", "ppo", "a2c", "td3", "recurrentppo"], help="RL Algorithm")
+    parser.add_argument("--algo", type=str, default="recurrentppo", choices=["sac", "ppo", "a2c", "td3", "recurrentppo"], help="RL Algorithm")
     parser.add_argument("--total-timesteps", type=int, default=1_000_000, help="Total training steps")
     parser.add_argument("--batch-size", type=int, default=4096, help="Batch size for training")
     parser.add_argument("--learning-rate", type=float, default=0.0001, help="Learning rate")
@@ -193,6 +193,11 @@ def main():
     train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., clip_reward=10.)
     print("VecNormalize applied.")
 
+    # Wrap with VecFrameStack for recurrent policies (helps with LSTM state management)
+    if args.algo.lower() == 'recurrentppo':
+        train_env = VecFrameStack(train_env, n_stack=1)
+        print("VecFrameStack applied to training env.")
+
     # Evaluation Env (Raw for accurate metrics)
     print("Creating evaluation environment...")
     eval_env_kwargs = env_kwargs.copy()
@@ -201,6 +206,11 @@ def main():
 
     eval_env = DummyVecEnv([lambda: EnhancedTradingEnv(**eval_env_kwargs)])
     print("Evaluation environment created.")
+
+    # Wrap with VecFrameStack for recurrent policies (helps with LSTM state management)
+    if args.algo.lower() == 'recurrentppo':
+        eval_env = VecFrameStack(eval_env, n_stack=1)
+        print("VecFrameStack applied to evaluation env.")
     # Optional: Load train stats for eval (set training=False)
     # eval_env = VecNormalize.load(f"{log_dir}/vec_normalize.pkl", eval_env); eval_env.training = False
 
@@ -270,8 +280,18 @@ def main():
     if not AlgoClass:
         raise ValueError(f"Unknown algorithm: {args.algo}")
 
-    # Hyperparameters - Algorithm-specific net_arch
-    if args.algo.lower() in ['sac', 'td3']:
+    # Hyperparameters - Algorithm-specific
+    policy = "MlpPolicy"
+    if args.algo.lower() == 'recurrentppo':
+        policy = "MlpLstmPolicy"
+        policy_kwargs = dict(
+            lstm_hidden_size=256,
+            n_lstm_layers=2,
+            shared_lstm=False,
+            enable_critic_lstm=True,
+            lstm_kwargs=dict(dropout=0.0),
+        )
+    elif args.algo.lower() in ['sac', 'td3']:
         policy_kwargs = dict(net_arch=dict(pi=[256, 256], qf=[256, 256]))
     else:
         policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
@@ -348,27 +368,47 @@ def main():
 
     if model is None:
         print(f"Initializing new {args.algo.upper()} model...")
-        
+
         # Clean old logs only if starting fresh
         if os.path.exists(tensorboard_log):
             shutil.rmtree(tensorboard_log)
-            
+
         # Clean old checkpoints
         chk_dir = f"checkpoints/{args.algo}_{args.pair}"
         if os.path.exists(chk_dir):
             shutil.rmtree(chk_dir)
 
+        # Set model hyperparameters
+        model_kwargs = {}
+        if args.algo.lower() == 'recurrentppo':
+            model_kwargs.update(dict(
+                n_steps=1024,
+                batch_size=16384,
+                learning_rate=3e-4,
+                gamma=0.99,
+                gae_lambda=0.95,
+                clip_range=0.2,
+                ent_coef=0.01,
+                lstm_sequence_length=64,
+            ))
+        else:
+            model_kwargs.update(dict(
+                batch_size=args.batch_size,
+                learning_rate=args.learning_rate,
+            ))
+
+        if args.algo.lower() == 'sac':
+            model_kwargs['buffer_size'] = 100000
+            model_kwargs['ent_coef'] = 'auto'
+
         model = AlgoClass(
-            "MlpPolicy",
+            policy,
             train_env,
             verbose=1,
             tensorboard_log=tensorboard_log,
             device=args.device,
-            batch_size=args.batch_size,
-            learning_rate=args.learning_rate,
             policy_kwargs=policy_kwargs,
-            buffer_size=100000 if args.algo == 'sac' else None, # SAC specific
-            ent_coef='auto' if args.algo == 'sac' else None,    # SAC specific
+            **model_kwargs
         )
         reset_num_timesteps = True
 

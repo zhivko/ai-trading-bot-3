@@ -316,15 +316,26 @@ Training complete.
 
 ## Usage
 Usage example:
+
+
+### model = sac
+
 ```bash
 python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2023-01-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 4096
 ```
 
-or with resume if you break leaarning
+or with resume if you break learning
 
 ```bash
-python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2023-01-01 --total-timesteps 5000000 --wandb --device cuda --resume --batch-size 4096
+python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2023-01-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 4096 --resume
 ```
+
+
+### model = recurrentppo
+```bash
+python main.py --pair BTCUSDT --vp-days 7 30 --algo recurrentppo --test-split 2023-01-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 4096
+```
+
 
 ## CODE for LLM's to comment on code
 Sources of project are available in:
