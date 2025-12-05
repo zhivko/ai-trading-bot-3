@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from gymnasium import spaces
 from collections import deque
+from scipy.signal import argrelextrema
 
 # Delegating heavy lifting to volume_profile.py
 from volume_profile import get_rolling_vp
@@ -103,7 +104,23 @@ class EnhancedTradingEnv(gym.Env):
         self.df['regime'] = self.df['trend_ema50'] / (self.df['atr_norm'] + 1e-8)
         self.df['regime'] = np.clip(self.df['regime'], -2, 2)
 
+        # Stochastic 14
+        min_low = self.df['low'].rolling(window=14).min()
+        max_high = self.df['high'].rolling(window=14).max()
+        self.df['stoch_14'] = (self.df['close'] - min_low) / (max_high - min_low + 1e-8)
+        self.df['stoch_14'] = self.df['stoch_14'].fillna(0.5)
+        self.df['stoch_14'] = np.clip(self.df['stoch_14'], 0.0, 1.0)
+
         self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema50', 'atr_norm', 'regime']
+        self.divergence_window = 40
+        self.div_features = [
+            'bull_div_stoch9',
+            'bear_div_stoch9',
+            'bull_div_stoch14',
+            'bear_div_stoch14',
+            'bull_div_rsi',
+            'bear_div_rsi'
+        ]
         self.df.fillna(0, inplace=True)
         
         self.market_features = self.df[self.features].values.astype(np.float32)
@@ -113,8 +130,8 @@ class EnhancedTradingEnv(gym.Env):
         # --- 3. SPACE DEFINITION (Updated for new features) ---
         market_obs_size = self.lookback_window * len(self.features)
         account_obs_size = 2
-        vp_obs_size = len(self.vp_days) * (3 + self.vp_bins) 
-        total_obs_size = market_obs_size + account_obs_size + vp_obs_size
+        vp_obs_size = len(self.vp_days) * (3 + self.vp_bins)
+        total_obs_size = market_obs_size + account_obs_size + vp_obs_size + len(self.div_features)
         
         self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
@@ -124,6 +141,56 @@ class EnhancedTradingEnv(gym.Env):
         self.phase = phase
         self.prev_sign = 0  # Initialize for switch penalty
         self.reset()
+
+    def _detect_divergences(self, series, price_series, window=40, tolerance=5):
+        """
+        Returns two values:
+          - bullish_div:  1.0 if bullish regular divergence detected in last `tolerance` bars
+          - bearish_div:  1.0 if bearish regular divergence detected
+        """
+        bullish = 0.0
+        bearish = 0.0
+        
+        if self.current_step < window + tolerance:
+            return bullish, bearish
+
+        recent_prices = price_series[self.current_step - window:self.current_step + 1]
+        recent_series = series[self.current_step - window:self.current_step + 1]
+
+        # Find swing lows/highs in price
+        price_lows_idx  = argrelextrema(recent_prices, np.less, order=3)[0]
+        price_highs_idx = argrelextrema(recent_prices, np.greater, order=3)[0]
+
+        # Find swing lows/highs in oscillator
+        osc_lows_idx  = argrelextrema(recent_series, np.less, order=3)[0]
+        osc_highs_idx = argrelextrema(recent_series, np.greater, order=3)[0]
+
+        # Bullish divergence: price lower low + oscillator higher low
+        for i in range(len(price_lows_idx)-1):
+            p1, p2 = price_lows_idx[-2], price_lows_idx[-1]
+            if p2 < tolerance:  # only recent
+                continue
+            if recent_prices[p2] < recent_prices[p1]:  # lower low in price
+                # find corresponding oscillator lows near these points
+                osc_near_p1 = [x for x in osc_lows_idx if abs(x - p1) < 8]
+                osc_near_p2 = [x for x in osc_lows_idx if abs(x - p2) < 8]
+                if osc_near_p1 and osc_near_p2:
+                    if recent_series[osc_near_p2[0]] > recent_series[osc_near_p1[0]]:
+                        bullish = 1.0
+
+        # Bearish divergence
+        for i in range(len(price_highs_idx)-1):
+            p1, p2 = price_highs_idx[-2], price_highs_idx[-1]
+            if p2 < tolerance:
+                continue
+            if recent_prices[p2] > recent_prices[p1]:  # higher high in price
+                osc_near_p1 = [x for x in osc_highs_idx if abs(x - p1) < 8]
+                osc_near_p2 = [x for x in osc_highs_idx if abs(x - p2) < 8]
+                if osc_near_p1 and osc_near_p2:
+                    if recent_series[osc_near_p2[0]] < recent_series[osc_near_p1[0]]:
+                        bearish = 1.0
+
+        return bullish, bearish
 
     def get_feature_names(self):
         names = []
@@ -135,6 +202,7 @@ class EnhancedTradingEnv(gym.Env):
             names.extend([f"VP_{days}d_Dist_POC", f"VP_{days}d_Dist_VAH", f"VP_{days}d_Dist_VAL"])
             for i in range(self.vp_bins):
                 names.append(f"VP_{days}d_Bin_{i}")
+        names.extend(self.div_features)
         return names
 
     def set_phase(self, new_phase):
@@ -199,7 +267,29 @@ class EnhancedTradingEnv(gym.Env):
             vp_features_list.extend(heatmap)
             
         vp_features = np.array(vp_features_list, dtype=np.float32)
-        full_obs = np.concatenate((std_features, account_features, vp_features))
+
+        # Detect divergences (only when current_step is valid)
+        bull9, bear9 = self._detect_divergences(
+            self.df['stoch_rsi_norm'].values,
+            self.raw_prices,
+            window=40, tolerance=10
+        )
+        bull14, bear14 = self._detect_divergences(
+            self.df['stoch_14'].values,
+            self.raw_prices, window=40, tolerance=10
+        )
+        bull_rsi, bear_rsi = self._detect_divergences(
+            self.df['rsi_norm'].values,
+            self.raw_prices, window=50, tolerance=12
+        )
+
+        div_vector = np.array([
+            bull9, bear9,
+            bull14, bear14,
+            bull_rsi, bear_rsi
+        ], dtype=np.float32)
+
+        full_obs = np.concatenate((std_features, account_features, vp_features, div_vector))
 
         # --- DEBUG LOGGING ---
         # Print stats every 10000 steps to avoid spamming, but see what's happening

@@ -25,6 +25,7 @@ from wandb.integration.sb3 import WandbCallback
 # Custom Modules
 from enhanced_trading_env import EnhancedTradingEnv
 from callbacks.base_callbacks import TensorboardCallback, CustomEvalCallback
+from callbacks.feature_saliency import FeatureSaliencyCallback
 from volume_profile import get_rolling_vp
 
 # --- Custom Callback for Train Reward Logging ---
@@ -202,6 +203,10 @@ def main():
     print("Evaluation environment created.")
     # Optional: Load train stats for eval (set training=False)
     # eval_env = VecNormalize.load(f"{log_dir}/vec_normalize.pkl", eval_env); eval_env.training = False
+
+    # Create dummy env for saliency callback
+    dummy_env = eval_env.envs[0]
+    saliency_callback = FeatureSaliencyCallback(dummy_env=dummy_env, check_freq=50000)
     
     # --- W&B Setup ---
     print("Setting up W&B..." if args.wandb else "Skipping W&B setup.")
@@ -234,8 +239,8 @@ def main():
     )
     
     tensorboard_callback = TensorboardCallback(verbose=1, buy_threshold=args.buy_threshold, sell_threshold=args.sell_threshold)
-    
-    callbacks = [tensorboard_callback, checkpoint_callback]
+
+    callbacks = [tensorboard_callback, checkpoint_callback, saliency_callback]
     
     if args.wandb:
         callbacks.append(WandbCallback(
