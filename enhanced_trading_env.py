@@ -149,15 +149,23 @@ class EnhancedTradingEnv(gym.Env):
         self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
 
-        self.stability_penalty_coef = 0.01
+        self.stability_penalty_coef = 0.02   # Slight increase (0.01 -> 0.02)
         self.interaction_penalty = 0.0
         self.reward_scaling = 1.0
 
-        # --- DYNAMIC CHURN SETTINGS ---
-        # Target: Agent should ideally hold for 24 steps (e.g. 1 day if hourly)
-        # If it flips sooner, it pays a penalty.
-        self.target_hold_duration = 24
-        self.churn_penalty_max = 0.5
+        # --- DYNAMIC CHURN SETTINGS (THE HEAVY SEDATIVE) ---
+        # Target: Force agent to look for 3-day swings.
+        # Anything less than 72 hours is penalized.
+        self.target_hold_duration = 72       # INCREASED: 24 -> 72
+        
+        # Max Penalty: 5.0 (Equivalent to a 5% instant loss).
+        # This makes quick flipping practically suicide for the reward score.
+        self.churn_penalty_max = 5.0         # INCREASED: 1.0 -> 5.0
+        
+        # Trade Friction: Massive 'Cost to Click'.
+        # The agent loses 0.5 points just for entering/exiting.
+        # It must expect >0.5% profit just to break even on the decision.
+        self.trade_fee_penalty = 0.5         # INCREASED: 0.05 -> 0.50
 
         self.prev_actions = deque(maxlen=3)
 
@@ -270,23 +278,38 @@ class EnhancedTradingEnv(gym.Env):
 
     def _calculate_reward(self, action, trade_occurred=False):
         step_reward = 0.0
-
-        # 1. Returns
+        
+        # 1. Returns (The basics)
         pct_change = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
         step_reward += pct_change * 100
-
-        # 2. Stability Penalty
+        
+        # 2. Stability Penalty (Dampen jitter)
         if len(self.prev_actions) > 1:
             prev_act = self.prev_actions[-2]
             step_reward -= abs(action - prev_act) * self.stability_penalty_coef
 
-        # 3. Dynamic Churn Penalty
+        # 3. Dynamic Churn Penalty (The "Sedative")
         if trade_occurred:
+            # A. Calculate Premature Exit Penalty
             duration = self.steps_since_last_trade
             if duration < self.target_hold_duration:
+                # Linear decay: Trades at step 1 cost -5.0.
+                # Trades at step 72 cost 0.0.
                 penalty_factor = 1.0 - (duration / self.target_hold_duration)
                 churn_cost = self.churn_penalty_max * penalty_factor
                 step_reward -= churn_cost
+            
+            # B. Fixed Trade "Friction" Cost
+            # Even if duration is healthy, punish the act of trading slightly
+            # to simulate slippage anxiety.
+            step_reward -= self.trade_fee_penalty
+        
+        # 4. Holding Bonus (New)
+        # If we have a position and we DIDN'T trade, reward patience.
+        # This counters the bias to "do something".
+        # abs(self.position) > 0 implies we are Long or Short (not neutral)
+        elif abs(self.shares_held) > 0:
+            step_reward += 0.01  # Small "drip" reward for holding
 
         return step_reward
 
