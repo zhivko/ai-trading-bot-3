@@ -137,11 +137,20 @@ class EnhancedTradingEnv(gym.Env):
         self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
 
-        # --- FIX STARTS HERE ---
-        # 1. Define the method to generate names (if not already defined)
-        # 2. Call it immediately to store the list as an attribute
+        self.stability_penalty_coef = 0.01
+        self.interaction_penalty = 0.0
+        self.reward_scaling = 1.0
+
+        # --- DYNAMIC CHURN SETTINGS ---
+        # Target: Agent should ideally hold for 24 steps (e.g. 1 day if hourly)
+        # If it flips sooner, it pays a penalty.
+        self.target_hold_duration = 24
+        self.churn_penalty_max = 0.5
+
+        self.prev_actions = deque(maxlen=3)
+
+        # --- FIX: Initialize feature names explicitly for Main.py ---
         self.feature_names = self.get_feature_names()
-        # --- FIX ENDS HERE ---
 
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
 
@@ -210,6 +219,68 @@ class EnhancedTradingEnv(gym.Env):
 
         return names
 
+    def _take_action(self, action):
+        action_val = float(action[0])
+        current_price = self.raw_prices[self.current_step]
+
+        # --- TRADE LOGIC ---
+        if abs(action_val - self.prev_action) > 0.1:
+            self.trade_count += 1
+            self.prev_action = action_val
+
+        # --- UPDATED: Dynamic Thresholds via ATR ---
+        atr_idx = self.features.index('atr_norm')
+        atr_norm = self.market_features[self.current_step, atr_idx]
+        thresh_mult = 1 + (atr_norm * 0.5)  # Higher vol → higher threshold (needs stronger action)
+        
+        dynamic_buy_threshold = self.buy_threshold * thresh_mult
+        dynamic_sell_threshold = self.sell_threshold * thresh_mult  # More negative in high vol
+
+        # --- CONFIGURABLE THRESHOLDS ---
+        if action_val > dynamic_buy_threshold: # Buy
+            amount_to_invest = self.balance * action_val
+            if amount_to_invest > 10:
+                shares_bought = amount_to_invest / current_price
+                fee = amount_to_invest * self.trading_fee_multiplier
+                self.balance -= amount_to_invest + fee
+                self.shares_held += shares_bought
+        
+        elif action_val < dynamic_sell_threshold: # Sell
+            shares_to_sell = self.shares_held * abs(action_val)
+            if shares_to_sell * current_price > 10:
+                trade_value = shares_to_sell * current_price
+                fee = trade_value * self.trading_fee_multiplier
+                self.balance += trade_value - fee
+                self.shares_held -= shares_to_sell
+
+        self.net_worth = self.balance + (self.shares_held * current_price)
+        self.history_net_worth.append(self.net_worth)
+
+        if self.net_worth > self.max_net_worth:
+            self.max_net_worth = self.net_worth
+
+    def _calculate_reward(self, action, trade_occurred=False):
+        step_reward = 0.0
+
+        # 1. Returns
+        pct_change = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
+        step_reward += pct_change * 100
+
+        # 2. Stability Penalty
+        if len(self.prev_actions) > 1:
+            prev_act = self.prev_actions[-2]
+            step_reward -= abs(action - prev_act) * self.stability_penalty_coef
+
+        # 3. Dynamic Churn Penalty
+        if trade_occurred:
+            duration = self.steps_since_last_trade
+            if duration < self.target_hold_duration:
+                penalty_factor = 1.0 - (duration / self.target_hold_duration)
+                churn_cost = self.churn_penalty_max * penalty_factor
+                step_reward -= churn_cost
+
+        return step_reward
+
     def set_phase(self, new_phase):
         self.phase = new_phase
 
@@ -231,7 +302,10 @@ class EnhancedTradingEnv(gym.Env):
             self.current_step = self.np_random.integers(self.max_lookback, len(self.df) - 1000)
         else:
             self.current_step = self.max_lookback
-        
+
+        self.steps_since_last_trade = 0
+        self.prev_actions = deque(maxlen=3)
+
         return self._next_observation(), {}
 
     def _next_observation(self):
@@ -370,152 +444,30 @@ class EnhancedTradingEnv(gym.Env):
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
 
-        # --- NEW: Calculate Action Delta ---
-        # How much did the agent change its mind?
-        # If prev was Buying (0.8) and now Selling (-0.8), delta is 1.6 (Huge flip)
-        # If prev was Buying (0.8) and now Holding (0.1), delta is 0.7
-        action_delta = abs(action_val - self.prev_action)
+        # 1. Detect if a Trade (Sign Flip) is happening
+        prev_action = self.prev_actions[-1] if len(self.prev_actions) > 0 else 0.0
+        trade_occurred = False
+        if abs(action_val) > 0.1:
+            if np.sign(action_val) != np.sign(prev_action):
+                trade_occurred = True
 
-        # --- UPDATED: Adaptive Stability Penalty ---
-        churn_rate = self.trade_count / (self.current_step - self.max_lookback + 1) if (self.current_step - self.max_lookback + 1) > 0 else 0
-        stability_penalty = action_delta * 0.0005 * self.balance * max(churn_rate, 0.1)  # Scale by churn if high
+        # 2. Execute action
+        self._take_action(action)
 
-        # --- TRADE LOGIC ---
-        trade_penalty = 0
-        
-        if abs(action_val - self.prev_action) > 0.1:
-            self.trade_count += 1
-            self.prev_action = action_val
+        # 3. Calculate reward
+        reward = self._calculate_reward(action_val, trade_occurred)
 
-        # --- UPDATED: Dynamic Thresholds via ATR ---
-        atr_idx = self.features.index('atr_norm')
-        atr_norm = self.market_features[self.current_step, atr_idx]
-        thresh_mult = 1 + (atr_norm * 0.5)  # Higher vol → higher threshold (needs stronger action)
-        
-        dynamic_buy_threshold = self.buy_threshold * thresh_mult
-        dynamic_sell_threshold = self.sell_threshold * thresh_mult  # More negative in high vol
+        # 4. Update Duration Counter
+        if trade_occurred:
+            self.steps_since_last_trade = 0
+        else:
+            self.steps_since_last_trade += 1
 
-        # --- CONFIGURABLE THRESHOLDS ---
-        if action_val > dynamic_buy_threshold: # Buy
-            amount_to_invest = self.balance * action_val
-            if amount_to_invest > 10:
-                shares_bought = amount_to_invest / current_price
-                fee = amount_to_invest * self.trading_fee_multiplier
-                self.balance -= amount_to_invest + fee
-                self.shares_held += shares_bought
-                trade_penalty = fee
-            else:
-                trade_penalty = 0.01
-        
-        elif action_val < dynamic_sell_threshold: # Sell
-            shares_to_sell = self.shares_held * abs(action_val)
-            if shares_to_sell * current_price > 10:
-                trade_value = shares_to_sell * current_price
-                fee = trade_value * self.trading_fee_multiplier
-                self.balance += trade_value - fee
-                self.shares_held -= shares_to_sell
-                trade_penalty = fee
-            else:
-                trade_penalty = 0.01
-
-        self.net_worth = self.balance + (self.shares_held * current_price)
-        self.history_net_worth.append(self.net_worth)
-
-        if self.net_worth > self.max_net_worth:
-            self.max_net_worth = self.net_worth
-
-        # --- SWITCH PENALTY LOGIC ---
-        # Calculate the "Sign" of the action (-1 Sell, 0 Hold, 1 Buy)
-        # We use the raw action_val from the network, not just the threshold result
-        current_sign = 1 if action_val > 0.1 else (-1 if action_val < -0.1 else 0)
-
-        switch_penalty = 0
-
-        # If we flip direction (e.g. 1 -> -1 or -1 -> 1)
-        # AND we weren't just holding (0)
-        if current_sign != 0 and self.prev_sign != 0 and current_sign != self.prev_sign:
-            # HEAVY PENALTY: 1.0% of portfolio.
-            # This tells the bot: "Do not reverse position unless you expect >1% profit!"
-            switch_penalty = 0.01 * self.balance
-
-        # Update for next step
-        self.prev_sign = current_sign
-        # -------------------------------------------------
-
-        step_reward = (self.net_worth - self.prev_net_worth) / self.prev_net_worth
-        reward = step_reward * 100
-        reward -= trade_penalty
-        reward -= stability_penalty # <--- Add this
-        reward -= switch_penalty
-
-        # Append for phased rewards
-        self.episode_returns.append(step_reward)
-
-        # --- HOLDING BONUS ---
-        # Reward holding profitable positions to encourage swing trading
-        holding_bonus = 0
-        if self.shares_held != 0 and step_reward > 0:
-            holding_bonus = step_reward * 0.1  # 10% bonus on profits when holding
-
-        reward += holding_bonus
-
-        # --- REWARD SHAPING (RSI/STOCH) ---
-        cur_rsi = self.df.iloc[self.current_step]['rsi']
-        cur_stoch = self.df.iloc[self.current_step]['stoch_rsi']
-        indicator_bonus = 0.0
-
-        if action_val > dynamic_buy_threshold:
-            if cur_rsi < 30: indicator_bonus += 0.5 
-            if cur_stoch < 0.2: indicator_bonus += 0.3
-        elif action_val < dynamic_sell_threshold:
-            if cur_rsi > 70: indicator_bonus += 0.5 
-            if cur_stoch > 0.8: indicator_bonus += 0.3
-        
-        reward += indicator_bonus
-
-        # --- Trend Alignment Shaping ---
-        # Logic:
-        # If Price > EMA (Bull) AND Position > 0 (Long) -> Bonus
-        # If Price < EMA (Bear) AND Position < 0 (Short) -> Bonus
-        # Otherwise -> Penalty or 0
-
-        # Get current state
-        price = self.df.iloc[self.current_step]['close']
-        ema = self.df.iloc[self.current_step]['ema_50']
-
-        # Normalized trend strength
-        trend_diff = (price - ema) / ema
-
-        # Check if holding shares (normalized between -1 and 1 approx)
-        current_position = self.shares_held * price / self.balance if self.balance > 0 else 0
-
-        # Alignment score:
-        # If trend_diff is positive and we are long (pos position), result is positive.
-        # If trend_diff is negative and we are short (neg position), result is positive.
-        # If they mismatch, result is negative.
-        alignment_bonus = trend_diff * current_position * 0.1  # Weight it small
-
-        reward += alignment_bonus
-
-        # --- UPDATED: Phased Reward Curriculum ---
-        if self.phase >= 2:
-            # Phase 2: Sortino Bonus
-            recent_returns = np.array(self.episode_returns)
-            downside_returns = recent_returns[recent_returns < 0]
-            downside_std = np.std(downside_returns) if len(downside_returns) > 0 else 1e-8
-            mean_return = np.mean(recent_returns)
-            sortino_bonus = (mean_return / downside_std) * 0.5
-            reward += sortino_bonus
-
-        if self.phase >= 3:
-            # Phase 3: MDD Penalty
-            drawdown = (self.net_worth - self.max_net_worth) / self.max_net_worth
-            if drawdown < -0.05:
-                reward -= abs(drawdown) * 20
+        # Append to prev_actions
+        self.prev_actions.append(action_val)
 
         self.prev_net_worth = self.net_worth
         self.prev_shares_held = self.shares_held
-        self.prev_action = action_val
 
         terminated = False
         truncated = False
@@ -525,15 +477,12 @@ class EnhancedTradingEnv(gym.Env):
             reward = -10
 
         obs = self._next_observation()
-        
-        # Calculate EMA 50 for charting callback
-        ema_50 = self.df.iloc[self.current_step].get('ema_50', 0)
-        
+
         # Info
         primary_day = self.vp_days[0]
         idx_safe = min(self.current_step, len(self.vp_data[primary_day]['heatmap']) - 1)
         heatmap = self.vp_data[primary_day]['heatmap'][idx_safe]
-        
+
         info = {
             "portfolio_value": self.net_worth,
             "balance": self.balance,
@@ -541,8 +490,8 @@ class EnhancedTradingEnv(gym.Env):
             "action": action_val,
             "reward": reward,
             "price": current_price,
-            "current_price": current_price,  # Required for charting
-            "ema50": ema_50,                 # Required for charting
+            "current_price": current_price,
+            "ema50": self.df.iloc[self.current_step].get('ema_50', 0),
             "timestamp": self.raw_df.iloc[self.current_step]['timestamp'],
             "vp_heatmap": heatmap
         }

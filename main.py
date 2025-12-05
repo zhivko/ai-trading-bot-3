@@ -276,8 +276,18 @@ def main():
 
     # Add Recurrent Saliency Callback for RecurrentPPO
     if args.algo.lower() == 'recurrentppo':
-        # Get feature names from your environment
-        feature_names = train_env.env_method("get_feature_names", indices=0)[0]
+        # Get feature names (Robust Method)
+        try:
+            # Try retrieving variable directly
+            feature_names = train_env.get_attr('feature_names', indices=0)[0]
+        except Exception:
+            try:
+                # Try calling the method
+                feature_names = train_env.env_method('get_feature_names', indices=0)[0]
+            except Exception:
+                 # Fallback
+                print("Warning: Could not get feature names. Using generics.")
+                feature_names = [f"F_{i}" for i in range(56)]
 
         # Initialize the callback
         saliency_cb = RecurrentFeatureSaliencyCallback(
