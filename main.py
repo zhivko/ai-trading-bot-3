@@ -314,6 +314,7 @@ def main():
     if args.algo.lower() == 'recurrentppo':
         policy = "MlpLstmPolicy"
         policy_kwargs = dict(
+            ortho_init=False,  # Avoid LAPACK requirement for orthogonal init
             lstm_hidden_size=256,
             n_lstm_layers=2,
             shared_lstm=False,
@@ -417,8 +418,7 @@ def main():
                 gamma=0.99,
                 gae_lambda=0.95,
                 clip_range=0.2,
-                ent_coef=0.01,
-                lstm_sequence_length=64,
+                ent_coef=0.01
             ))
         else:
             model_kwargs.update(dict(
@@ -431,13 +431,16 @@ def main():
             model_kwargs['ent_coef'] = 'auto'
 
         model = AlgoClass(
-            policy,
+            "MlpLstmPolicy",
             train_env,
             verbose=1,
-            tensorboard_log=tensorboard_log,
+            tensorboard_log=f"./logs/{args.algo}_tensorboard",
+            learning_rate=args.learning_rate,
+            batch_size=args.batch_size,
+            n_steps=args.batch_size,  # Ensure n_steps is aligned with batch logic if needed
+            seed=args.seed,
             device=args.device,
-            policy_kwargs=policy_kwargs,
-            **model_kwargs
+            policy_kwargs=policy_kwargs
         )
         reset_num_timesteps = True
 
