@@ -83,10 +83,6 @@ def parse_args():
 
 # Algorithm Mapping
 ALGO_MAP = {
-    "sac": SAC,
-    "ppo": PPO,
-    "a2c": A2C,
-    "td3": TD3,
     "recurrentppo": RecurrentPPO
 }
 
@@ -229,16 +225,39 @@ def main():
         # Get timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
+        # 1. Determine a Stable Name (No Timestamp)
+        # This groups runs of the same config together visually
+        run_name = f"{git_branch}_{args.algo}_{args.pair}_VP{args.vp_bins}_Envs{args.n_envs}"
+
+        # 2. Handle Resuming Logic (The "Pro" Fix)
+        # We save the Run ID to a file. If we resume, we load it back.
+        # This stitches the charts together seamlessly.
+        id_file_path = f"logs/.wandb_id_{args.algo}_{args.pair}.txt"
+        os.makedirs("logs", exist_ok=True)
+
+        run_id = None
+        if args.resume and os.path.exists(id_file_path):
+            with open(id_file_path, "r") as f:
+                run_id = f.read().strip()
+            print(f"🔄 Resuming W&B Run ID: {run_id}")
+        elif not args.resume:
+            # If starting fresh, generate a new ID and save it
+            run_id = wandb.util.generate_id()
+            with open(id_file_path, "w") as f:
+                f.write(run_id)
+
         wandb.init(
             project="ai-trading-bot",
             entity="zhivko",
             config=vars(args),
-            name=f"{git_branch}_{timestamp}_{args.algo}_{args.pair}_VP{args.vp_bins}_Envs{args.n_envs}",
+            name=run_name,   # Stable name
+            id=run_id,       # Force specific ID to stitch charts
+            resume="allow",  # Allow resuming if ID exists
             monitor_gym=True,
             save_code=True,
             sync_tensorboard=True
         )
-        print("W&B initialized.")
+        print(f"W&B initialized (Run: {run_name})")
 
     # --- Callbacks ---
     checkpoint_callback = CheckpointCallback(
