@@ -110,7 +110,22 @@ def calculate_financial_kpis(history_df, summary_dict):
 
 def create_html_report(metrics_df, summary_dict):
     print("📊 Generating Professional Quant Report...")
-    
+
+    # Get Git information
+    git_info = {}
+    try:
+        git_info['local_branch'] = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD']).decode('utf-8').strip()
+        git_info['commit_id'] = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
+        try:
+            remote_branch = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']).decode('utf-8').strip()
+            git_info['remote_branch'] = remote_branch
+        except subprocess.CalledProcessError:
+            git_info['remote_branch'] = 'No upstream'
+    except subprocess.CalledProcessError:
+        git_info['local_branch'] = 'N/A'
+        git_info['commit_id'] = 'N/A'
+        git_info['remote_branch'] = 'N/A'
+
     # 1. KPIs Section
     kpis = calculate_financial_kpis(metrics_df, summary_dict)
     
@@ -195,6 +210,7 @@ def create_html_report(metrics_df, summary_dict):
                 <div>
                     <h1>🤖 AI Trading Bot Report</h1>
                     <span style="color: #888;">Run ID: {summary_dict.get('run_id', 'N/A')} | {summary_dict.get('_timestamp', '')}</span>
+                    <br><span style="color: #666; font-size: 12px;">Git: Branch {git_info['local_branch']} ({git_info['remote_branch']}) | Commit {git_info['commit_id'][:8]}</span>
                 </div>
             </div>
 
