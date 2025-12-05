@@ -162,11 +162,13 @@ def main():
 
     # --- Environment Setup ---
     print("Setting up environments...")
+    # Force window_size=1 for RecurrentPPO to avoid confusion with LSTM memory
+    window_size = 1 if args.algo.lower() == 'recurrentppo' else args.window_size
     env_kwargs = {
         'initial_balance': args.initial_balance,
         'vp_days': args.vp_days,
         'vp_bins': args.vp_bins,
-        'lookback_window': args.window_size,
+        'lookback_window': window_size,
         'buy_threshold': args.buy_threshold,
         'sell_threshold': args.sell_threshold,
         'trading_fee_multiplier': args.trading_fee,
