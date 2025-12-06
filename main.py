@@ -300,7 +300,6 @@ def main():
         log_path="./logs/",
         best_model_save_path="./models/",
         deterministic=True,
-        render=False,
         test_split=args.test_split,
         pair=args.pair,
         initial_balance=args.initial_balance

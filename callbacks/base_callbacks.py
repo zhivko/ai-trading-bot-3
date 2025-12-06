@@ -317,7 +317,7 @@ class CustomEvalCallback(EvalCallback):
 
                 if figs and figs[0] is not None:
                     # Log to WandB under a specific TEST section
-                    wandb.log({"Test/Trade_Analysis": wandb.Image(figs[0])})
+                    wandb.log({"Test/Trade_Analysis": wandb.Image(figs[0])}, commit=False)
 
                     # Cleanup memory
                     plt.close(figs[0])
