@@ -17,7 +17,7 @@ class EnhancedTradingEnv(gym.Env):
         
         # --- CONFIGURATION ---
         self.initial_balance = initial_balance
-        self.lookback_window = lookback_window
+        self.lookback_window = 20
         # Default to [3, 7] if None
         self.vp_days = vp_days if vp_days else [3, 7]
         self.vp_bins = vp_bins
