@@ -1,19 +1,19 @@
 key,value
-_runtime,272.50835490226746
-_step,5
-_timestamp,1765047154.221961
+_runtime,930.6616535186768
+_step,7
+_timestamp,1765047812.3752596
 best_eval/mean_portfolio,10000
 best_eval/mean_reward,0
 best_eval/std_portfolio,0
 best_eval/std_reward,0
-financial/annualized_return,-0.9165032896561858
-financial/benchmark_return,-0.20361505448818207
-financial/calmar_ratio,-1.716698475535555
-financial/final_networth,4999.245709686736
+financial/annualized_return,-0.71082011803254
+financial/benchmark_return,-0.47348958253860474
+financial/calmar_ratio,-1.365445105776929
+financial/final_networth,4946.4411544628865
 financial/initial_capital,10000
-financial/max_drawdown,-0.5338755190367755
-financial/outperformance,-0.29646037454314433
-financial/sharpe_ratio,-4.52539751407402
-financial/sortino_ratio,-5.193798378741679
-financial/strategy_return,-0.5000754290313264
-trade_analysis/thread_0_chart,"{'_type': 'image-file', 'format': 'png', 'height': 800, 'path': 'media/images/trade_analysis/thread_0_chart_4_41fdb2ea66d1977ea651.png', 'sha256': '41fdb2ea66d1977ea651ee75d1fe88c37dd03fb009ce770b95e4eb5ef9f312c4', 'size': 130663, 'width': 1200}"
+financial/max_drawdown,-0.5205775867702043
+financial/outperformance,-0.03186630201510665
+financial/sharpe_ratio,-2.4382410945918185
+financial/sortino_ratio,-2.738788052411966
+financial/strategy_return,-0.5053558845537114
+trade_analysis/thread_0_chart,"{'_type': 'image-file', 'format': 'png', 'height': 800, 'path': 'media/images/trade_analysis/thread_0_chart_49996_2e53c3a117cfa8ffafc5.png', 'sha256': '2e53c3a117cfa8ffafc535f86c4ebc3c85a8c5c660ce484186bd6d6744a6d8d4', 'size': 125976, 'width': 1200}"
