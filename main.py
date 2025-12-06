@@ -230,9 +230,9 @@ def main():
 
     # Create dummy env for saliency callback (skip for RecurrentPPO due to LSTM compatibility issues)
     saliency_callback = None
-    if args.algo.lower() != 'recurrentppo':
-        dummy_env = eval_env.envs[0]
-        saliency_callback = FeatureSaliencyCallback(dummy_env=dummy_env, check_freq=10000)
+    # if args.algo.lower() != 'recurrentppo':
+    #     dummy_env = eval_env.envs[0]
+    #     saliency_callback = FeatureSaliencyCallback(dummy_env=dummy_env, check_freq=10000)
 
     # --- W&B Setup ---
     logging.info("Setting up W&B..." if args.wandb else "Skipping W&B setup.")
