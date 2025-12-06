@@ -82,7 +82,7 @@ def parse_args():
     parser.add_argument("--n-heads", type=int, default=2, help="Number of heads for transformer")
     parser.add_argument("--vp-days", type=int, nargs='+', default=[7, 30], help="Volume Profile days (e.g. 7 30)")
     parser.add_argument("--vp-bins", type=int, default=40, help="Volume Profile bins")
-    parser.add_argument("--window-size", type=int, default=50, help="Observation window size")
+    parser.add_argument("--window-size", type=int, default=20, help="Observation window size")
     parser.add_argument("--n-envs", type=int, default=15, help="Number of parallel environments")
     parser.add_argument("--phase", type=int, default=1, help="Curriculum phase (1=profit, 2=sortino, 3=mdd)")
     
@@ -178,8 +178,7 @@ def main():
 
     # --- Environment Setup ---
     print("Setting up environments...")
-    # Force window_size=1 for RecurrentPPO to avoid confusion with LSTM memory
-    window_size = 1 if args.algo.lower() == 'recurrentppo' else args.window_size
+    window_size = args.window_size
     env_kwargs = {
         'initial_balance': args.initial_balance,
         'vp_days': args.vp_days,
