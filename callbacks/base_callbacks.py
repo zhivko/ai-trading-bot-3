@@ -245,6 +245,7 @@ class CustomEvalCallback(EvalCallback):
         self.best_std_portfolio = 0
 
     def _evaluate_with_portfolio(self):
+        from stable_baselines3 import RecurrentPPO
         portfolio_values = []
         episode_rewards = []
         for _ in range(self.n_eval_episodes):
@@ -252,8 +253,21 @@ class CustomEvalCallback(EvalCallback):
             done = False
             episode_reward = 0
             while not done:
-                action, _ = self.model.predict(obs, deterministic=self.deterministic)
-                action = action[0]
+                # Load ensemble models and average actions
+                models = []
+                for i in range(3):
+                    model_path_i = f"./models/recurrentppo_{self.pair}_model_{i}"
+                    model = RecurrentPPO.load(model_path_i)
+                    models.append(model)
+
+                actions = []
+                for model in models:
+                    action_pred, _ = model.predict(obs, deterministic=self.deterministic)
+                    actions.append(action_pred[0])
+
+                avg_action = np.mean(actions)
+                action = np.array([avg_action])
+
                 obs, reward, done, info = self.eval_env.step([action])
                 reward = reward[0]
                 done = done[0]

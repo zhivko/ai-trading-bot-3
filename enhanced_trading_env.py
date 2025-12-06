@@ -30,18 +30,21 @@ class EnhancedTradingEnv(gym.Env):
         # --- 1. DATA PREP ---
         self.raw_df = df.reset_index(drop=False)
         self.df = self.raw_df.copy()
-        
+
+        # Add adversarial noise to close prices
+        self.df['close'] = self.df['close'] * (1 + np.random.normal(0, 0.01, len(self.df)))
+
         if precalculated_vp:
             self.vp_data = precalculated_vp
         else:
             # Fallback to calculating it (only if not passed)
             self.vp_data = {}
             print(f"--- Initializing EnhancedTradingEnv (Target Bins: {self.vp_bins}) ---")
-            
+
             for days in self.vp_days:
                 # All caching/hashing logic is now in volume_profile.py
                 self.vp_data[days] = get_rolling_vp(self.raw_df, days, bins=self.vp_bins)
-        
+
         # Standard Features
         self.df['close_pct'] = self.df['close'].pct_change().fillna(0)
 

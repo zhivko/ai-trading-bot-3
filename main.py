@@ -343,7 +343,7 @@ def main():
 
     callback_list = CallbackList(callbacks)
 
-    # --- Model Initialization ---
+    # --- Ensemble Model Initialization ---
     AlgoClass = ALGO_MAP.get(args.algo.lower())
     if not AlgoClass:
         raise ValueError(f"Unknown algorithm: {args.algo}")
@@ -364,110 +364,44 @@ def main():
         policy_kwargs = dict(net_arch=dict(pi=[256, 256], qf=[256, 256]))
     else:
         policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
-    
-    # Resume Logic
+
     model_path = f"./models/{args.algo}_{args.pair}"
-    best_model_path = f"{log_dir}/best_model.zip"
-    norm_path = f"{log_dir}/vec_normalize.pkl"
-    
-    model = None
-    reset_num_timesteps = True
 
-    if args.resume:
-        # 1. Try Best Model
-        if os.path.exists(best_model_path):
-            load_path = best_model_path
-        # 2. Try Last Model
-        elif os.path.exists(model_path + ".zip"):
-            load_path = model_path + ".zip"
-        # 3. Try Checkpoints
-        else:
-            chk_files = glob.glob(f"./checkpoints/{args.algo}_{args.pair}/*.zip")
-            if chk_files:
-                load_path = max(chk_files, key=os.path.getctime)
-            else:
-                load_path = None
-        
-        if load_path:
-            print(f"RESUMING training from: {load_path}")
-            try:
-                # Load model
-                model = AlgoClass.load(load_path, env=train_env, device=args.device, tensorboard_log=tensorboard_log)
-                # Sync VecNormalize stats
-                if os.path.exists(f"{load_path}.pkl"):
-                    train_env = VecNormalize.load(f"{load_path}.pkl", train_env)
-                    train_env.training = True
-                # CRITICAL: Do not reset steps when resuming
-                reset_num_timesteps = False
-                print(f"   > Resuming from Global Step: {model.num_timesteps}")
-            except ValueError as e:
-                if "Observation spaces do not match" in str(e):
-                    print(f"Model incompatible due to env changes: {e}")
-                    print("Starting fresh training.")
-                    model = None
-                    reset_num_timesteps = True
-                    # Clean old logs if incompatible
-                    if os.path.exists(tensorboard_log):
-                        shutil.rmtree(tensorboard_log)
-                else:
-                    raise
-        else:
-            print("Resume requested but no model found. Starting FRESH.")
-            # Clean logs if we failed to find a model to resume
-            if os.path.exists(tensorboard_log):
-                shutil.rmtree(tensorboard_log)
-    else:
-        # Delete all models for algo
-        model_pattern = f"./models/{args.algo}_*.zip"
-        model_files = glob.glob(model_pattern)
-        for f in model_files:
-            os.remove(f)
+    # Ensemble parameters
+    n_models = 3
+    timesteps_per_model = args.total_timesteps // n_models
 
-        # delete checkpoints for algo
-        chk_pattern = f"./checkpoints/{args.algo}_*/**/*.zip"
-        chk_files = glob.glob(chk_pattern, recursive=True)
-        for f in chk_files:
-            os.remove(f)    
+    # Clean old models
+    model_pattern = f"./models/{args.algo}_*.zip"
+    model_files = glob.glob(model_pattern)
+    for f in model_files:
+        os.remove(f)
 
-        # delete tensorboard logs for algo
-        if os.path.exists(tensorboard_log):
-            shutil.rmtree(tensorboard_log)
+    # delete checkpoints for algo
+    chk_pattern = f"./checkpoints/{args.algo}_*/**/*.zip"
+    chk_files = glob.glob(chk_pattern, recursive=True)
+    for f in chk_files:
+        os.remove(f)
 
-     
+    # delete tensorboard logs for algo
+    if os.path.exists(tensorboard_log):
+        shutil.rmtree(tensorboard_log)
 
-    if model is None:
-        print(f"Initializing new {args.algo.upper()} model...")
+    # Clean old checkpoints
+    chk_dir = f"checkpoints/{args.algo}_{args.pair}"
+    if os.path.exists(chk_dir):
+        shutil.rmtree(chk_dir)
 
-        # Clean old logs only if starting fresh
-        if os.path.exists(tensorboard_log):
-            shutil.rmtree(tensorboard_log)
+    # Transaction Cost Schedule
+    tc_schedule = partial(lambda step: 0.00075 - 0.0005 * min(step / 1000000.0, 1.0))
 
-        # Clean old checkpoints
-        chk_dir = f"checkpoints/{args.algo}_{args.pair}"
-        if os.path.exists(chk_dir):
-            shutil.rmtree(chk_dir)
+    # --- Train Ensemble ---
+    print(f"Training ensemble started... Total: {args.total_timesteps} steps, {n_models} models, {timesteps_per_model} per model")
+    print(f"Model: {args.algo.upper()}, Device: {args.device}")
 
-        # Set model hyperparameters
-        model_kwargs = {}
-        if args.algo.lower() == 'recurrentppo':
-            model_kwargs.update(dict(
-                n_steps=1024,
-                batch_size=16384,
-                learning_rate=3e-4,
-                gamma=0.99,
-                gae_lambda=0.95,
-                clip_range=0.2,
-                ent_coef=0.01
-            ))
-        else:
-            model_kwargs.update(dict(
-                batch_size=args.batch_size,
-                learning_rate=args.learning_rate,
-            ))
-
-        if args.algo.lower() == 'sac':
-            model_kwargs['buffer_size'] = 100000
-            model_kwargs['ent_coef'] = 'auto'
+    for i in range(n_models):
+        seed = args.seed + i
+        print(f"Training model {i+1}/{n_models} with seed {seed}")
 
         model = AlgoClass(
             "MlpLstmPolicy",
@@ -476,40 +410,36 @@ def main():
             tensorboard_log=f"./logs/{args.algo}_tensorboard",
             learning_rate=args.learning_rate,
             batch_size=args.batch_size,
-            n_steps=args.batch_size,  # Ensure n_steps is aligned with batch logic if needed
-            seed=args.seed,
+            n_steps=args.batch_size,
+            seed=seed,
             device=args.device,
             policy_kwargs=policy_kwargs
         )
-        reset_num_timesteps = True
 
-    # Transaction Cost Schedule
-    tc_schedule = partial(lambda step: 0.00075 - 0.0005 * min(step / 1000000.0, 1.0))
+        try:
+            model.learn(
+                total_timesteps=timesteps_per_model,
+                callback=callback_list,
+                progress_bar=True,
+                reset_num_timesteps=True
+            )
 
-    # --- Train ---
-    print(f"Training started... Target: {args.total_timesteps} steps")
-    print(f"Model: {args.algo.upper()}, Device: {args.device}")
+            # Save each model
+            model_save_path = f"{model_path}_model_{i}"
+            if not os.path.exists(os.path.dirname(model_save_path)):
+                os.makedirs(os.path.dirname(model_save_path))
 
-    try:
-        model.learn(
-            total_timesteps=args.total_timesteps, 
-            callback=callback_list, 
-            progress_bar=True,
-            reset_num_timesteps=reset_num_timesteps # <--- Handles the resumption of step count
-        )
-        
-        # Save Final Model + Normalize
-        if not os.path.exists(os.path.dirname(model_path)):
-            os.makedirs(os.path.dirname(model_path))
+            model.save(model_save_path)
+            train_env.save(f"{model_save_path}.pkl")
+            print(f"Model {i} saved to {model_save_path}")
 
-        model.save(model_path)
-        train_env.save(f"{model_path}.pkl")
-        print(f"Training Complete. Model saved to {model_path}")
+        except KeyboardInterrupt:
+            print(f"\nTraining interrupted manually for model {i}. Saving model...")
+            model.save(f"{model_path}_model_{i}")
+            train_env.save(f"{model_path}_model_{i}.pkl")
+            break
 
-    except KeyboardInterrupt:
-        print("\nTraining interrupted manually. Saving model...")
-        model.save(model_path)
-        train_env.save(f"{model_path}.pkl")
+    print("Ensemble training complete.")
 
 if __name__ == "__main__":
     main()
