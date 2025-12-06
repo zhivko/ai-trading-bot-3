@@ -12,18 +12,13 @@ def main():
     df['date'] = pd.to_datetime(df['date'])
     df.set_index('date', inplace=True)
 
-    # Compute vp_data
-    vp_data = {
-        'vp7': get_rolling_vp(df, days=7),
-        'vp30': get_rolling_vp(df, days=30)
-    }
-
-    # Create env
+    # Create env (skip vp for simplicity)
     env = EnhancedTradingEnv(
         df=df,
-        vp_data=vp_data,
         initial_balance=10000,
-        lookback_window=100,
+        lookback_window=50,
+        precalculated_vp={},  # Skip vp calculation
+        vp_days=[3,7],  # But since precalculated is empty, it won't calculate
         vp_bins=40
     )
 
@@ -32,11 +27,12 @@ def main():
     print(f"Reset obs shape: {obs.shape}")
     print(f"Expected shape: {env.observation_space.shape}")
 
-    # Step
-    action = np.array([0.0])
+    # Step with large action to test clipping
+    action = np.array([3.5])  # Test clipping
     obs_next, reward, terminated, truncated, info = env.step(action)
     print(f"Step obs shape: {obs_next.shape}")
     print(f"Info keys: {list(info.keys())}")
+    print(f"Action taken: {info.get('action', 0)}")  # Should be clipped to 1.0
     print(f"Trade executed: {info.get('trade', False)}")
     print(f"Net worth: {info.get('portfolio_value', 0)}")
     print(f"Shares held: {info.get('shares_held', 0)}")

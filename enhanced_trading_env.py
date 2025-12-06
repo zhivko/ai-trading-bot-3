@@ -238,6 +238,9 @@ class EnhancedTradingEnv(gym.Env):
         return names
 
     def _take_action(self, action):
+        # Safety Clip (Redundant but good)
+        action = np.clip(action, -1.0, 1.0)
+
         # 0. DEADBAND (Noise Filter)
         # Use the class parameters to define the neutral zone.
         # If action is between sell_threshold (-0.3) and buy_threshold (0.3), force it to 0.
@@ -507,23 +510,29 @@ class EnhancedTradingEnv(gym.Env):
         return full_obs.astype(np.float32)
 
     def step(self, action):
-        # 1. CLIP IMMEDIATELY (Global Fix)
-        # This ensures the entire environment (logic + logging) sees the safe value.
-        action = np.clip(action, -1.0, 1.0)
+        # 1. HARD CLIP & RENAME
+        # Create a new variable to ensure we NEVER use the raw input again
+        clipped_action = np.clip(action, -1.0, 1.0)
+
+        # DEBUG: Uncomment this line if you still see issues.
+        # It should print values strictly between -1.0 and 1.0
+        # if self.current_step % 1000 == 0:  # Print every 1000 steps to avoid spam
+        #     print(f"Raw: {action[0]:.4f} -> Clipped: {clipped_action[0]:.4f}")
 
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
-        action_val = float(action[0])
+        action_val = float(clipped_action[0]) # Now this is guaranteed -1 to 1
 
         # Log the clipped action for clean chart
         self.prev_actions.append(action_val)
 
-        # Volatility scaling
+        # Volatility scaling (on a copy, don't modify clipped_action)
+        scaled_action = clipped_action.copy()
         atr_norm = self.df.iloc[self.current_step]['atr_norm']
-        action[0] *= (1 / (1 + atr_norm))
+        scaled_action[0] *= (1 / (1 + atr_norm))
 
         # 2. Execute action
-        trade_occurred = self._take_action(action)
+        trade_occurred = self._take_action(scaled_action)
 
         # 3. Calculate reward
         reward = self.compute_reward(action_val, trade_occurred)
@@ -566,7 +575,7 @@ class EnhancedTradingEnv(gym.Env):
             "price": current_price,
             "current_price": current_price,
             "ema50": self.df.iloc[self.current_step].get('ema_50', 0),
-            "timestamp": self.raw_df.iloc[self.current_step]['timestamp'],
+            "timestamp": str(self.raw_df.index[self.current_step]),
             "vp_heatmap": heatmap,
             "trades_per_episode": self.trades_in_episode
         }
