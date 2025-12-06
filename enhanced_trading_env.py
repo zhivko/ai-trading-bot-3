@@ -121,7 +121,9 @@ class EnhancedTradingEnv(gym.Env):
         self.df['stoch_14'] = self.df['stoch_14'].fillna(0.5)
         self.df['stoch_14'] = np.clip(self.df['stoch_14'], 0.0, 1.0)
 
-        self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema50', 'atr_norm', 'regime']
+        self.df['sentiment_norm'] = (self.df['sentiment'] - self.df['sentiment'].min()) / (self.df['sentiment'].max() - self.df['sentiment'].min() + 1e-8)
+        self.df['sentiment_norm'] = self.df['sentiment_norm'].fillna(0.5)
+        self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema50', 'atr_norm', 'regime', 'sentiment_norm']
         self.divergence_window = 40
         self.div_features = [
             'bull_div_stoch9',
@@ -144,7 +146,7 @@ class EnhancedTradingEnv(gym.Env):
         market_obs_size = self.lookback_window * len(self.features)
         account_obs_size = 2
         vp_obs_size = len(self.vp_days) * (3 + self.vp_bins)
-        total_obs_size = market_obs_size + account_obs_size + vp_obs_size + len(self.div_features)
+        total_obs_size = market_obs_size + account_obs_size + vp_obs_size + len(self.div_features) + self.lookback_window
 
         self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
@@ -166,6 +168,8 @@ class EnhancedTradingEnv(gym.Env):
         # for trading to simulate spread/slippage anxiety.
         self.trade_fee_penalty = 0.1
 
+        self.returns = deque(maxlen=1000)  # Track recent returns for Sharpe
+        self.prev_portfolio = self.initial_balance
         self.prev_actions = deque(maxlen=3)
 
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
@@ -226,7 +230,7 @@ class EnhancedTradingEnv(gym.Env):
         names = [
             "volume_norm", "trend_ema", "close_pct",
             "rsi_norm", "stoch_rsi", "macd_norm", "macd_sig", "atr_norm",
-            "regime", "heatmap_max"
+            "regime", "sentiment_norm", "heatmap_max"
         ]
         # Add Heatmap buckets
         names += [f"vp_bucket_{i}" for i in range(self.vp_bins)]
@@ -266,6 +270,25 @@ class EnhancedTradingEnv(gym.Env):
         action_val = float(action[0])
         current_price = self.raw_prices[self.current_step]
 
+        # Slippage calculation based on VP volume
+        days = self.vp_days[0]
+        window_len = days * 24
+        start_idx = max(0, self.current_step - window_len)
+        prices_window = self.raw_prices[start_idx:self.current_step]
+        if len(prices_window) > 0:
+            min_p = np.min(prices_window)
+            max_p = np.max(prices_window)
+            if min_p < max_p:
+                bin_edges = np.linspace(min_p, max_p, self.vp_bins + 1)
+                bin_idx = np.digitize(current_price, bin_edges) - 1
+                bin_idx = np.clip(bin_idx, 0, self.vp_bins - 1)
+                volume = self.vp_data[days]['heatmap'][self.current_step][bin_idx]
+                slippage = 0.001 * current_price / (volume + 0.1)
+            else:
+                slippage = 0
+        else:
+            slippage = 0
+
         # --- TRADE LOGIC ---
         if abs(action_val - self.prev_action) > 0.1:
             self.trade_count += 1
@@ -283,7 +306,7 @@ class EnhancedTradingEnv(gym.Env):
         if action_val > dynamic_buy_threshold: # Buy
             amount_to_invest = self.balance * action_val
             if amount_to_invest > 10:
-                shares_bought = amount_to_invest / current_price
+                shares_bought = amount_to_invest / (current_price + slippage)
                 fee = amount_to_invest * self.trading_fee_multiplier
                 self.balance -= amount_to_invest + fee
                 self.shares_held += shares_bought
@@ -291,7 +314,7 @@ class EnhancedTradingEnv(gym.Env):
         elif action_val < dynamic_sell_threshold: # Sell
             shares_to_sell = self.shares_held * abs(action_val)
             if shares_to_sell * current_price > 10:
-                trade_value = shares_to_sell * current_price
+                trade_value = shares_to_sell * (current_price - slippage)
                 fee = trade_value * self.trading_fee_multiplier
                 self.balance += trade_value - fee
                 self.shares_held -= shares_to_sell
@@ -302,7 +325,30 @@ class EnhancedTradingEnv(gym.Env):
         if self.net_worth > self.max_net_worth:
             self.max_net_worth = self.net_worth
 
-        return trade_occurred
+    def compute_reward(self, action, portfolio_value, prev_portfolio, benchmark_return, returns, window=24):
+        """
+        Regret-optimized reward: Return minus negative Sharpe regret vs. benchmark.
+        """
+        if prev_portfolio == 0:
+            return 0.0
+        
+        raw_return = (portfolio_value / prev_portfolio) - 1
+        
+        # Compute Sharpe over recent window (annualized for hourly data)
+        if len(returns) >= window:
+            recent_returns = returns[-window:]
+            mean_ret = np.mean(recent_returns)
+            std_ret = np.std(recent_returns)
+            sharpe = (mean_ret / (std_ret + 1e-8)) * np.sqrt(8760)  # 365*24 hours
+        else:
+            sharpe = raw_return
+        
+        # Regret: Penalize underperformance vs. benchmark (e.g., buy-hold)
+        regret = max(0, benchmark_return - sharpe)
+        
+        # Final reward: Raw return minus regret penalty
+        reward = raw_return - 0.1 * regret  # 0.1 coef tunable
+        return reward
 
     def _calculate_reward(self, action, trade_occurred=False):
         """
@@ -357,12 +403,15 @@ class EnhancedTradingEnv(gym.Env):
         self.steps_since_last_trade = 0
         self.trades_in_episode = 0
         self.prev_actions = deque(maxlen=3)
+        self.returns.clear()
+        self.prev_portfolio = self.initial_balance
 
         return self._next_observation(), {}
 
     def _next_observation(self):
         window_start = self.current_step - self.lookback_window
         std_features = self.market_features[window_start : self.current_step].flatten()
+        sentiment_obs = self.df['sentiment_norm'][window_start : self.current_step].values.astype(np.float32)
         
         current_price = self.raw_prices[self.current_step]
         balance_norm = self.balance / self.initial_balance
@@ -432,7 +481,7 @@ class EnhancedTradingEnv(gym.Env):
         # 3. Create vector from self.div_scores, NOT the raw detection variables
         div_vector = np.array([self.div_scores[k] for k in self.div_features], dtype=np.float32)
 
-        full_obs = np.concatenate((std_features, account_features, vp_features, div_vector))
+        full_obs = np.concatenate((std_features, sentiment_obs, account_features, vp_features, div_vector))
 
         # --- DEBUG LOGGING ---
         # Print stats every 10000 steps to avoid spamming, but see what's happening
@@ -504,8 +553,25 @@ class EnhancedTradingEnv(gym.Env):
         # 2. Execute action
         trade_occurred = self._take_action(action)
 
+        # Volatility-adjusted action (scale by ATR to cap exposure)
+        atr = self.df.iloc[self.current_step]['atr'] if self.current_step < len(self.df) else 0
+        atr_norm = self.df.iloc[self.current_step]['atr_norm'] if self.current_step < len(self.df) else 0
+        if atr > 0:
+            action[0] *= (1 / (1 + atr_norm))
+
+        current_return = (self.net_worth / self.prev_portfolio) - 1 if self.prev_portfolio > 0 else 0
+        self.returns.append(current_return)
+        self.prev_portfolio = self.net_worth
+
+        # Benchmark: Simple buy-hold over window
+        window_start = max(0, self.current_step - 24)
+        if window_start < len(self.df):
+            benchmark_return = (self.df.iloc[self.current_step]['close'] - self.df.iloc[window_start]['close']) / self.df.iloc[window_start]['close']
+        else:
+            benchmark_return = 0
+
         # 3. Calculate reward
-        reward = self._calculate_reward(action_val, trade_occurred)
+        reward = self.compute_reward(action[0], self.net_worth, self.prev_portfolio, benchmark_return, list(self.returns))
 
         # 4. Update Duration Counter
         if trade_occurred:

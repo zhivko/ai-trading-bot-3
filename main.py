@@ -8,6 +8,7 @@ import torch
 import time
 import datetime
 import subprocess
+from functools import partial
 
 # RL & Gym
 import gymnasium as gym
@@ -42,6 +43,19 @@ class TrainRewardCallback(BaseCallback):
             # But direct access via locals is harder in SB3.
             # We rely on standard logging.
             pass
+        return True
+
+# --- Fee Scheduler Callback ---
+class FeeSchedulerCallback(BaseCallback):
+    def __init__(self, schedule):
+        super(FeeSchedulerCallback, self).__init__(verbose=0)
+        self.schedule = schedule
+
+    def _on_step(self) -> bool:
+        fee = self.schedule(self.num_timesteps)
+        # Assuming single env or vec env, set on the env
+        if hasattr(self.model.env, 'trading_fee_multiplier'):
+            self.model.env.trading_fee_multiplier = fee
         return True
 
 # ---------------------------------------------------------
@@ -295,6 +309,10 @@ def main():
     )
     callbacks.append(eval_callback)
 
+    # Fee Scheduler Callback
+    fee_callback = FeeSchedulerCallback(tc_schedule)
+    callbacks.append(fee_callback)
+
     # Add Recurrent Saliency Callback for RecurrentPPO
     if args.algo.lower() == 'recurrentppo':
         # -----------------------------------------------------
@@ -464,6 +482,9 @@ def main():
             policy_kwargs=policy_kwargs
         )
         reset_num_timesteps = True
+
+    # Transaction Cost Schedule
+    tc_schedule = partial(lambda step: 0.00075 - 0.0005 * min(step / 1000000.0, 1.0))
 
     # --- Train ---
     print(f"Training started... Target: {args.total_timesteps} steps")

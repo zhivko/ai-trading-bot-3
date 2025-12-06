@@ -306,6 +306,7 @@ class CustomEvalCallback(EvalCallback):
             # Generate metrics after evaluation
             if wandb.run is not None:
                 generate_metrics()
+            self._run_test_trade_analysis()
         return True
 
     def _log_best_to_wandb(self, mean_reward, std_reward):
@@ -316,3 +317,88 @@ class CustomEvalCallback(EvalCallback):
                 "best_eval/mean_portfolio": self.best_mean_portfolio,
                 "best_eval/std_portfolio": self.best_std_portfolio
             }, step=self.num_timesteps)
+
+    def _run_test_trade_analysis(self):
+        """Generate trade_analysis chart on test env rollout."""
+        ep_prices, ep_emas, ep_actions, ep_portfolio, ep_dates = [], [], [], [], []
+
+        for _ in range(1):  # Single episode for chart (or self.n_eval_episodes for avg)
+            obs, _ = self.eval_env.reset()
+            done = False
+            episode_reward = 0
+            while not done:
+                action, _ = self.model.predict(obs, deterministic=self.deterministic)
+                action = action[0] if isinstance(action, np.ndarray) else action
+                obs, reward, done, info = self.eval_env.step([action])
+                reward = reward[0]
+                done = done[0]
+                info = info[0]
+                episode_reward += reward
+
+                # Extract from info (must match env's info dict)
+                current_price = info.get('current_price', info.get('price', obs[0]))  # Fallback to obs if needed
+                ema_50 = info.get('ema50', 0)
+                portfolio_value = info.get('portfolio_value', episode_reward)
+                current_date = info.get('timestamp', self.num_timesteps)
+
+                ep_prices.append(current_price)
+                ep_emas.append(ema_50)
+                ep_actions.append(action)
+                ep_portfolio.append(portfolio_value)
+                ep_dates.append(current_date)
+                obs = obs[0] if isinstance(obs, np.ndarray) else obs
+
+        # Reuse _plot_regime_chart logic (copy from TensorboardCallback, but prefix key for test)
+        self._plot_test_regime_chart(ep_prices, ep_emas, ep_actions, ep_portfolio, ep_dates)
+
+    def _plot_test_regime_chart(self, prices, emas, actions, portfolio, dates, buy_threshold=0.3, sell_threshold=-0.3):
+        """Plot and log test-specific trade_analysis chart."""
+        if len(prices) < 10:
+            return
+
+        import matplotlib.pyplot as plt
+        steps = np.arange(len(prices))
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True, gridspec_kw={'height_ratios': [3, 1]})
+
+        ax1.plot(steps, prices, label='Price', color='black', linewidth=1.2)
+        if any(x > 0 for x in emas):
+            ax1.plot(steps, emas, label='EMA 50', color='orange', linestyle='--', linewidth=1)
+            min_len = min(len(prices), len(emas))
+            ax1.fill_between(steps[:min_len], prices[:min_len], emas[:min_len],
+                             where=(prices[:min_len] > emas[:min_len]), color='green', alpha=0.1, label='Bull')
+            ax1.fill_between(steps[:min_len], prices[:min_len], emas[:min_len],
+                             where=(prices[:min_len] <= emas[:min_len]), color='red', alpha=0.1, label='Bear')
+
+        # Buy/Sell markers
+        for i, act in enumerate(actions):
+            if act >= buy_threshold:
+                ax1.scatter(steps[i], prices[i], color='green', marker='^', s=50, label='Buy' if i == 0 else "")
+            elif act <= sell_threshold:
+                ax1.scatter(steps[i], prices[i], color='red', marker='v', s=50, label='Sell' if i == 0 else "")
+
+        last_pv = portfolio[-1] if portfolio else 0
+        ax1.set_title(f"Test Thread 0 | PV: {last_pv:.2f} (Split: {self.test_split})")
+        ax1.legend(loc='upper left')
+        ax1.grid(True, alpha=0.3)
+
+        colors = ['green' if a > 0 else 'red' for a in actions]
+        ax2.bar(steps, actions, color=colors, width=1.0)
+        ax2.axhline(0, color='black', linewidth=0.8)
+        ax2.set_ylabel("Action")
+
+        # Date ticks (adapt to test dates)
+        num_ticks = min(8, len(steps))
+        tick_indices = np.linspace(0, len(steps) - 1, num_ticks, dtype=int)
+        tick_labels = [str(dates[idx])[:16] if not hasattr(dates[idx], 'strftime') else dates[idx].strftime('%Y-%m-%d\n%H:%M')
+                       for idx in tick_indices]
+        ax2.set_xticks(tick_indices)
+        ax2.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
+
+        plt.tight_layout()
+        try:
+            if wandb.run is not None:
+                wandb.log({"test_trade_analysis/thread_0_chart": wandb.Image(fig)})
+        except:
+            pass  # Fallback: save locally
+            plt.savefig(f"./logs/test_trade_analysis_step_{self.num_timesteps}.png")
+        plt.close(fig)

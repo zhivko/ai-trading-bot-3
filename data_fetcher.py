@@ -4,6 +4,8 @@ import pandas_ta as ta
 import time
 from datetime import datetime, timedelta
 import argparse
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+import nltk
 
 PAIRS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
 TIMEFRAME = '1h'
@@ -66,6 +68,21 @@ def fetch_data_for_pairs(pairs, start_date, end_date=None):
         print(f"Fetching data for {pair}...")
         data[pair] = fetch_historical_ohlcv(pair, start_date, end_date)
     return data
+
+def compute_sentiment(news_df):
+    """
+    Compute sentiment scores using VADER on news/tweets DataFrame with 'text' column.
+    Saves the result to CSV.
+    """
+    try:
+        nltk.data.find('vader_lexicon')
+    except LookupError:
+        nltk.download('vader_lexicon')
+
+    sid = SentimentIntensityAnalyzer()
+    news_df['sentiment'] = news_df['text'].apply(lambda x: sid.polarity_scores(str(x))['compound'])
+    news_df.to_csv('news_sentiment.csv', index=False)
+    print("Sentiment computed and saved to news_sentiment.csv")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Fetch historical OHLCV data for a trading pair.')

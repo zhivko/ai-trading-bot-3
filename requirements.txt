@@ -24,4 +24,5 @@ captum
 yfinance
 websockets
 
+nltk
 mplfinance
