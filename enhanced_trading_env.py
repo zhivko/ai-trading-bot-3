@@ -65,7 +65,11 @@ class EnhancedTradingEnv(gym.Env):
         loss = (-delta.where(delta < 0, 0)).ewm(span=14, adjust=False).mean()
         rs = gain / (loss + 1e-8)
         self.df['rsi'] = 100 - (100 / (1 + rs))
-        self.df['rsi_norm'] = self.df['rsi'] / 100.0
+        # RSI & Stoch RSI: Center them!
+        # Old: 0 to 100 (or 0 to 1). Neural Net sees 0.5 as "Positive Activation".
+        # New: -1.0 to 1.0. Neural Net sees 0.0 as "Neutral".
+        # Formula: (Value - 50) / 50
+        self.df['rsi_norm'] = (self.df['rsi'] - 50.0) / 50.0
 
         min_rsi = self.df['rsi'].rolling(window=14).min()
         max_rsi = self.df['rsi'].rolling(window=14).max()
@@ -73,17 +77,27 @@ class EnhancedTradingEnv(gym.Env):
         div[div == 0] = 1e-8
         self.df['stoch_rsi'] = (self.df['rsi'] - min_rsi) / div
         raw_stoch = self.df['stoch_rsi']
-        self.df['stoch_rsi_norm'] = raw_stoch
+        # Assuming stoch_rsi is 0-1. If it's 0-100, use (x - 50.0) / 50.0
+        # Let's handle 0-1 standard case
+        self.df['stoch_rsi_norm'] = (raw_stoch - 0.5) / 0.5
         mask = pd.isna(raw_stoch) | ((self.df.index < 20) & (raw_stoch == 0))
-        self.df.loc[mask, 'stoch_rsi_norm'] = 0.5
-        self.df['stoch_rsi_norm'] = np.clip(self.df['stoch_rsi_norm'], 0.0, 1.0)
+        self.df.loc[mask, 'stoch_rsi_norm'] = 0.0  # Neutral for centered
 
         ema12 = self.df['close'].ewm(span=12, adjust=False).mean()
         ema26 = self.df['close'].ewm(span=26, adjust=False).mean()
         self.df['macd'] = ema12 - ema26
         self.df['macd_signal'] = self.df['macd'].ewm(span=9, adjust=False).mean()
-        self.df['macd_norm'] = (self.df['macd'] / self.df['close']) * 100
-        self.df['macd_sig_norm'] = (self.df['macd_signal'] / self.df['close']) * 100
+
+        # MACD: Dynamic Expanding Normalization
+        # MACD is unbounded. Dividing by Price (old way) is weak.
+        # Dividing by "Max MACD Seen So Far" is robust.
+        macd_abs_max = self.df['macd'].abs().expanding(min_periods=200).max()
+        macd_abs_max = macd_abs_max.replace(0, 1.0).fillna(1.0)  # Safety
+        self.df['macd_norm'] = self.df['macd'] / macd_abs_max
+
+        sig_abs_max = self.df['macd_signal'].abs().expanding(min_periods=200).max()
+        sig_abs_max = sig_abs_max.replace(0, 1.0).fillna(1.0)
+        self.df['macd_sig_norm'] = self.df['macd_signal'] / sig_abs_max
 
         # EMA 50 for trend
         self.df['ema_50'] = self.df['close'].ewm(span=50, adjust=False).mean()
@@ -97,22 +111,29 @@ class EnhancedTradingEnv(gym.Env):
         self.df['atr_norm'] = self.df['atr'] / self.df['close']
 
         # --- ROBUST TREND EMA CALCULATION ---
-        # 1. Calculate distance
+        # Calculate Distance (Raw Deviation)
         dist = self.df['close'] - self.df['ema_50']
 
-        # 2. Normalize by Volatility (ATR)
-        # If we just divide by Price, the value is too small (0.003).
-        # By dividing by ATR (~500), we get a strong signal (e.g., 0.2 or -0.5).
-        # Fallback: If ATR is 0/NaN, use 1% of price to avoid crash.
-        denom = self.df['atr'].where((self.df['atr'] > 0) & (~self.df['atr'].isna()), self.df['close'] * 0.01)
+        # Calculate Denominator: Dynamic Expanding Max
+        # "What is the largest deviation we have seen SO FAR?"
+        # We use an expanding window so it learns and adapts over time.
+        # min_periods=200 ensures we have some history before trusting the max.
+        max_dist_so_far = dist.abs().expanding(min_periods=200).max()
 
-        trend_ema_norm = dist / denom
+        # Handle the startup period (first 200 candles) safely
+        # We fill NaNs with the first valid max, or a fallback (1% of price)
+        fallback_denom = self.df['close'] * 0.01
+        max_dist_so_far = max_dist_so_far.fillna(fallback_denom)
 
-        # 3. Clip to reasonable range for Neural Net (-1.0 to 1.0)
-        # This prevents a massive pump from exploding the gradient
-        self.df['trend_ema50'] = np.clip(trend_ema_norm, -1.0, 1.0)
+        # Safety: Avoid division by zero
+        max_dist_so_far = max_dist_so_far.replace(0, 1.0)
 
-        self.df['regime'] = self.df['trend_ema50'] / (self.df['atr_norm'] + 1e-8)
+        # Normalize
+        # Value will be exactly 1.0 or -1.0 when a new "Record Trend" is set.
+        # Otherwise, it floats nicely between -0.8 and 0.8.
+        self.df['trend_ema_norm'] = dist / max_dist_so_far
+
+        self.df['regime'] = self.df['trend_ema_norm'] / (self.df['atr_norm'] + 1e-8)
         self.df['regime'] = np.clip(self.df['regime'], -2, 2)
 
         # Stochastic 14
@@ -122,7 +143,7 @@ class EnhancedTradingEnv(gym.Env):
         self.df['stoch_14'] = self.df['stoch_14'].fillna(0.5)
         self.df['stoch_14'] = np.clip(self.df['stoch_14'], 0.0, 1.0)
 
-        self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema50', 'atr_norm', 'regime']
+        self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema_norm', 'atr_norm', 'regime']
         self.divergence_window = 40
         self.div_features = [
             'bull_div_stoch9',
@@ -227,8 +248,8 @@ class EnhancedTradingEnv(gym.Env):
         """Returns a list of labels for the observation space."""
         # This must match exactly the order of np.concatenate in _next_observation
         names = [
-            "volume_norm", "trend_ema", "close_pct",
-            "rsi_norm", "stoch_rsi", "macd_norm", "macd_sig", "atr_norm",
+            "volume_norm", "trend_ema_norm", "close_pct",
+            "rsi_norm", "stoch_rsi_norm", "macd_norm", "macd_sig_norm", "atr_norm",
             "regime", "heatmap_max"
         ]
         # Add Heatmap buckets
@@ -360,6 +381,7 @@ class EnhancedTradingEnv(gym.Env):
         self.trade_count = 0
         self.prev_action = 0
         self.prev_sign = 0  # Reset for switch penalty
+        self.entry_price = 0.0  # Track Entry Price for potential future trade-based rewards
         self.history_net_worth = [self.initial_balance]
         self.episode_returns = deque(maxlen=24)  # For Sortino (last 24 hours)
         
@@ -459,8 +481,8 @@ class EnhancedTradingEnv(gym.Env):
             print(f"  > Volume Norm Input:   {vol_val:.5f}  (Should be 0.0 - 1.0)")
 
             # 2. Check Trend Magnitude (The likely culprit)
-            trend_val = self.df.iloc[self.current_step]['trend_ema50']
-            print(f"  > Trend EMA Input:     {trend_val:.5f}  (Now z-scored and clipped -1 to 1)")
+            trend_val = self.df.iloc[self.current_step]['trend_ema_norm']
+            print(f"  > Trend EMA Norm Input: {trend_val:.5f}  (Dynamic expanding max -1 to 1)")
 
             # Debug suggestion:
             current_close = current_price
@@ -475,17 +497,17 @@ class EnhancedTradingEnv(gym.Env):
             rsi_norm_val = self.df.iloc[self.current_step]['rsi_norm']
             print(f"  > RSI Norm Input:      {rsi_norm_val:.5f}")
 
-            # 5. Check Stoch RSI
+            # 5. Check Stoch RSI Norm
             stoch = self.df.iloc[self.current_step]['stoch_rsi_norm']
-            print(f"  > Stoch RSI Input:     {stoch:.5f}")
+            print(f"  > Stoch RSI Norm Input: {stoch:.5f}  (Now -1 to 1)")
 
             # 6. Check MACD Norm
             macd_norm_val = self.df.iloc[self.current_step]['macd_norm']
-            print(f"  > MACD Norm Input:     {macd_norm_val:.5f}")
+            print(f"  > MACD Norm Input:     {macd_norm_val:.5f}  (Dynamic expanding max -1 to 1)")
 
             # 7. Check MACD Sig Norm
             macd_sig_norm_val = self.df.iloc[self.current_step]['macd_sig_norm']
-            print(f"  > MACD Sig Norm Input: {macd_sig_norm_val:.5f}")
+            print(f"  > MACD Sig Norm Input: {macd_sig_norm_val:.5f}  (Dynamic expanding max -1 to 1)")
 
             # 8. Check ATR Norm
             atr_norm_val = self.df.iloc[self.current_step]['atr_norm']
