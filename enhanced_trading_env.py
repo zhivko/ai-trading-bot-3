@@ -155,7 +155,23 @@ class EnhancedTradingEnv(gym.Env):
         ]
         self.div_scores = {k: 0.0 for k in self.div_features}  # Initialize state
         self.df.fillna(0, inplace=True)
-        
+
+        # Convert the entire dataframe to a float32 numpy matrix for speed
+        self.data_matrix = self.df.values.astype(np.float32)
+
+        # Column indices for fast access
+        self.atr_norm_idx = self.df.columns.get_loc('atr_norm')
+        self.close_pct_idx = self.df.columns.get_loc('close_pct')
+        self.ema_50_idx = self.df.columns.get_loc('ema_50')
+        self.volume_norm_idx = self.df.columns.get_loc('volume_norm')
+        self.trend_ema_norm_idx = self.df.columns.get_loc('trend_ema_norm')
+        self.rsi_norm_idx = self.df.columns.get_loc('rsi_norm')
+        self.stoch_rsi_norm_idx = self.df.columns.get_loc('stoch_rsi_norm')
+        self.macd_norm_idx = self.df.columns.get_loc('macd_norm')
+        self.macd_sig_norm_idx = self.df.columns.get_loc('macd_sig_norm')
+        self.regime_idx = self.df.columns.get_loc('regime')
+        self.stoch_14_idx = self.df.columns.get_loc('stoch_14')
+
         self.market_features = self.df[self.features].values.astype(np.float32)
         self.raw_prices = self.df['close'].values.astype(np.float32)
 
@@ -438,16 +454,16 @@ class EnhancedTradingEnv(gym.Env):
 
         # Detect divergences (only when current_step is valid)
         bull9, bear9 = self._detect_divergences(
-            self.df['stoch_rsi_norm'].values,
+            self.data_matrix[:, self.stoch_rsi_norm_idx],
             self.raw_prices,
             window=40, tolerance=8
         )
         bull14, bear14 = self._detect_divergences(
-            self.df['stoch_14'].values,
+            self.data_matrix[:, self.stoch_14_idx],
             self.raw_prices, window=40, tolerance=8
         )
         bull_rsi, bear_rsi = self._detect_divergences(
-            self.df['rsi_norm'].values,
+            self.data_matrix[:, self.rsi_norm_idx],
             self.raw_prices, window=40, tolerance=8
         )
 
@@ -477,44 +493,44 @@ class EnhancedTradingEnv(gym.Env):
             print(f"\n[DEBUG Step {self.current_step}] Feature Magnitudes:")
 
             # 1. Check Volume Magnitude
-            vol_val = self.df.iloc[self.current_step]['volume_norm']
+            vol_val = self.data_matrix[self.current_step, self.volume_norm_idx]
             print(f"  > Volume Norm Input:   {vol_val:.5f}  (Should be 0.0 - 1.0)")
 
             # 2. Check Trend Magnitude (The likely culprit)
-            trend_val = self.df.iloc[self.current_step]['trend_ema_norm']
+            trend_val = self.data_matrix[self.current_step, self.trend_ema_norm_idx]
             print(f"  > Trend EMA Norm Input: {trend_val:.5f}  (Dynamic expanding max -1 to 1)")
 
             # Debug suggestion:
             current_close = current_price
-            ema_val = self.df.iloc[self.current_step]['ema_50']
+            ema_val = self.data_matrix[self.current_step, self.ema_50_idx]
             print(f"DEBUG EMA: Close={current_close}, EMA={ema_val}, Diff={current_close - ema_val}")
 
             # 3. Check Close Pct
-            close_pct_val = self.df.iloc[self.current_step]['close_pct']
+            close_pct_val = self.data_matrix[self.current_step, self.close_pct_idx]
             print(f"  > Close Pct Input:     {close_pct_val:.5f}")
 
             # 4. Check RSI Norm
-            rsi_norm_val = self.df.iloc[self.current_step]['rsi_norm']
+            rsi_norm_val = self.data_matrix[self.current_step, self.rsi_norm_idx]
             print(f"  > RSI Norm Input:      {rsi_norm_val:.5f}")
 
             # 5. Check Stoch RSI Norm
-            stoch = self.df.iloc[self.current_step]['stoch_rsi_norm']
+            stoch = self.data_matrix[self.current_step, self.stoch_rsi_norm_idx]
             print(f"  > Stoch RSI Norm Input: {stoch:.5f}  (Now -1 to 1)")
 
             # 6. Check MACD Norm
-            macd_norm_val = self.df.iloc[self.current_step]['macd_norm']
+            macd_norm_val = self.data_matrix[self.current_step, self.macd_norm_idx]
             print(f"  > MACD Norm Input:     {macd_norm_val:.5f}  (Dynamic expanding max -1 to 1)")
 
             # 7. Check MACD Sig Norm
-            macd_sig_norm_val = self.df.iloc[self.current_step]['macd_sig_norm']
+            macd_sig_norm_val = self.data_matrix[self.current_step, self.macd_sig_norm_idx]
             print(f"  > MACD Sig Norm Input: {macd_sig_norm_val:.5f}  (Dynamic expanding max -1 to 1)")
 
             # 8. Check ATR Norm
-            atr_norm_val = self.df.iloc[self.current_step]['atr_norm']
+            atr_norm_val = self.data_matrix[self.current_step, self.atr_norm_idx]
             print(f"  > ATR Norm Input:      {atr_norm_val:.5f}")
 
             # 9. Check Regime
-            regime_val = self.df.iloc[self.current_step]['regime']
+            regime_val = self.data_matrix[self.current_step, self.regime_idx]
             print(f"  > Regime Input:        {regime_val:.5f} (-2 to 2)")
 
             # 10. Check VP Heatmap Magnitude
@@ -551,7 +567,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # Volatility scaling (on a copy, don't modify action)
         scaled_action = action.copy()
-        atr_norm = self.df.iloc[self.current_step]['atr_norm']
+        atr_norm = self.data_matrix[self.current_step, self.atr_norm_idx]
         scaled_action[0] *= (1 / (1 + atr_norm))
 
         # 2. Execute action
@@ -564,7 +580,7 @@ class EnhancedTradingEnv(gym.Env):
         self.returns.append(reward)
 
         # Compute benchmark return
-        benchmark_return = self.df.iloc[self.current_step]['close_pct']
+        benchmark_return = self.data_matrix[self.current_step, self.close_pct_idx]
 
         # 4. Update Duration Counter
         if trade_occurred:
@@ -597,7 +613,7 @@ class EnhancedTradingEnv(gym.Env):
             "reward": reward,
             "price": current_price,
             "current_price": current_price,
-            "ema50": self.df.iloc[self.current_step].get('ema_50', 0),
+            "ema50": self.data_matrix[self.current_step, self.ema_50_idx],
             "timestamp": str(self.raw_df.index[self.current_step]),
             "vp_heatmap": heatmap,
             "trades_per_episode": self.trades_in_episode
