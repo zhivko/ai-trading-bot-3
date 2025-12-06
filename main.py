@@ -401,6 +401,7 @@ def main():
 
     for i in range(n_models):
         seed = args.seed + i
+        set_random_seed(args.seed + i)
         print(f"Training model {i+1}/{n_models} with seed {seed}")
 
         model = AlgoClass(

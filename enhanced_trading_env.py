@@ -31,8 +31,6 @@ class EnhancedTradingEnv(gym.Env):
         self.raw_df = df.reset_index(drop=False)
         self.df = self.raw_df.copy()
 
-        # Add adversarial noise to close prices
-        self.df['close'] = self.df['close'] * (1 + np.random.normal(0, 0.01, len(self.df)))
 
         if precalculated_vp:
             self.vp_data = precalculated_vp
@@ -408,6 +406,9 @@ class EnhancedTradingEnv(gym.Env):
         self.prev_actions = deque(maxlen=3)
         self.returns.clear()
         self.prev_portfolio = self.initial_balance
+
+        # Add adversarial noise to prices per episode
+        self.raw_prices = self.df['close'].values.astype(np.float32) * (1 + np.random.normal(0, 0.01, len(self.df)))
 
         return self._next_observation(), {}
 
