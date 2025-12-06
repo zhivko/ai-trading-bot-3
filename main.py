@@ -13,6 +13,7 @@ import subprocess
 import gymnasium as gym
 from stable_baselines3 import SAC, PPO, A2C, TD3
 from sb3_contrib import RecurrentPPO
+from sb3_contrib.ppo_recurrent.policies import MlpLstmPolicy
 from sb3_contrib.common.torch_layers import TransformerNet
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize, DummyVecEnv, VecFrameStack
@@ -28,6 +29,23 @@ from enhanced_trading_env import EnhancedTradingEnv
 from callbacks.base_callbacks import TensorboardCallback, CustomEvalCallback
 from callbacks.feature_saliency import FeatureSaliencyCallback
 from callbacks.recurrent_saliency import RecurrentFeatureSaliencyCallback
+class HybridLstmTransformerPolicy(MlpLstmPolicy):
+
+    def __init__(self, observation_space, action_space, lr_schedule, lstm_hidden_size=128, **kwargs):
+
+        lstm_layers = kwargs.pop('lstm_layers', 2)
+
+        n_heads = kwargs.pop('n_heads', 2)
+
+        super().__init__(observation_space, action_space, lr_schedule, lstm_hidden_size=lstm_hidden_size, **kwargs)
+
+        # Modify lstm to have layers
+
+        self.lstm = nn.LSTM(self.features_dim, lstm_hidden_size, lstm_layers, batch_first=True)
+
+        # Add transformer
+
+        self.transformer = TransformerNet(lstm_hidden_size, 2, n_heads, 256)
 from volume_profile import get_rolling_vp
 
 # --- Custom Callback for Train Reward Logging ---
@@ -61,6 +79,7 @@ def parse_args():
     
     # Environment Config
     # REVERTED TO YOUR DEFAULT: [7, 30]
+    parser.add_argument("--n-heads", type=int, default=2, help="Number of heads for transformer")
     parser.add_argument("--vp-days", type=int, nargs='+', default=[7, 30], help="Volume Profile days (e.g. 7 30)")
     parser.add_argument("--vp-bins", type=int, default=40, help="Volume Profile bins")
     parser.add_argument("--window-size", type=int, default=50, help="Observation window size")
@@ -334,12 +353,12 @@ def main():
     # Hyperparameters - Algorithm-specific
     policy = "MlpPolicy"
     if args.algo.lower() == 'recurrentppo':
-        policy = "MlpLstmPolicy"
+        policy = "HybridLstmTransformerPolicy"
         policy_kwargs = dict(
             net_arch=dict(pi=[128, 128], vf=[128, 128]),
             lstm_hidden_size=128,
-            features_extractor_class=TransformerNet,
-            features_extractor_kwargs=dict(n_layers=2, n_heads=4, dim_feedforward=256)
+            lstm_layers=2,
+            n_heads=args.n_heads
         )
     elif args.algo.lower() in ['sac', 'td3']:
         policy_kwargs = dict(net_arch=dict(pi=[256, 256], qf=[256, 256]))
@@ -451,7 +470,7 @@ def main():
             model_kwargs['ent_coef'] = 'auto'
 
         model = AlgoClass(
-            "MlpLstmPolicy",
+            "HybridLstmTransformerPolicy",
             train_env,
             verbose=1,
             tensorboard_log=f"./logs/{args.algo}_tensorboard",
