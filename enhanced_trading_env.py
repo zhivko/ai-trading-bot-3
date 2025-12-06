@@ -92,7 +92,7 @@ class EnhancedTradingEnv(gym.Env):
         high_close = np.abs(self.df['high'] - self.df['close'].shift())
         low_close = np.abs(self.df['low'] - self.df['close'].shift())
         tr = np.maximum(high_low, np.maximum(high_close, low_close))
-        self.df['atr'] = tr.rolling(14).mean().fillna(0)
+        self.df['atr'] = tr.rolling(14).mean().fillna(0.01)
         self.df['atr_norm'] = self.df['atr'] / self.df['close']
 
         # --- ROBUST TREND EMA CALCULATION ---
@@ -167,6 +167,7 @@ class EnhancedTradingEnv(gym.Env):
         self.trade_fee_penalty = 0.1
 
         self.prev_actions = deque(maxlen=3)
+        self.returns = []
 
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
 
@@ -304,7 +305,7 @@ class EnhancedTradingEnv(gym.Env):
 
         return trade_occurred
 
-    def _calculate_reward(self, action, trade_occurred=False):
+    def compute_reward(self, action, trade_occurred=False):
         """
         Revised Reward: Pure PnL with explicit Fee Punishment.
         """
@@ -501,11 +502,21 @@ class EnhancedTradingEnv(gym.Env):
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
 
+        # Volatility scaling
+        atr_norm = self.df.iloc[self.current_step]['atr_norm']
+        action[0] *= (1 / (1 + atr_norm))
+
         # 2. Execute action
         trade_occurred = self._take_action(action)
 
         # 3. Calculate reward
-        reward = self._calculate_reward(action_val, trade_occurred)
+        reward = self.compute_reward(action_val, trade_occurred)
+
+        # Append to returns
+        self.returns.append(reward)
+
+        # Compute benchmark return
+        benchmark_return = self.df.iloc[self.current_step]['close_pct']
 
         # 4. Update Duration Counter
         if trade_occurred:
