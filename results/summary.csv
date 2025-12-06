@@ -1,7 +1,7 @@
 key,value
-_runtime,944.021812915802
-_step,9
-_timestamp,1765048683.870612
+_runtime,999.8678364753724
+_step,10
+_timestamp,1765048739.7166357
 best_eval/mean_portfolio,10000
 best_eval/mean_reward,0
 best_eval/std_portfolio,0
