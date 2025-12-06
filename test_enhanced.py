@@ -14,8 +14,8 @@ def main():
 
     # Compute vp_data
     vp_data = {
-        'vp7': get_rolling_vp(df, window_days=7),
-        'vp30': get_rolling_vp(df, window_days=30)
+        'vp7': get_rolling_vp(df, days=7),
+        'vp30': get_rolling_vp(df, days=30)
     }
 
     # Create env
