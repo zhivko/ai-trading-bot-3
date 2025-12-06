@@ -1,7 +1,8 @@
 key,value
-_runtime,1927.0426783561709
-_step,10
-_timestamp,1765042246.451553
+_runtime,2004.009395837784
+_step,11
+_timestamp,1765042323.4182708
+_wandb,{'runtime': 3548}
 best_eval/mean_portfolio,10000
 best_eval/mean_reward,0
 best_eval/std_portfolio,0
