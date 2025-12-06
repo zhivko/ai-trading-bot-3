@@ -295,11 +295,7 @@ class CustomEvalCallback(EvalCallback):
                 current_phase = getattr(self.model.env, 'phase', 1)
                 new_phase = min(current_phase + 1, 4)  # Up to phase 4
                 # Broadcast to train env (works for Subproc via attr access)
-                if hasattr(self.model.env, 'set_attr'):
-                    self.model.env.set_attr('phase', new_phase)
-                else:
-                    # Fallback: Set on wrapped env
-                    self.model.env.phase = new_phase
+                self.model.env.set_attr('phase', new_phase)
                 if wandb.run is not None:
                     wandb.log({'curriculum/phase': new_phase, 'step': self.num_timesteps})
 

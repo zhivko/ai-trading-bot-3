@@ -153,6 +153,8 @@ class EnhancedTradingEnv(gym.Env):
 
         if self.phase == 4:
             self.action_space = spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
+            eth_df = pd.read_csv('ETHUSDT_data.csv')
+            self.multi_dfs = [self.df, eth_df]
         else:
             self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
