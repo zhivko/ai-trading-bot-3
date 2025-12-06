@@ -281,16 +281,18 @@ class EnhancedTradingEnv(gym.Env):
         return names
 
     def _take_action(self, action):
-        # Safety Clip (Redundant but good)
-        action = np.clip(action, -1.0, 1.0)
+        # REVERTED: No global clipping.
+        # We use the raw value for threshold checks.
 
-        # 0. DEADBAND (Noise Filter)
-        # Use the class parameters to define the neutral zone.
-        # If action is between sell_threshold (-0.3) and buy_threshold (0.3), force it to 0.
+        # 1. DEADBAND (Noise Filter)
         action_val = action[0]
         if action_val < self.buy_threshold and action_val > self.sell_threshold:
             action_val = 0.0
-        action = np.array([action_val])
+
+        # 2. SAFETY FOR EXECUTION MATH
+        # When calculating trade size, we must clamp to 100% (-1 to 1).
+        # We create a local variable just for the math.
+        execution_val = np.clip(action_val, -1.0, 1.0)
 
         trade_occurred = False
 
@@ -311,7 +313,6 @@ class EnhancedTradingEnv(gym.Env):
             self.trades_in_episode += 1  # Increment counter
 
         # ... existing logic ...
-        action_val = float(action[0])
         current_price = self.raw_prices[self.current_step]
 
         if trade_occurred:
@@ -337,7 +338,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # --- CONFIGURABLE THRESHOLDS ---
         if action_val > dynamic_buy_threshold: # Buy
-            amount_to_invest = self.balance * action_val
+            amount_to_invest = self.balance * execution_val
             if amount_to_invest > 10:
                 shares_bought = amount_to_invest / current_price
                 fee = amount_to_invest * self.trading_fee_multiplier
@@ -345,7 +346,7 @@ class EnhancedTradingEnv(gym.Env):
                 self.shares_held += shares_bought
 
         elif action_val < dynamic_sell_threshold: # Sell
-            shares_to_sell = self.shares_held * abs(action_val)
+            shares_to_sell = self.shares_held * abs(execution_val)
             if shares_to_sell * current_price > 10:
                 trade_value = shares_to_sell * current_price
                 fee = trade_value * self.trading_fee_multiplier
@@ -555,31 +556,23 @@ class EnhancedTradingEnv(gym.Env):
         return full_obs.astype(np.float32)
 
     def step(self, action):
-        # -----------------------------------------------------------
-        # 1. CRITICAL FIX: Clip 'action' at the very top of step()
-        # This rebinds the local variable 'action' to the safe version.
-        # Now, EVERYTHING that follows (logic, logging, print) uses the clipped version.
-        # -----------------------------------------------------------
-        action = np.clip(action, -1.0, 1.0)
+        # REVERTED: We keep the raw action magnitude.
+        # Values > 1.0 indicate high model confidence.
 
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
-        action_val = float(action[0])
 
-        # Log the clipped action for clean chart
-        self.prev_actions.append(action_val)
-        self.action_history.append(action_val)
-
-        # Volatility scaling (on a copy, don't modify action)
-        scaled_action = action.copy()
-        atr_norm = self.data_matrix[self.current_step, self.atr_norm_idx]
-        scaled_action[0] *= (1 / (1 + atr_norm))
-
-        # 2. Execute action
-        trade_occurred = self._take_action(scaled_action)
+        # Pass RAW action to execution logic
+        trade_occurred = self._take_action(action)
 
         # 3. Calculate reward
+        action_val = float(action[0])
         reward = self.compute_reward(action_val, trade_occurred)
+
+        # Log RAW action
+        # The chart will now show values outside [-1, 1], preserving information.
+        self.prev_actions.append(action_val)
+        self.action_history.append(action_val)
 
         # Append to returns
         self.returns.append(reward)
