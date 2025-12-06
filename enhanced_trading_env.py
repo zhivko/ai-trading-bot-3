@@ -246,6 +246,7 @@ class EnhancedTradingEnv(gym.Env):
         return names
 
     def _take_action(self, action):
+        action = np.clip(action, -1.0, 1.0)
         if self.phase == 4:
             # Multi-asset logic
             btc_action = action[0]
