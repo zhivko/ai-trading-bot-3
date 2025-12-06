@@ -121,7 +121,10 @@ class EnhancedTradingEnv(gym.Env):
         self.df['stoch_14'] = self.df['stoch_14'].fillna(0.5)
         self.df['stoch_14'] = np.clip(self.df['stoch_14'], 0.0, 1.0)
 
-        self.df['sentiment_norm'] = (self.df['sentiment'] - self.df['sentiment'].min()) / (self.df['sentiment'].max() - self.df['sentiment'].min() + 1e-8)
+        # Rolling min/max normalization for sentiment
+        rolling_min = self.df['sentiment'].rolling(window=100, min_periods=1).min()
+        rolling_max = self.df['sentiment'].rolling(window=100, min_periods=1).max()
+        self.df['sentiment_norm'] = (self.df['sentiment'] - rolling_min) / (rolling_max - rolling_min + 1e-8)
         self.df['sentiment_norm'] = self.df['sentiment_norm'].fillna(0.5)
         self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema50', 'atr_norm', 'regime', 'sentiment_norm']
         self.divergence_window = 40

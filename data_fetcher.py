@@ -98,3 +98,17 @@ if __name__ == "__main__":
     filename = f'{pair.replace("/", "_")}_data.csv'
     df.to_csv(filename)
     print(f"Saved {len(df)} rows to {filename}")
+
+    # Mock news_df for VADER integration
+    mock_news_df = pd.DataFrame({
+        'text': [
+            'Bitcoin is surging to new highs!',
+            'Market sentiment is bearish due to economic concerns.',
+            'Ethereum shows strong bullish signals.',
+            'Crypto volatility increases amid regulatory news.',
+            'Positive outlook for digital assets in 2024.'
+        ]
+    })
+
+    # Compute sentiment scores
+    compute_sentiment(mock_news_df)
