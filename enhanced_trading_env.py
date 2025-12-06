@@ -4,6 +4,7 @@ import pandas as pd
 from gymnasium import spaces
 from collections import deque
 from scipy.signal import argrelextrema
+import matplotlib.pyplot as plt
 
 # Delegating heavy lifting to volume_profile.py
 from volume_profile import get_rolling_vp
@@ -237,7 +238,6 @@ class EnhancedTradingEnv(gym.Env):
         return names
 
     def _take_action(self, action):
-        action = np.clip(action, -1.0, 1.0)
         # 0. DEADBAND (Noise Filter)
         # Use the class parameters to define the neutral zone.
         # If action is between sell_threshold (-0.3) and buy_threshold (0.3), force it to 0.
@@ -507,9 +507,16 @@ class EnhancedTradingEnv(gym.Env):
         return full_obs.astype(np.float32)
 
     def step(self, action):
+        # 1. CLIP IMMEDIATELY (Global Fix)
+        # This ensures the entire environment (logic + logging) sees the safe value.
+        action = np.clip(action, -1.0, 1.0)
+
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
+
+        # Log the clipped action for clean chart
+        self.prev_actions.append(action_val)
 
         # Volatility scaling
         atr_norm = self.df.iloc[self.current_step]['atr_norm']
@@ -532,9 +539,6 @@ class EnhancedTradingEnv(gym.Env):
             self.steps_since_last_trade = 0
         else:
             self.steps_since_last_trade += 1
-
-        # Append to prev_actions
-        self.prev_actions.append(action_val)
 
         self.prev_net_worth = self.net_worth
         self.prev_shares_held = self.shares_held
@@ -568,3 +572,36 @@ class EnhancedTradingEnv(gym.Env):
         }
 
         return obs, reward, terminated, truncated, info
+
+    def render(self, mode='human', title_suffix=""):
+        if len(self.history_net_worth) < 2:
+            return None
+
+        steps = np.arange(len(self.history_net_worth))
+        prices = self.raw_prices[:len(self.history_net_worth)]
+        actions = list(self.prev_actions)[:len(self.history_net_worth)]
+        net_worths = self.history_net_worth
+
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+
+        # Price
+        ax1.plot(steps, prices, label='Price', color='black', linewidth=1.2)
+        ax1.set_title(f"Trade Analysis{title_suffix}")
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        # Actions
+        colors = ['green' if a > 0 else 'red' for a in actions]
+        ax2.bar(steps, actions, color=colors, width=1.0)
+        ax2.axhline(0, color='black', linewidth=0.8)
+        ax2.set_ylabel("Action")
+        ax2.grid(True, alpha=0.3)
+
+        # Net Worth
+        ax3.plot(steps, net_worths, label='Net Worth', color='blue', linewidth=1.2)
+        ax3.set_ylabel("Net Worth")
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        return plt.gcf()

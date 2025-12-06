@@ -306,6 +306,24 @@ class CustomEvalCallback(EvalCallback):
             # Generate metrics after evaluation
             if wandb.run is not None:
                 generate_metrics()
+
+            # 2. GENERATE TEST CHART
+            # We manually trigger the render on the first eval environment
+            try:
+                # Use env_method to be safe across Dummy/Subproc VecEnvs
+                # We ask the env to render and return the matplotlib figure
+                # Note: We assume render() returns the figure as per the Env change above
+                figs = self.eval_env.env_method("render", title_suffix=" [TEST DATA]")
+
+                if figs and figs[0] is not None:
+                    # Log to WandB under a specific TEST section
+                    wandb.log({"Test/Trade_Analysis": wandb.Image(figs[0])})
+
+                    # Cleanup memory
+                    plt.close(figs[0])
+            except Exception as e:
+                print(f"⚠️ Could not log Test Chart: {e}")
+
         return True
 
     def _log_best_to_wandb(self, mean_reward, std_reward):
