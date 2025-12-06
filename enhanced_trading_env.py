@@ -241,6 +241,7 @@ class EnhancedTradingEnv(gym.Env):
         return names
 
     def _take_action(self, action):
+        action = np.clip(action, -1.0, 1.0)
         # 0. DEADBAND (Noise Filter)
         # Use the class parameters to define the neutral zone.
         # If action is between sell_threshold (-0.3) and buy_threshold (0.3), force it to 0.
