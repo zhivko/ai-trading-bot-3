@@ -407,8 +407,7 @@ class EnhancedTradingEnv(gym.Env):
         self.returns.clear()
         self.prev_portfolio = self.initial_balance
 
-        # Add adversarial noise to prices per episode
-        self.raw_prices = self.df['close'].values.astype(np.float32) * (1 + np.random.normal(0, 0.01, len(self.df)))
+        self.raw_prices = self.df['close'].values.astype(np.float32)
 
         return self._next_observation(), {}
 
@@ -546,7 +545,10 @@ class EnhancedTradingEnv(gym.Env):
             print(f"  > Bear Div Stoch14:   {div_vector[3]:.5f}")
             print(f"  > Bull Div RSI:       {div_vector[4]:.5f}")
             print(f"  > Bear Div RSI:       {div_vector[5]:.5f}")
-                        
+
+        # Add adversarial noise to observation vector
+        full_obs += np.random.normal(0, 0.01, len(full_obs))
+
         return full_obs.astype(np.float32)
 
     def step(self, action):
