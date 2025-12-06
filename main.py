@@ -349,20 +349,27 @@ def main():
 
     # Hyperparameters - Algorithm-specific
     policy = "MlpPolicy"
+    # Define Network Architecture
+    # SAC requires 'qf' (Q-Function), PPO requires 'vf' (Value Function)
+    if args.algo.lower() == 'sac':
+        net_arch = dict(pi=[256, 256], qf=[256, 256])
+    elif args.algo.lower() == 'recurrentppo':
+        net_arch = dict(pi=[512, 512], vf=[512, 512])
+    else:
+        net_arch = dict(pi=[256, 256], vf=[256, 256])
+
+    policy_kwargs = dict(net_arch=net_arch)
+
     if args.algo.lower() == 'recurrentppo':
         policy = "MlpLstmPolicy"
-        policy_kwargs = dict(
+        policy_kwargs.update(dict(
             ortho_init=False,  # Avoid LAPACK requirement for orthogonal init
             lstm_hidden_size=256,
             n_lstm_layers=2,
             shared_lstm=False,
             enable_critic_lstm=True,
-            lstm_kwargs=dict(dropout=0.0),
-        )
-    elif args.algo.lower() in ['sac', 'td3']:
-        policy_kwargs = dict(net_arch=dict(pi=[256, 256], qf=[256, 256]))
-    else:
-        policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
+            lstm_kwargs=dict(dropout=0.0)
+        ))
     
     # Resume Logic
     model_path = f"./models/{args.algo}_{args.pair}"
@@ -450,7 +457,7 @@ def main():
         model_kwargs = {}
         if args.algo.lower() == 'recurrentppo':
             model_kwargs.update(dict(
-                n_steps=1024,
+                n_steps=4096,  # Increased from 1024 to reduce CPU-GPU bottleneck
                 batch_size=16384,
                 learning_rate=3e-4,
                 gamma=0.99,

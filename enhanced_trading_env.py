@@ -31,7 +31,10 @@ class EnhancedTradingEnv(gym.Env):
         # --- 1. DATA PREP ---
         self.raw_df = df.reset_index(drop=False)
         self.df = self.raw_df.copy()
-        
+
+        # Drop non-numeric columns to avoid conversion errors
+        self.df = self.df.drop(columns=['timestamp'], errors='ignore')
+
         if precalculated_vp:
             self.vp_data = precalculated_vp
         else:
@@ -172,8 +175,10 @@ class EnhancedTradingEnv(gym.Env):
         self.regime_idx = self.df.columns.get_loc('regime')
         self.stoch_14_idx = self.df.columns.get_loc('stoch_14')
 
-        self.market_features = self.df[self.features].values.astype(np.float32)
-        self.raw_prices = self.df['close'].values.astype(np.float32)
+        # Use data_matrix for market_features to optimize
+        feature_indices = [self.df.columns.get_loc(f) for f in self.features]
+        self.market_features = self.data_matrix[:, feature_indices]
+        self.raw_prices = self.data_matrix[:, self.df.columns.get_loc('close')]
 
         # --- FIX: Initialize feature names explicitly for Main.py ---
         self.feature_names = self.get_feature_names()
