@@ -122,11 +122,12 @@ class RecurrentFeatureSaliencyCallback(BaseCallback):
             plt.title(f"RecurrentPPO Feature Saliency (Step {self.n_calls})")
             plt.tight_layout()
 
-            # Log to WandB
+            # --- FIX: Log to WandB ---
             try:
                 wandb.log({"Explainability/Feature_Saliency": wandb.Image(plt.gcf())}, commit=False)
             except Exception as e:
                 print(f"[Saliency] WandB Log Failed: {e}")
+            # -------------------------
 
             plt.savefig(os.path.join(self.save_path, f"saliency_step_{self.n_calls}.png"))
             plt.close()

@@ -335,13 +335,13 @@ def main():
                 feature_names = [f"F_{i}" for i in range(obs_dim)]
 
         # Initialize the callback
-        saliency_cb = RecurrentFeatureSaliencyCallback(
-            check_freq=10000,           # Check every 10k steps
-            save_path="./logs/saliency",
-            feature_names=feature_names,
-            verbose=1
-        )
-        callbacks.append(saliency_cb)
+        #saliency_cb = RecurrentFeatureSaliencyCallback(
+        #    check_freq=10000,           # Check every 10k steps
+        #    save_path="./logs/saliency",
+        #    feature_names=feature_names,
+        #    verbose=1
+        #)
+        #callbacks.append(saliency_cb)
 
     callback_list = CallbackList(callbacks)
 

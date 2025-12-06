@@ -302,27 +302,27 @@ class CustomEvalCallback(EvalCallback):
                     self.model.save(os.path.join(self.best_model_save_path, 'best_model'))
                 self._log_best_to_wandb(mean_reward, std_reward)
             # Generate metrics after evaluation
-            print(f"DEBUG: Wandb run is {'available' if wandb.run is not None else 'None'}")
-            if wandb.run is not None:
-                generate_metrics()
+            #print(f"DEBUG: Wandb run is {'available' if wandb.run is not None else 'None'}")
+            #if wandb.run is not None:
+            #    generate_metrics()
 
             # 2. GENERATE TEST CHART
             # We manually trigger the render on the first eval environment
-            print(f"DEBUG: Attempting to generate test chart at step {self.num_timesteps}")
-            try:
+            #print(f"DEBUG: Attempting to generate test chart at step {self.num_timesteps}")
+            #try:
                 # This now returns a list of Numpy Arrays (Images)
-                images = self.eval_env.env_method("render", title_suffix=" [TEST DATA]")
-                print(f"DEBUG: env_method returned: {type(images)}, len: {len(images) if images else 'None'}")
+                #images = self.eval_env.env_method("render", title_suffix=" [TEST DATA]")
+                #print(f"DEBUG: env_method returned: {type(images)}, len: {len(images) if images else 'None'}")
 
-                if images and images[0] is not None:
-                    print(f"DEBUG: Image obtained, logging to wandb")
+                #if images and images[0] is not None:
+                #    print(f"DEBUG: Image obtained, logging to wandb")
                     # Log the Image Array directly
-                    wandb.log({"Test/Trade_Analysis": wandb.Image(images[0])}, commit=False)
-                    print(f"DEBUG: Test chart logged successfully")
-            except Exception as e:
-                print(f"⚠️ Could not log Test Chart: {e}")
-                import traceback
-                traceback.print_exc()
+                #    wandb.log({"Test/Trade_Analysis": wandb.Image(images[0])}, commit=False)
+                #    print(f"DEBUG: Test chart logged successfully")
+            #except Exception as e:
+            #    print(f"⚠️ Could not log Test Chart: {e}")
+            #    import traceback
+            #    traceback.print_exc()
 
         return True
 
