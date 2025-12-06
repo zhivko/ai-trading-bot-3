@@ -518,8 +518,8 @@ class EnhancedTradingEnv(gym.Env):
 
         # DEBUG: Uncomment this line if you still see issues.
         # It should print values strictly between -1.0 and 1.0
-        if self.current_step % 1000 == 0:  # Print every 1000 steps to avoid spam
-            print(f"Raw: {action[0]:.4f} -> Clipped: {clipped_action[0]:.4f}")
+        #if self.current_step % 1000 == 0:  # Print every 1000 steps to avoid spam
+        #    print(f"Raw: {action[0]:.4f} -> Clipped: {clipped_action[0]:.4f}")
 
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]

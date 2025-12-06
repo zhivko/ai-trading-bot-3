@@ -73,11 +73,8 @@ class TensorboardCallback(BaseCallback):
             if not isinstance(info, dict): info = {}
 
         # 2. Get Data
-        actions = self.locals['actions']
-        action = actions[0] if isinstance(actions, (list, np.ndarray)) else actions
-        if isinstance(action, (list, np.ndarray)):
-            try: action = action[0]
-            except IndexError: action = 0
+        # Use the clipped action from info instead of raw from locals
+        action = info.get('action', 0)
 
         current_price = info.get('current_price', info.get('price', 0))
         ema_50 = info.get('ema50', 0)
