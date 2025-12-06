@@ -1,12 +1,15 @@
 import ccxt
 import pandas as pd
-import pandas_ta as ta
 import time
 from datetime import datetime, timedelta
 import argparse
+import logging
 
 PAIRS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
 TIMEFRAME = '1h'
+
+# Configure logging
+logging.basicConfig(filename='data_fetcher.log', level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def fetch_historical_ohlcv(pair, start_date, end_date=None):
     """
@@ -40,7 +43,7 @@ def fetch_historical_ohlcv(pair, start_date, end_date=None):
             since = data[-1][0] + 1  # Next timestamp
             time.sleep(1)  # Respect rate limit
         except Exception as e:
-            print(f"Error fetching data: {e}")
+            logging.error(f"Error fetching data for {pair}: {e}")
             break
 
     df = pd.DataFrame(all_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -50,7 +53,7 @@ def fetch_historical_ohlcv(pair, start_date, end_date=None):
     
     # Ensure EMA is calculated
     if 'ema_50' not in df.columns:
-        df['ema_50'] = df.ta.ema(length=50)
+        df['ema_50'] = df['close'].ewm(span=50).mean()
         # Fill NaN values to prevent errors in the beginning of the episode
         df['ema_50'] = df['ema_50'].fillna(0)
     

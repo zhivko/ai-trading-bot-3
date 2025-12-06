@@ -8,6 +8,11 @@ import torch
 import time
 import datetime
 import subprocess
+import logging
+
+# Matplotlib backend fix for server environments
+import matplotlib
+matplotlib.use('Agg')
 
 # RL & Gym
 import gymnasium as gym
@@ -104,8 +109,8 @@ ALGO_MAP = {
 def load_and_process_data(filepath):
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Data file not found: {filepath}")
-    
-    print(f"Loading data from {filepath}...")
+
+    logging.info(f"Loading data from {filepath}...")
     df = pd.read_csv(filepath)
     
     # Ensure standard columns
@@ -127,11 +132,12 @@ def load_and_process_data(filepath):
 # 3. Main Execution Flow
 # ---------------------------------------------------------
 def main():
-    print("Starting main function...")
+    logging.basicConfig(filename='ml.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s')
+    logging.info("Starting main function...")
     args = parse_args()
-    print(f"Parsed args: {args}")
+    logging.info(f"Parsed args: {args}")
     set_random_seed(args.seed)
-    print("Random seed set.")
+    logging.info("Random seed set.")
     
     # Paths
     data_file = f"{args.pair}_data.csv"
@@ -169,7 +175,7 @@ def main():
     print("Test VP calculation complete.")
 
     # --- Environment Setup ---
-    print("Setting up environments...")
+    logging.info("Setting up environments...")
     # Force window_size=1 for RecurrentPPO to avoid confusion with LSTM memory
     window_size = 1 if args.algo.lower() == 'recurrentppo' else args.window_size
     env_kwargs = {
@@ -182,10 +188,10 @@ def main():
         'trading_fee_multiplier': args.trading_fee,
         'phase': args.phase  # New: Pass phase
     }
-    print(f"Env kwargs: {env_kwargs}")
+    logging.info(f"Env kwargs: {env_kwargs}")
 
     # Training Env
-    print("Creating training environment...")
+    logging.info("Creating training environment...")
     train_env_kwargs = env_kwargs.copy()
     train_env_kwargs['df'] = train_df
     train_env_kwargs['precalculated_vp'] = vp_data_train
@@ -197,23 +203,23 @@ def main():
         vec_env_cls=SubprocVecEnv,
         env_kwargs=train_env_kwargs
     )
-    print("Training environment created.")
+    logging.info("Training environment created.")
 
     # --- Reactivate Normalization for Training ---
-    print("Applying VecNormalize to training env...")
+    logging.info("Applying VecNormalize to training env...")
     train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., clip_reward=10.)
-    print("VecNormalize applied.")
+    logging.info("VecNormalize applied.")
 
     # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
 
     # Evaluation Env (Raw for accurate metrics)
-    print("Creating evaluation environment...")
+    logging.info("Creating evaluation environment...")
     eval_env_kwargs = env_kwargs.copy()
     eval_env_kwargs['df'] = test_df
     eval_env_kwargs['precalculated_vp'] = vp_data_test
 
     eval_env = DummyVecEnv([lambda: EnhancedTradingEnv(**eval_env_kwargs)])
-    print("Evaluation environment created.")
+    logging.info("Evaluation environment created.")
 
     # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
     # Optional: Load train stats for eval (set training=False)
@@ -226,7 +232,7 @@ def main():
         saliency_callback = FeatureSaliencyCallback(dummy_env=dummy_env, check_freq=50000)
 
     # --- W&B Setup ---
-    print("Setting up W&B..." if args.wandb else "Skipping W&B setup.")
+    logging.info("Setting up W&B..." if args.wandb else "Skipping W&B setup.")
     if args.wandb:
         # Get git branch name
         try:
@@ -251,7 +257,7 @@ def main():
         if args.resume and os.path.exists(id_file_path):
             with open(id_file_path, "r") as f:
                 run_id = f.read().strip()
-            print(f"🔄 Resuming W&B Run ID: {run_id}")
+            logging.info(f"🔄 Resuming W&B Run ID: {run_id}")
         elif not args.resume:
             # If starting fresh, generate a new ID and save it
             run_id = wandb.util.generate_id()
@@ -269,7 +275,7 @@ def main():
             save_code=True,
             sync_tensorboard=True
         )
-        print(f"W&B initialized (Run: {run_name})")
+        logging.info(f"W&B initialized (Run: {run_name})")
 
     # --- Callbacks ---
     checkpoint_callback = CheckpointCallback(
@@ -315,13 +321,13 @@ def main():
             # Method A: Try calling the function directly (Best for SubprocVecEnv)
             feature_names = train_env.env_method("get_feature_names", indices=0)[0]
         except Exception as e:
-            print(f"Warning: env_method failed ({e}). Trying attribute access...")
+            logging.warning(f"env_method failed ({e}). Trying attribute access...")
             try:
                 # Method B: Try accessing the attribute
                 feature_names = train_env.get_attr("feature_names", indices=0)[0]
             except Exception as e2:
                 # Method C: Fallback
-                print(f"Warning: Could not retrieve feature names ({e2}). Using generic labels.")
+                logging.warning(f"Could not retrieve feature names ({e2}). Using generic labels.")
                 obs_dim = train_env.observation_space.shape[0]
                 feature_names = [f"F_{i}" for i in range(obs_dim)]
 
@@ -380,9 +386,9 @@ def main():
                 load_path = max(chk_files, key=os.path.getctime)
             else:
                 load_path = None
-        
+
         if load_path:
-            print(f"RESUMING training from: {load_path}")
+            logging.info(f"RESUMING training from: {load_path}")
             try:
                 # Load model
                 model = AlgoClass.load(load_path, env=train_env, device=args.device, tensorboard_log=tensorboard_log)
@@ -392,11 +398,11 @@ def main():
                     train_env.training = True
                 # CRITICAL: Do not reset steps when resuming
                 reset_num_timesteps = False
-                print(f"   > Resuming from Global Step: {model.num_timesteps}")
+                logging.info(f"   > Resuming from Global Step: {model.num_timesteps}")
             except ValueError as e:
                 if "Observation spaces do not match" in str(e):
-                    print(f"Model incompatible due to env changes: {e}")
-                    print("Starting fresh training.")
+                    logging.warning(f"Model incompatible due to env changes: {e}")
+                    logging.info("Starting fresh training.")
                     model = None
                     reset_num_timesteps = True
                     # Clean old logs if incompatible
@@ -405,7 +411,7 @@ def main():
                 else:
                     raise
         else:
-            print("Resume requested but no model found. Starting FRESH.")
+            logging.info("Resume requested but no model found. Starting FRESH.")
             # Clean logs if we failed to find a model to resume
             if os.path.exists(tensorboard_log):
                 shutil.rmtree(tensorboard_log)
@@ -429,7 +435,7 @@ def main():
      
 
     if model is None:
-        print(f"Initializing new {args.algo.upper()} model...")
+        logging.info(f"Initializing new {args.algo.upper()} model...")
 
         # Clean old logs only if starting fresh
         if os.path.exists(tensorboard_log):
@@ -477,27 +483,27 @@ def main():
         reset_num_timesteps = True
 
     # --- Train ---
-    print(f"Training started... Target: {args.total_timesteps} steps")
-    print(f"Model: {args.algo.upper()}, Device: {args.device}")
+    logging.info(f"Training started... Target: {args.total_timesteps} steps")
+    logging.info(f"Model: {args.algo.upper()}, Device: {args.device}")
 
     try:
         model.learn(
-            total_timesteps=args.total_timesteps, 
-            callback=callback_list, 
+            total_timesteps=args.total_timesteps,
+            callback=callback_list,
             progress_bar=True,
             reset_num_timesteps=reset_num_timesteps # <--- Handles the resumption of step count
         )
-        
+
         # Save Final Model + Normalize
         if not os.path.exists(os.path.dirname(model_path)):
             os.makedirs(os.path.dirname(model_path))
 
         model.save(model_path)
         train_env.save(f"{model_path}.pkl")
-        print(f"Training Complete. Model saved to {model_path}")
+        logging.info(f"Training Complete. Model saved to {model_path}")
 
     except KeyboardInterrupt:
-        print("\nTraining interrupted manually. Saving model...")
+        logging.info("Training interrupted manually. Saving model...")
         model.save(model_path)
         train_env.save(f"{model_path}.pkl")
 

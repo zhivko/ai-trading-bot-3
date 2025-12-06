@@ -273,6 +273,7 @@ class CustomEvalCallback(EvalCallback):
 
     def _on_step(self) -> bool:
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+            print(f"DEBUG: Evaluation triggered at n_calls={self.n_calls}, num_timesteps={self.num_timesteps}, eval_freq={self.eval_freq}")
             # --- UPDATED: Phase Switching ---
             if self.num_timesteps % 250000 == 0:
                 current_phase = getattr(self.model.env, 'phase', 1)
@@ -301,25 +302,27 @@ class CustomEvalCallback(EvalCallback):
                     self.model.save(os.path.join(self.best_model_save_path, 'best_model'))
                 self._log_best_to_wandb(mean_reward, std_reward)
             # Generate metrics after evaluation
+            print(f"DEBUG: Wandb run is {'available' if wandb.run is not None else 'None'}")
             if wandb.run is not None:
                 generate_metrics()
 
             # 2. GENERATE TEST CHART
             # We manually trigger the render on the first eval environment
+            print(f"DEBUG: Attempting to generate test chart at step {self.num_timesteps}")
             try:
-                # Use env_method to be safe across Dummy/Subproc VecEnvs
-                # We ask the env to render and return the matplotlib figure
-                # Note: We assume render() returns the figure as per the Env change above
-                figs = self.eval_env.env_method("render", title_suffix=" [TEST DATA]")
+                # This now returns a list of Numpy Arrays (Images)
+                images = self.eval_env.env_method("render", title_suffix=" [TEST DATA]")
+                print(f"DEBUG: env_method returned: {type(images)}, len: {len(images) if images else 'None'}")
 
-                if figs and figs[0] is not None:
-                    # Log to WandB under a specific TEST section
-                    wandb.log({"Test/Trade_Analysis": wandb.Image(figs[0])}, commit=False)
-
-                    # Cleanup memory
-                    plt.close(figs[0])
+                if images and images[0] is not None:
+                    print(f"DEBUG: Image obtained, logging to wandb")
+                    # Log the Image Array directly
+                    wandb.log({"Test/Trade_Analysis": wandb.Image(images[0])}, commit=False)
+                    print(f"DEBUG: Test chart logged successfully")
             except Exception as e:
                 print(f"⚠️ Could not log Test Chart: {e}")
+                import traceback
+                traceback.print_exc()
 
         return True
 

@@ -512,25 +512,23 @@ class EnhancedTradingEnv(gym.Env):
         return full_obs.astype(np.float32)
 
     def step(self, action):
-        # 1. HARD CLIP & RENAME
-        # Create a new variable to ensure we NEVER use the raw input again
-        clipped_action = np.clip(action, -1.0, 1.0)
-
-        # DEBUG: Uncomment this line if you still see issues.
-        # It should print values strictly between -1.0 and 1.0
-        #if self.current_step % 1000 == 0:  # Print every 1000 steps to avoid spam
-        #    print(f"Raw: {action[0]:.4f} -> Clipped: {clipped_action[0]:.4f}")
+        # -----------------------------------------------------------
+        # 1. CRITICAL FIX: Clip 'action' at the very top of step()
+        # This rebinds the local variable 'action' to the safe version.
+        # Now, EVERYTHING that follows (logic, logging, print) uses the clipped version.
+        # -----------------------------------------------------------
+        action = np.clip(action, -1.0, 1.0)
 
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
-        action_val = float(clipped_action[0]) # Now this is guaranteed -1 to 1
+        action_val = float(action[0])
 
         # Log the clipped action for clean chart
         self.prev_actions.append(action_val)
         self.action_history.append(action_val)
 
-        # Volatility scaling (on a copy, don't modify clipped_action)
-        scaled_action = clipped_action.copy()
+        # Volatility scaling (on a copy, don't modify action)
+        scaled_action = action.copy()
         atr_norm = self.df.iloc[self.current_step]['atr_norm']
         scaled_action[0] *= (1 / (1 + atr_norm))
 
@@ -616,4 +614,17 @@ class EnhancedTradingEnv(gym.Env):
         ax3.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        return plt.gcf()
+
+        # ---------------------------------------------------------
+        # FIX FOR MULTIPROCESSING: Convert Figure to RGB Array
+        # ---------------------------------------------------------
+        fig.canvas.draw()
+
+        # Convert the canvas buffer to a numpy array
+        data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+
+        # Clear the plot to save memory in the worker
+        plt.close(fig)
+
+        return data  # Return the Numpy Array (Safe for SubprocVecEnv)
