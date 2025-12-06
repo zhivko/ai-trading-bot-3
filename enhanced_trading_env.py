@@ -151,12 +151,10 @@ class EnhancedTradingEnv(gym.Env):
         vp_obs_size = len(self.vp_days) * (3 + self.vp_bins)
         total_obs_size = market_obs_size + account_obs_size + vp_obs_size + len(self.div_features) + self.lookback_window
 
+        self.action_space = spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
         if self.phase == 4:
-            self.action_space = spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
             eth_df = pd.read_csv('ETHUSDT_data.csv')
             self.multi_dfs = [self.df, eth_df]
-        else:
-            self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
 
         self.stability_penalty_coef = 0.02   # Slight increase (0.01 -> 0.02)
@@ -330,6 +328,7 @@ class EnhancedTradingEnv(gym.Env):
                 self.trades_in_episode += 1
             return trade_occurred
         else:
+            action[1] = 0.0
             # 0. DEADBAND (Noise Filter)
             # Use the class parameters to define the neutral zone.
             # If action is between sell_threshold (-0.3) and buy_threshold (0.3), force it to 0.
