@@ -266,6 +266,14 @@ class EnhancedTradingEnv(gym.Env):
         action_val = float(action[0])
         current_price = self.raw_prices[self.current_step]
 
+        if trade_occurred:
+            primary_day = self.vp_days[0]
+            data = self.vp_data[primary_day]
+            heatmap = data['heatmap'][self.current_step]
+            vp_max = np.max(heatmap)
+            slippage = 0.001 * (1 - vp_max)
+            current_price *= (1 - slippage * np.sign(action_val))
+
         # --- TRADE LOGIC ---
         if abs(action_val - self.prev_action) > 0.1:
             self.trade_count += 1

@@ -43,6 +43,18 @@ class TrainRewardCallback(BaseCallback):
             # We rely on standard logging.
             pass
         return True
+# --- Fee Scheduler Callback ---
+class FeeSchedulerCallback(BaseCallback):
+    def __init__(self, total_steps):
+        super(FeeSchedulerCallback, self).__init__(verbose=1)
+        self.total_steps = total_steps
+
+    def _on_step(self) -> bool:
+        step = self.n_calls
+        ramp = 0.00025 + 0.0005 * (1 - step / self.total_steps)
+        new_fee = ramp
+        self.model.env.set_attr('trading_fee_multiplier', new_fee)
+        return True
 
 # ---------------------------------------------------------
 # 1. Configuration & Arguments
