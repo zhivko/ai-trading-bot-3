@@ -9,6 +9,7 @@ matplotlib.use('Agg')
 import sys
 sys.path.append('..')
 from fetch_metrics import generate_metrics
+import logging
 
 
 class SaveOnBestTrainingRewardCallback(BaseCallback):
@@ -32,13 +33,13 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
             if len(x) > 0:
                 mean_reward = np.mean(y[-100:])
                 if self.verbose > 0:
-                    print(f"Num timesteps: {self.num_timesteps}")
-                    print(f"Best mean reward: {self.best_mean_reward:.2f} - Last mean reward per episode: {mean_reward:.2f}")
+                    logging.info(f"Num timesteps: {self.num_timesteps}")
+                    logging.info(f"Best mean reward: {self.best_mean_reward:.2f} - Last mean reward per episode: {mean_reward:.2f}")
 
                 if mean_reward > self.best_mean_reward:
                     self.best_mean_reward = mean_reward
                     if self.verbose > 0:
-                        print(f"Saving new best model to {self.save_path}")
+                        logging.info(f"Saving new best model to {self.save_path}")
                     self.model.save(self.save_path)
         return True
 
@@ -273,7 +274,7 @@ class CustomEvalCallback(EvalCallback):
 
     def _on_step(self) -> bool:
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
-            print(f"DEBUG: Evaluation triggered at n_calls={self.n_calls}, num_timesteps={self.num_timesteps}, eval_freq={self.eval_freq}")
+            logging.info(f"DEBUG: Evaluation triggered at n_calls={self.n_calls}, num_timesteps={self.num_timesteps}, eval_freq={self.eval_freq}")
             # --- UPDATED: Phase Switching ---
             if self.num_timesteps % 250000 == 0:
                 current_phase = getattr(self.model.env, 'phase', 1)

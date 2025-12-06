@@ -1,4 +1,5 @@
 import numpy as np
+import logging
 
 # Test clipping
 action = np.array([3.0])

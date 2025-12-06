@@ -5,6 +5,7 @@ from gymnasium import spaces
 
 # Delegating heavy lifting to volume_profile.py
 from volume_profile import get_rolling_vp
+import logging
 
 class TradingEnv(gym.Env):
     metadata = {'render.modes': ['human']}
@@ -63,8 +64,8 @@ class TradingEnv(gym.Env):
         
         # --- 2. VOLUME PROFILE (Delegated) ---
         self.vp_data = {}
-        
-        print(f"--- Initializing TradingEnv (Target Bins: {self.vp_bins}) ---")
+
+        logging.info(f"--- Initializing TradingEnv (Target Bins: {self.vp_bins}) ---")
         
         for days in self.vp_days:
             # All caching/hashing logic is now in volume_profile.py

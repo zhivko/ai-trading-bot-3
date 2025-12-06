@@ -10,17 +10,18 @@ import gymnasium as gym
 from trading_env import TradingEnv
 from volume_profile import get_rolling_vp, compute_volume_profile
 from features import get_features
+import logging
 
 # 1. Load the trained model
 model = RecurrentPPO.load("ppo_crypto_trader.zip")
-print("Model loaded successfully")
+logging.info("Model loaded successfully")
 
 # 2. Load data
 pair = 'BTC/USDT'
 data_file = f'{pair.replace("/", "_")}_data.csv'
 df = pd.read_csv(data_file, parse_dates=['timestamp'])
 df = df.set_index('timestamp').sort_index()
-print(f"Full data length: {len(df)} rows")
+logging.info(f"Full data length: {len(df)} rows")
 
 # Compute VP with caching
 vp7_file = f'{pair.replace("/", "_")}_vp7.pkl'
@@ -31,31 +32,31 @@ vp7_mtime = os.path.getmtime(vp7_file) if os.path.exists(vp7_file) else 0
 vp30_mtime = os.path.getmtime(vp30_file) if os.path.exists(vp30_file) else 0
 
 if os.path.exists(vp7_file) and vp7_mtime >= data_mtime:
-    print("Loading cached 7d VP...")
+    logging.info("Loading cached 7d VP...")
     with open(vp7_file, 'rb') as f:
         vp7_df = pickle.load(f)
 else:
-    print("Computing 7d VP...")
+    logging.info("Computing 7d VP...")
     vp7_df = get_rolling_vp(df, 7)
-    print("Saving 7d VP...")
+    logging.info("Saving 7d VP...")
     with open(vp7_file, 'wb') as f:
         pickle.dump(vp7_df, f)
 
 if os.path.exists(vp30_file) and vp30_mtime >= data_mtime:
-    print("Loading cached 30d VP...")
+    logging.info("Loading cached 30d VP...")
     with open(vp30_file, 'rb') as f:
         vp30_df = pickle.load(f)
 else:
-    print("Computing 30d VP...")
+    logging.info("Computing 30d VP...")
     vp30_df = get_rolling_vp(df, 30)
-    print("Saving 30d VP...")
+    logging.info("Saving 30d VP...")
     with open(vp30_file, 'wb') as f:
         pickle.dump(vp30_df, f)
 
-print("VP computation completed.")
+logging.info("VP computation completed.")
 
 # NO ENV SIMULATION: Direct rollout over FULL df for viz (faster, deterministic)
-print("Starting full-data simulation...")
+logging.info("Starting full-data simulation...")
 actions = []
 values = []
 prices = []
@@ -82,11 +83,11 @@ for step in range(len(df)):  # FULL df!
     prices.append(current_price)
     
     if step % 5000 == 0:
-        print(f"Processed {step} steps")
+        logging.info(f"Processed {step} steps")
 
-print(f"Full simulation complete. Collected {len(actions)} steps ({len(df)} total)")
+logging.info(f"Full simulation complete. Collected {len(actions)} steps ({len(df)} total)")
 # 4. Plot everything beautifully
-print("Generating plots...")
+logging.info("Generating plots...")
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10), sharex=True)  # Taller for long timeline
 
 vp_window = 24

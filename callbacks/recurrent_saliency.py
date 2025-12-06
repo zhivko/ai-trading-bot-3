@@ -7,6 +7,7 @@ import seaborn as sns
 import wandb
 from stable_baselines3.common.callbacks import BaseCallback
 from captum.attr import IntegratedGradients
+import logging
 
 class RecurrentFeatureSaliencyCallback(BaseCallback):
     """
@@ -126,14 +127,14 @@ class RecurrentFeatureSaliencyCallback(BaseCallback):
             try:
                 wandb.log({"Explainability/Feature_Saliency": wandb.Image(plt.gcf())}, commit=False)
             except Exception as e:
-                print(f"[Saliency] WandB Log Failed: {e}")
+                logging.info(f"[Saliency] WandB Log Failed: {e}")
             # -------------------------
 
             plt.savefig(os.path.join(self.save_path, f"saliency_step_{self.n_calls}.png"))
             plt.close()
 
             if self.verbose > 0:
-                print(f"[Saliency] Top feature: {df_attrs.iloc[0]['Feature']} ({df_attrs.iloc[0]['Importance']:.4f})")
+                logging.info(f"[Saliency] Top feature: {df_attrs.iloc[0]['Feature']} ({df_attrs.iloc[0]['Importance']:.4f})")
 
         except Exception as e:
-            print(f"[Saliency] Error computing gradients: {e}")
+            logging.info(f"[Saliency] Error computing gradients: {e}")

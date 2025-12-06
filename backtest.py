@@ -13,6 +13,7 @@ import json
 
 # Import your custom environment
 from enhanced_trading_env import EnhancedTradingEnv
+import logging
 
 app = Flask(__name__)
 socketio = SocketIO(app)
@@ -41,7 +42,7 @@ def find_model_once():
                 model_files = glob.glob(pattern) if '*' in pattern else [pattern] if os.path.exists(pattern) else []
                 if model_files:
                     MODEL_PATH = model_files[0]
-                    print(f"🔍 Found model (shared): {MODEL_PATH}")
+                    logging.info(f"🔍 Found model (shared): {MODEL_PATH}")
                     ALGORITHM = "SAC" if "sac" in MODEL_PATH.lower() else "PPO"
                     break
     return MODEL_PATH, ALGORITHM
@@ -61,7 +62,7 @@ current_end = None
 
 def load_data():
     """Loads and prepares data."""
-    print(f"Reading {DATA_PATH}...")
+    logging.info(f"Reading {DATA_PATH}...")
     if not os.path.exists(DATA_PATH):
         raise FileNotFoundError(f"Data not found at {DATA_PATH}")
     
@@ -90,39 +91,39 @@ def run_simulation():
     """Runs the simulation ONCE at startup."""
     global TEST_SPLIT
     if not MODEL_PATH:
-        print("❌ No model found, skipping simulation.")
+        logging.info("❌ No model found, skipping simulation.")
         return None
 
-    print("--- STARTING BACKTEST SIMULATION ---")
+    logging.info("--- STARTING BACKTEST SIMULATION ---")
 
     # Load metadata from model to get test_split
     try:
         with open(MODEL_PATH + ".meta", 'r') as f:
             metadata = json.load(f)
         TEST_SPLIT = metadata.get("test_split", "2023-01-01")
-        print(f"Loaded model metadata: {metadata}")
+        logging.info(f"Loaded model metadata: {metadata}")
     except Exception as e:
-        print(f"Could not load model metadata: {e}. Using default test_split.")
+        logging.info(f"Could not load model metadata: {e}. Using default test_split.")
         TEST_SPLIT = "2023-01-01"
 
     df = load_data()
-    
-    print("Initializing Environment (Forcing vp_bins=40)...")
+
+    logging.info("Initializing Environment (Forcing vp_bins=40)...")
     # CRITICAL: Use EnhancedTradingEnv to match trained model (438 dims)
     env = EnhancedTradingEnv(df, initial_balance=1000, lookback_window=50, vp_bins=40, vp_days=[7, 30])
-    
-    print(f"Loading Model from {MODEL_PATH}...")
+
+    logging.info(f"Loading Model from {MODEL_PATH}...")
     
     try:
         # Force SAC since the error indicates SAC model
         model = SAC.load(MODEL_PATH, custom_objects={'use_sde': False})
         model.set_env(env)
-        print(f"Model loaded successfully. Observation space: {model.observation_space.shape}")
+        logging.info(f"Model loaded successfully. Observation space: {model.observation_space.shape}")
     except Exception as e:
-        print(f"❌ Error loading model: {e}")
+        logging.info(f"❌ Error loading model: {e}")
         return None
 
-    print("Running Loop...")
+    logging.info("Running Loop...")
     obs, _ = env.reset()
     done = False
     history = []
@@ -160,10 +161,10 @@ def run_simulation():
         # Progress output
         progress = int((env.current_step / total_steps) * 100)
         if progress > last_progress:
-            print(f"Simulation progress: {progress}%")
+            logging.info(f"Simulation progress: {progress}%")
             last_progress = progress
 
-    print("--- SIMULATION COMPLETE ---")
+    logging.info("--- SIMULATION COMPLETE ---")
     if history:
         df_hist = pd.DataFrame(history)
         start_timestamp = df_hist['timestamp'].iloc[0]
@@ -182,15 +183,15 @@ def run_simulation():
         buys = (actions > 0).sum()
         sells = (actions < 0).sum()
         num_trades = buys + sells
-        
-        print(f"Simulation Period: {start_timestamp} to {end_timestamp}")
-        print(f"Initial Balance: ${initial_balance:.2f}")
-        print(f"Final Balance: ${final_balance:.2f}")
-        print(f"Total Return: {total_return:.2f}%")
-        print(f"Max Drawdown: {max_drawdown:.2f}%")
-        print(f"Total Steps: {len(history)}")
-        print(f"Number of Trades: {num_trades}")
-        print(f"Buys: {buys}, Sells: {sells}")
+
+        logging.info(f"Simulation Period: {start_timestamp} to {end_timestamp}")
+        logging.info(f"Initial Balance: ${initial_balance:.2f}")
+        logging.info(f"Final Balance: ${final_balance:.2f}")
+        logging.info(f"Total Return: {total_return:.2f}%")
+        logging.info(f"Max Drawdown: {max_drawdown:.2f}%")
+        logging.info(f"Total Steps: {len(history)}")
+        logging.info(f"Number of Trades: {num_trades}")
+        logging.info(f"Buys: {buys}, Sells: {sells}")
         
         return pd.DataFrame(history)
     return None
@@ -531,6 +532,6 @@ if __name__ == "__main__":
             with open('backtest_results.pkl', 'wb') as f:
                 pickle.dump(GLOBAL_RESULTS, f)
 
-    print("Starting Server...")
-    print("Open http://127.0.0.1:5000 in your browser.")
+    logging.info("Starting Server...")
+    logging.info("Open http://127.0.0.1:5000 in your browser.")
     socketio.run(app, debug=False, use_reloader=False)

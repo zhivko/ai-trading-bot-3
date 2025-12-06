@@ -5,6 +5,7 @@ import time
 import pandas as pd
 import plotly.graph_objects as go
 import threading
+import logging
 
 def calculate_financial_kpis(history_df, summary_dict):
     """
@@ -109,7 +110,7 @@ def calculate_financial_kpis(history_df, summary_dict):
     return kpis
 
 def create_html_report(metrics_df, summary_dict):
-    print("📊 Generating Professional Quant Report...")
+    logging.info("📊 Generating Professional Quant Report...")
 
     # Get Git information
     git_info = {}
@@ -142,11 +143,11 @@ def create_html_report(metrics_df, summary_dict):
     plot_col = next((c for c in potential_cols if c in metrics_df.columns), None)
 
     if not plot_col:
-        print(f"⚠️ Warning: No reward columns found. Available: {list(metrics_df.columns)}")
+        logging.info(f"⚠️ Warning: No reward columns found. Available: {list(metrics_df.columns)}")
         chart_html = "<p style='color:red; text-align:center;'>Reward data not available in history.</p>"
         chart_title = "Data Missing"
     else:
-        print(f"   > Using '{plot_col}' for main chart.")
+        logging.info(f"   > Using '{plot_col}' for main chart.")
         chart_title = f"Performance: {plot_col}"
         
         # Filter NaNs
@@ -261,7 +262,7 @@ def create_html_report(metrics_df, summary_dict):
 
     with open("results/quant_report.html", "w", encoding="utf-8") as f:
         f.write(html_content)
-    print("✅ Successfully generated: results/quant_report.html")
+    logging.info("✅ Successfully generated: results/quant_report.html")
 
     
 def _generate_metrics_worker():
@@ -271,11 +272,11 @@ def _generate_metrics_worker():
 
     if runs:
         run = runs[0]
-        print(f"Fetching metrics for run: {run.name} ({run.id})")
+        logging.info(f"Fetching metrics for run: {run.name} ({run.id})")
         os.makedirs("results", exist_ok=True)
 
         # 1. Fetch History (More samples to catch sparse eval metrics)
-        print("Downloading history...")
+        logging.info("Downloading history...")
         # Increase samples to ensure we capture the 'best_eval' points
         history_df = run.history(samples=10000)
         history_df.to_csv("results/metrics.csv")
@@ -289,15 +290,15 @@ def _generate_metrics_worker():
 
         # 4. Git Push
         try:
-            print("Pushing to Git...")
+            logging.info("Pushing to Git...")
             subprocess.run(["git", "add", "results/"], check=True)
             subprocess.run(["git", "commit", "-m", f"Report update {run.name}"], check=True)
             subprocess.run(["git", "push"], check=True)
         except subprocess.CalledProcessError as e:
-             if e.returncode == 1: print("Nothing to commit.")
-             else: print(f"Git error: {e}")
+             if e.returncode == 1: logging.info("Nothing to commit.")
+             else: logging.info(f"Git error: {e}")
     else:
-        print("No runs found.")
+        logging.info("No runs found.")
 
 def generate_metrics():
     thread = threading.Thread(target=_generate_metrics_worker)

@@ -5,6 +5,7 @@ import hashlib
 import pickle
 import multiprocessing
 from functools import partial
+import logging
 
 # Configuration
 CACHE_DIR = "vp_cache"
@@ -121,12 +122,12 @@ def get_rolling_vp(df, days, bins=40):
             # Integrity check
             if len(data['heatmap']) > 0 and len(data['heatmap'][0]) == bins:
                 if 'hvn' in data: # Check for restored keys
-                    print(f"⚡ [VP] Loaded cached {days}d profile (Bins: {bins})")
+                    logging.info(f"⚡ [VP] Loaded cached {days}d profile (Bins: {bins})")
                     return data
         except Exception as e:
-            print(f"⚠️ [VP] Cache read error: {e}")
+            logging.info(f"⚠️ [VP] Cache read error: {e}")
 
-    print(f"⚙️ [VP] Calculating Rolling VP for {days} days (Bins: {bins})...")
+    logging.info(f"⚙️ [VP] Calculating Rolling VP for {days} days (Bins: {bins})...")
     
     raw_prices = df['close'].values
     raw_volumes = df['volume'].values
@@ -159,8 +160,8 @@ def get_rolling_vp(df, days, bins=40):
     try:
         with open(filepath, 'wb') as f:
             pickle.dump(vp_data, f)
-        print(f"💾 [VP] Saved cache: {filepath}")
+        logging.info(f"💾 [VP] Saved cache: {filepath}")
     except Exception as e:
-        print(f"⚠️ [VP] Could not save cache: {e}")
+        logging.info(f"⚠️ [VP] Could not save cache: {e}")
         
     return vp_data

@@ -9,6 +9,10 @@ import time
 import datetime
 import subprocess
 import logging
+import signal
+import sys
+import traceback
+import threading
 
 # Matplotlib backend fix for server environments
 import matplotlib
@@ -33,6 +37,27 @@ from callbacks.base_callbacks import TensorboardCallback, CustomEvalCallback
 from callbacks.feature_saliency import FeatureSaliencyCallback
 from callbacks.recurrent_saliency import RecurrentFeatureSaliencyCallback
 from volume_profile import get_rolling_vp
+
+# --- Debug Signal Handler for Thread Stack Traces ---
+def debug_signal_handler(signum, frame):
+    """
+    Catches Ctrl+C (SIGINT) and prints the stack trace of ALL running threads
+    before exiting. This helps debug hangs by showing where each thread is stuck.
+    """
+    logging.info(f"\n\n!!! CAUGHT CTRL+C (Signal {signum}) !!!")
+    logging.info("Dumping stack traces for all running threads to see where it hangs...\n")
+
+    # Map thread IDs to their names for cleaner output
+    id2name = {t.ident: t.name for t in threading.enumerate()}
+
+    for thread_id, stack in sys._current_frames().items():
+        name = id2name.get(thread_id, f"Thread ID {thread_id}")
+        logging.info(f"--- Stack trace for Thread: {name} ---")
+        traceback.print_stack(stack)
+        logging.info("-" * 40 + "\n")
+
+    logging.info("Exiting application...")
+    sys.exit(1)
 
 # --- Custom Callback for Train Reward Logging ---
 class TrainRewardCallback(BaseCallback):
@@ -80,7 +105,7 @@ def parse_args():
     parser.add_argument("--vp-days", type=int, nargs='+', default=[7, 30], help="Volume Profile days (e.g. 7 30)")
     parser.add_argument("--vp-bins", type=int, default=40, help="Volume Profile bins")
     parser.add_argument("--window-size", type=int, default=50, help="Observation window size")
-    parser.add_argument("--n-envs", type=int, default=15, help="Number of parallel environments")
+    parser.add_argument("--n-envs", type=int, default=5, help="Number of parallel environments")
     parser.add_argument("--phase", type=int, default=1, help="Curriculum phase (1=profit, 2=sortino, 3=mdd)")
     
     # RL Config
@@ -155,27 +180,27 @@ def main():
     train_df = df.iloc[:split_idx].reset_index(drop=True)
     test_df = df.iloc[split_idx:].reset_index(drop=True)
     
-    print(f"Split Data: Train ({len(train_df)}) | Test ({len(test_df)})")
+    logging.info(f"Split Data: Train ({len(train_df)}) | Test ({len(test_df)})")
 
     # --- Pre-Calculate Volume Profile (Multiprocessing Fix) ---
-    print(f"Creating {args.n_envs} parallel environments...")
+    logging.info(f"Creating {args.n_envs} parallel environments...")
 
-    print(f"--- Initializing EnhancedTradingEnv (Target Bins: {args.vp_bins}) ---")
+    logging.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {args.vp_bins}) ---")
 
     # 1. Train VP
-    print("Calculating VP for training data...")
+    logging.info("Calculating VP for training data...")
     vp_data_train = {}
     for days in args.vp_days:
-        print(f"Calculating Rolling VP for {days} days (Bins: {args.vp_bins})...")
+        logging.info(f"Calculating Rolling VP for {days} days (Bins: {args.vp_bins})...")
         vp_data_train[days] = get_rolling_vp(train_df, days, bins=args.vp_bins)
-    print("Train VP calculation complete.")
+    logging.info("Train VP calculation complete.")
 
     # 2. Test VP
-    print("Calculating VP for test data...")
+    logging.info("Calculating VP for test data...")
     vp_data_test = {}
     for days in args.vp_days:
         vp_data_test[days] = get_rolling_vp(test_df, days, bins=args.vp_bins)
-    print("Test VP calculation complete.")
+    logging.info("Test VP calculation complete.")
 
     # --- Environment Setup ---
     logging.info("Setting up environments...")
@@ -516,4 +541,6 @@ def main():
         train_env.save(f"{model_path}.pkl")
 
 if __name__ == "__main__":
+    # Register the signal handler for debugging hangs
+    signal.signal(signal.SIGINT, debug_signal_handler)
     main()

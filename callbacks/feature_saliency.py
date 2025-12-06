@@ -4,6 +4,7 @@ import torch
 import wandb
 from stable_baselines3.common.callbacks import BaseCallback
 from captum.attr import IntegratedGradients
+import logging
 
 class FeatureSaliencyCallback(BaseCallback):
     def __init__(self, dummy_env, verbose=0, check_freq=50000):
@@ -104,7 +105,7 @@ class FeatureSaliencyCallback(BaseCallback):
             self.plot_importance(list(agg_map.keys()), list(agg_map.values()), self.num_timesteps)
             
         except Exception as e:
-            print(f"Warning: Saliency Error during calculation: {e}")
+            logging.info(f"Warning: Saliency Error during calculation: {e}")
 
     def plot_importance(self, names, values, step):
         # Sort desc

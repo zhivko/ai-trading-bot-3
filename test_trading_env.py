@@ -2,6 +2,7 @@ import pandas as pd
 import pickle
 from trading_env import TradingEnv
 from volume_profile import get_rolling_vp
+import logging
 
 if __name__ == '__main__':
     # Load data
@@ -59,6 +60,6 @@ if __name__ == '__main__':
         action = env.action_space.sample()  # Random action
         obs, reward, terminated, truncated, info = env.step(action)
         step_count += 1
-        print(f"Step {step_count}: portfolio={info['portfolio_value']:.2f}, reward={reward:.4f}, phase={info['current_phase']}, terminated={terminated}")
+        logging.info(f"Step {step_count}: portfolio={info['portfolio_value']:.2f}, reward={reward:.4f}, phase={info['current_phase']}, terminated={terminated}")
 
-    print(f"Final: step {step_count}, portfolio={info['portfolio_value']:.2f}, terminated={terminated}, truncated={truncated}")
+    logging.info(f"Final: step {step_count}, portfolio={info['portfolio_value']:.2f}, terminated={terminated}, truncated={truncated}")

@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from enhanced_trading_env import EnhancedTradingEnv
 from volume_profile import get_rolling_vp
+import logging
 
 def main():
     # Load data (assuming BTCUSDT_data.csv exists)
@@ -24,19 +25,19 @@ def main():
 
     # Reset
     obs, info = env.reset()
-    print(f"Reset obs shape: {obs.shape}")
-    print(f"Expected shape: {env.observation_space.shape}")
+    logging.info(f"Reset obs shape: {obs.shape}")
+    logging.info(f"Expected shape: {env.observation_space.shape}")
 
     # Step with large action to test clipping
     action = np.array([3.5])  # Test clipping
     obs_next, reward, terminated, truncated, info = env.step(action)
-    print(f"Step obs shape: {obs_next.shape}")
-    print(f"Info keys: {list(info.keys())}")
-    print(f"Action taken: {info.get('action', 0)}")  # Should be clipped to 1.0
-    print(f"Trade executed: {info.get('trade', False)}")
-    print(f"Net worth: {info.get('portfolio_value', 0)}")
-    print(f"Shares held: {info.get('shares_held', 0)}")
-    print(f"VP heatmap shape: {info.get('vp_heatmap', np.array([])).shape if info.get('vp_heatmap') is not None else 'None'}")
+    logging.info(f"Step obs shape: {obs_next.shape}")
+    logging.info(f"Info keys: {list(info.keys())}")
+    logging.info(f"Action taken: {info.get('action', 0)}")  # Should be clipped to 1.0
+    logging.info(f"Trade executed: {info.get('trade', False)}")
+    logging.info(f"Net worth: {info.get('portfolio_value', 0)}")
+    logging.info(f"Shares held: {info.get('shares_held', 0)}")
+    logging.info(f"VP heatmap shape: {info.get('vp_heatmap', np.array([])).shape if info.get('vp_heatmap') is not None else 'None'}")
 
     # Check consistency
     assert obs.shape == env.observation_space.shape, f"Shape mismatch: {obs.shape} vs {env.observation_space.shape}"
@@ -45,7 +46,7 @@ def main():
     assert 'shares_held' in info, "Missing shares_held in info"
     assert 'vp_heatmap' in info, "Missing vp_heatmap in info"
 
-    print("Verification successful: Shapes consistent, no errors.")
+    logging.info("Verification successful: Shapes consistent, no errors.")
 
 if __name__ == '__main__':
     main()

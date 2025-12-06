@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 
 # Delegating heavy lifting to volume_profile.py
 from volume_profile import get_rolling_vp
+import logging
 
 class EnhancedTradingEnv(gym.Env):
     metadata = {'render.modes': ['human']}
@@ -40,7 +41,7 @@ class EnhancedTradingEnv(gym.Env):
         else:
             # Fallback to calculating it (only if not passed)
             self.vp_data = {}
-            print(f"--- Initializing EnhancedTradingEnv (Target Bins: {self.vp_bins}) ---")
+            logging.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {self.vp_bins}) ---")
             
             for days in self.vp_days:
                 # All caching/hashing logic is now in volume_profile.py
@@ -496,62 +497,62 @@ class EnhancedTradingEnv(gym.Env):
         # --- DEBUG LOGGING ---
         # Print stats every 10000 steps to avoid spamming, but see what's happening
         if self.current_step % 10000 == 0:
-            print(f"\n[DEBUG Step {self.current_step}] Feature Magnitudes:")
+            logging.info(f"\n[DEBUG Step {self.current_step}] Feature Magnitudes:")
 
             # 1. Check Volume Magnitude
             vol_val = self.data_matrix[self.current_step, self.volume_norm_idx]
-            print(f"  > Volume Norm Input:   {vol_val:.5f}  (Should be 0.0 - 1.0)")
+            logging.info(f"  > Volume Norm Input:   {vol_val:.5f}  (Should be 0.0 - 1.0)")
 
             # 2. Check Trend Magnitude (The likely culprit)
             trend_val = self.data_matrix[self.current_step, self.trend_ema_norm_idx]
-            print(f"  > Trend EMA Norm Input: {trend_val:.5f}  (Dynamic expanding max -1 to 1)")
+            logging.info(f"  > Trend EMA Norm Input: {trend_val:.5f}  (Dynamic expanding max -1 to 1)")
 
             # Debug suggestion:
             current_close = current_price
             ema_val = self.data_matrix[self.current_step, self.ema_50_idx]
-            print(f"DEBUG EMA: Close={current_close}, EMA={ema_val}, Diff={current_close - ema_val}")
+            logging.info(f"DEBUG EMA: Close={current_close}, EMA={ema_val}, Diff={current_close - ema_val}")
 
             # 3. Check Close Pct
             close_pct_val = self.data_matrix[self.current_step, self.close_pct_idx]
-            print(f"  > Close Pct Input:     {close_pct_val:.5f}")
+            logging.info(f"  > Close Pct Input:     {close_pct_val:.5f}")
 
             # 4. Check RSI Norm
             rsi_norm_val = self.data_matrix[self.current_step, self.rsi_norm_idx]
-            print(f"  > RSI Norm Input:      {rsi_norm_val:.5f}")
+            logging.info(f"  > RSI Norm Input:      {rsi_norm_val:.5f}")
 
             # 5. Check Stoch RSI Norm
             stoch = self.data_matrix[self.current_step, self.stoch_rsi_norm_idx]
-            print(f"  > Stoch RSI Norm Input: {stoch:.5f}  (Now -1 to 1)")
+            logging.info(f"  > Stoch RSI Norm Input: {stoch:.5f}  (Now -1 to 1)")
 
             # 6. Check MACD Norm
             macd_norm_val = self.data_matrix[self.current_step, self.macd_norm_idx]
-            print(f"  > MACD Norm Input:     {macd_norm_val:.5f}  (Dynamic expanding max -1 to 1)")
+            logging.info(f"  > MACD Norm Input:     {macd_norm_val:.5f}  (Dynamic expanding max -1 to 1)")
 
             # 7. Check MACD Sig Norm
             macd_sig_norm_val = self.data_matrix[self.current_step, self.macd_sig_norm_idx]
-            print(f"  > MACD Sig Norm Input: {macd_sig_norm_val:.5f}  (Dynamic expanding max -1 to 1)")
+            logging.info(f"  > MACD Sig Norm Input: {macd_sig_norm_val:.5f}  (Dynamic expanding max -1 to 1)")
 
             # 8. Check ATR Norm
             atr_norm_val = self.data_matrix[self.current_step, self.atr_norm_idx]
-            print(f"  > ATR Norm Input:      {atr_norm_val:.5f}")
+            logging.info(f"  > ATR Norm Input:      {atr_norm_val:.5f}")
 
             # 9. Check Regime
             regime_val = self.data_matrix[self.current_step, self.regime_idx]
-            print(f"  > Regime Input:        {regime_val:.5f} (-2 to 2)")
+            logging.info(f"  > Regime Input:        {regime_val:.5f} (-2 to 2)")
 
             # 10. Check VP Heatmap Magnitude
             # Access the first available VP day key
             first_day = self.vp_days[0]
             vp_sample = self.vp_data[first_day]['heatmap'][self.current_step]
-            print(f"  > VP Heatmap Max:      {np.max(vp_sample):.2f} (Now normalized by sum, max <=1.0)")
-            print(f"  > VP Heatmap Values:   {vp_sample}")
-            
-            print(f"  > Bull Div Stoch9:    {div_vector[0]:.5f}")
-            print(f"  > Bear Div Stoch9:    {div_vector[1]:.5f}")
-            print(f"  > Bull Div Stoch14:   {div_vector[2]:.5f}")
-            print(f"  > Bear Div Stoch14:   {div_vector[3]:.5f}")
-            print(f"  > Bull Div RSI:       {div_vector[4]:.5f}")
-            print(f"  > Bear Div RSI:       {div_vector[5]:.5f}")
+            logging.info(f"  > VP Heatmap Max:      {np.max(vp_sample):.2f} (Now normalized by sum, max <=1.0)")
+            logging.info(f"  > VP Heatmap Values:   {vp_sample}")
+
+            logging.info(f"  > Bull Div Stoch9:    {div_vector[0]:.5f}")
+            logging.info(f"  > Bear Div Stoch9:    {div_vector[1]:.5f}")
+            logging.info(f"  > Bull Div Stoch14:   {div_vector[2]:.5f}")
+            logging.info(f"  > Bear Div Stoch14:   {div_vector[3]:.5f}")
+            logging.info(f"  > Bull Div RSI:       {div_vector[4]:.5f}")
+            logging.info(f"  > Bear Div RSI:       {div_vector[5]:.5f}")
                         
         return full_obs.astype(np.float32)
 
