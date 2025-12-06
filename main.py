@@ -132,7 +132,10 @@ def load_and_process_data(filepath):
 # 3. Main Execution Flow
 # ---------------------------------------------------------
 def main():
-    logging.basicConfig(filename='ml.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s')
+    # Delete old log file to start fresh
+    if os.path.exists('ml.log'):
+        os.remove('ml.log')
+    logging.basicConfig(filename='ml.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s')
     logging.info("Starting main function...")
     args = parse_args()
     logging.info(f"Parsed args: {args}")
@@ -229,7 +232,7 @@ def main():
     saliency_callback = None
     if args.algo.lower() != 'recurrentppo':
         dummy_env = eval_env.envs[0]
-        saliency_callback = FeatureSaliencyCallback(dummy_env=dummy_env, check_freq=50000)
+        saliency_callback = FeatureSaliencyCallback(dummy_env=dummy_env, check_freq=10000)
 
     # --- W&B Setup ---
     logging.info("Setting up W&B..." if args.wandb else "Skipping W&B setup.")
@@ -352,11 +355,9 @@ def main():
     # Define Network Architecture
     # SAC requires 'qf' (Q-Function), PPO requires 'vf' (Value Function)
     if args.algo.lower() == 'sac':
-        net_arch = dict(pi=[256, 256], qf=[256, 256])
-    elif args.algo.lower() == 'recurrentppo':
-        net_arch = dict(pi=[512, 512], vf=[512, 512])
+        net_arch = dict(pi=[512, 512], qf=[512, 512])
     else:
-        net_arch = dict(pi=[256, 256], vf=[256, 256])
+        net_arch = dict(pi=[512, 512], vf=[512, 512])
 
     policy_kwargs = dict(net_arch=net_arch)
 

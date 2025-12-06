@@ -4,6 +4,7 @@ import torch as th
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import wandb
 from stable_baselines3.common.callbacks import BaseCallback
 from captum.attr import IntegratedGradients
 
@@ -120,9 +121,16 @@ class RecurrentFeatureSaliencyCallback(BaseCallback):
             sns.barplot(x='Importance', y='Feature', data=df_attrs, palette='viridis')
             plt.title(f"RecurrentPPO Feature Saliency (Step {self.n_calls})")
             plt.tight_layout()
+
+            # Log to WandB
+            try:
+                wandb.log({"Explainability/Feature_Saliency": wandb.Image(plt.gcf())}, commit=False)
+            except Exception as e:
+                print(f"[Saliency] WandB Log Failed: {e}")
+
             plt.savefig(os.path.join(self.save_path, f"saliency_step_{self.n_calls}.png"))
             plt.close()
-            
+
             if self.verbose > 0:
                 print(f"[Saliency] Top feature: {df_attrs.iloc[0]['Feature']} ({df_attrs.iloc[0]['Importance']:.4f})")
 
