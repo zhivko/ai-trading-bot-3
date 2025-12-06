@@ -293,7 +293,7 @@ class CustomEvalCallback(EvalCallback):
             # --- UPDATED: Phase Switching ---
             if self.num_timesteps % 250000 == 0:
                 current_phase = getattr(self.model.env, 'phase', 1)
-                new_phase = min(current_phase + 1, 3)  # Up to phase 3
+                new_phase = min(current_phase + 1, 4)  # Up to phase 4
                 # Broadcast to train env (works for Subproc via attr access)
                 if hasattr(self.model.env, 'set_attr'):
                     self.model.env.set_attr('phase', new_phase)

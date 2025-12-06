@@ -151,7 +151,10 @@ class EnhancedTradingEnv(gym.Env):
         vp_obs_size = len(self.vp_days) * (3 + self.vp_bins)
         total_obs_size = market_obs_size + account_obs_size + vp_obs_size + len(self.div_features) + self.lookback_window
 
-        self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
+        if self.phase == 4:
+            self.action_space = spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
+        else:
+            self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
 
         self.stability_penalty_coef = 0.02   # Slight increase (0.01 -> 0.02)
@@ -243,90 +246,172 @@ class EnhancedTradingEnv(gym.Env):
         return names
 
     def _take_action(self, action):
-        # 0. DEADBAND (Noise Filter)
-        # Use the class parameters to define the neutral zone.
-        # If action is between sell_threshold (-0.3) and buy_threshold (0.3), force it to 0.
-        action_val = action[0]
-        if action_val < self.buy_threshold and action_val > self.sell_threshold:
-            action_val = 0.0
-        action = np.array([action_val])
+        if self.phase == 4:
+            # Multi-asset logic
+            btc_action = action[0]
+            eth_action = action[1]
 
-        trade_occurred = False
+            # BTC trade
+            current_price_btc = self.raw_prices[self.current_step]
 
-        # 1. COOLDOWN CHECK
-        if self.steps_since_last_trade < self.cooldown_steps and self.steps_since_last_trade > 0:
-            return False
+            # Slippage for BTC
+            days = self.vp_days[0]
+            window_len = days * 24
+            start_idx = max(0, self.current_step - window_len)
+            prices_window = self.raw_prices[start_idx:self.current_step]
+            if len(prices_window) > 0:
+                min_p = np.min(prices_window)
+                max_p = np.max(prices_window)
+                if min_p < max_p:
+                    bin_edges = np.linspace(min_p, max_p, self.vp_bins + 1)
+                    bin_idx = np.digitize(current_price_btc, bin_edges) - 1
+                    bin_idx = np.clip(bin_idx, 0, self.vp_bins - 1)
+                    volume = self.vp_data[days]['heatmap'][self.current_step][bin_idx]
+                    slippage_btc = 0.001 * current_price_btc / (volume + 0.1)
+                else:
+                    slippage_btc = 0
+            else:
+                slippage_btc = 0
 
-        # 2. Detect Trade
-        # Now we just check the sign of the filtered action
-        current_sign = np.sign(action_val)
+            # Dynamic thresholds
+            atr_idx = self.features.index('atr_norm')
+            atr_norm = self.market_features[self.current_step, atr_idx]
+            thresh_mult = 1 + (atr_norm * 0.5)
+            dynamic_buy_threshold = self.buy_threshold * thresh_mult
+            dynamic_sell_threshold = self.sell_threshold * thresh_mult
 
-        # Get last valid action (or 0 if start)
-        prev_act = self.prev_actions[-1] if self.prev_actions else 0.0
-        prev_sign = np.sign(prev_act) if abs(prev_act) > 0.3 else 0
+            # BTC trade
+            if btc_action > dynamic_buy_threshold:
+                amount_to_invest = self.balance * btc_action
+                if amount_to_invest > 10:
+                    shares_bought = amount_to_invest / (current_price_btc + slippage_btc)
+                    fee = amount_to_invest * self.trading_fee_multiplier
+                    self.balance -= amount_to_invest + fee
+                    self.shares_held += shares_bought
+            elif btc_action < dynamic_sell_threshold:
+                shares_to_sell = self.shares_held * abs(btc_action)
+                if shares_to_sell * current_price_btc > 10:
+                    trade_value = shares_to_sell * (current_price_btc - slippage_btc)
+                    fee = trade_value * self.trading_fee_multiplier
+                    self.balance += trade_value - fee
+                    self.shares_held -= shares_to_sell
 
-        if current_sign != prev_sign:
-            trade_occurred = True
-            self.trades_in_episode += 1  # Increment counter
+            # ETH
+            eth_price = self.multi_dfs[1]['close'].iloc[self.current_step]
+            slippage_eth = slippage_btc  # simplify
+            if eth_action > dynamic_buy_threshold:
+                amount_to_invest = self.balance * eth_action
+                if amount_to_invest > 10:
+                    shares_bought = amount_to_invest / (eth_price + slippage_eth)
+                    fee = amount_to_invest * self.trading_fee_multiplier
+                    self.balance -= amount_to_invest + fee
+                    self.eth_shares += shares_bought
+            elif eth_action < dynamic_sell_threshold:
+                shares_to_sell = self.eth_shares * abs(eth_action)
+                if shares_to_sell * eth_price > 10:
+                    trade_value = shares_to_sell * (eth_price - slippage_eth)
+                    fee = trade_value * self.trading_fee_multiplier
+                    self.balance += trade_value - fee
+                    self.eth_shares -= shares_to_sell
 
-        # ... existing logic ...
-        action_val = float(action[0])
-        current_price = self.raw_prices[self.current_step]
+            # Update net_worth
+            self.net_worth = self.balance + self.shares_held * current_price_btc + self.eth_shares * eth_price
+            self.history_net_worth.append(self.net_worth)
+            if self.net_worth > self.max_net_worth:
+                self.max_net_worth = self.net_worth
 
-        # Slippage calculation based on VP volume
-        days = self.vp_days[0]
-        window_len = days * 24
-        start_idx = max(0, self.current_step - window_len)
-        prices_window = self.raw_prices[start_idx:self.current_step]
-        if len(prices_window) > 0:
-            min_p = np.min(prices_window)
-            max_p = np.max(prices_window)
-            if min_p < max_p:
-                bin_edges = np.linspace(min_p, max_p, self.vp_bins + 1)
-                bin_idx = np.digitize(current_price, bin_edges) - 1
-                bin_idx = np.clip(bin_idx, 0, self.vp_bins - 1)
-                volume = self.vp_data[days]['heatmap'][self.current_step][bin_idx]
-                slippage = 0.001 * current_price / (volume + 0.1)
+            return trade_occurred
+
+            # trade_occurred
+            trade_occurred = (btc_action > dynamic_buy_threshold or btc_action < dynamic_sell_threshold) or (eth_action > dynamic_buy_threshold or eth_action < dynamic_sell_threshold)
+            if trade_occurred:
+                self.trades_in_episode += 1
+            return trade_occurred
+        else:
+            # 0. DEADBAND (Noise Filter)
+            # Use the class parameters to define the neutral zone.
+            # If action is between sell_threshold (-0.3) and buy_threshold (0.3), force it to 0.
+            action_val = action[0]
+            if action_val < self.buy_threshold and action_val > self.sell_threshold:
+                action_val = 0.0
+            action = np.array([action_val])
+
+            trade_occurred = False
+
+            # 1. COOLDOWN CHECK
+            if self.steps_since_last_trade < self.cooldown_steps and self.steps_since_last_trade > 0:
+                return False
+
+            # 2. Detect Trade
+            # Now we just check the sign of the filtered action
+            current_sign = np.sign(action_val)
+
+            # Get last valid action (or 0 if start)
+            prev_act = self.prev_actions[-1] if self.prev_actions else 0.0
+            prev_sign = np.sign(prev_act) if abs(prev_act) > 0.3 else 0
+
+            if current_sign != prev_sign:
+                trade_occurred = True
+                self.trades_in_episode += 1  # Increment counter
+
+            # ... existing logic ...
+            action_val = float(action[0])
+            current_price = self.raw_prices[self.current_step]
+
+            # Slippage calculation based on VP volume
+            days = self.vp_days[0]
+            window_len = days * 24
+            start_idx = max(0, self.current_step - window_len)
+            prices_window = self.raw_prices[start_idx:self.current_step]
+            if len(prices_window) > 0:
+                min_p = np.min(prices_window)
+                max_p = np.max(prices_window)
+                if min_p < max_p:
+                    bin_edges = np.linspace(min_p, max_p, self.vp_bins + 1)
+                    bin_idx = np.digitize(current_price, bin_edges) - 1
+                    bin_idx = np.clip(bin_idx, 0, self.vp_bins - 1)
+                    volume = self.vp_data[days]['heatmap'][self.current_step][bin_idx]
+                    slippage = 0.001 * current_price / (volume + 0.1)
+                else:
+                    slippage = 0
             else:
                 slippage = 0
-        else:
-            slippage = 0
 
-        # --- TRADE LOGIC ---
-        if abs(action_val - self.prev_action) > 0.1:
-            self.trade_count += 1
-            self.prev_action = action_val
+            # --- TRADE LOGIC ---
+            if abs(action_val - self.prev_action) > 0.1:
+                self.trade_count += 1
+                self.prev_action = action_val
 
-        # --- UPDATED: Dynamic Thresholds via ATR ---
-        atr_idx = self.features.index('atr_norm')
-        atr_norm = self.market_features[self.current_step, atr_idx]
-        thresh_mult = 1 + (atr_norm * 0.5)  # Higher vol → higher threshold (needs stronger action)
+            # --- UPDATED: Dynamic Thresholds via ATR ---
+            atr_idx = self.features.index('atr_norm')
+            atr_norm = self.market_features[self.current_step, atr_idx]
+            thresh_mult = 1 + (atr_norm * 0.5)  # Higher vol → higher threshold (needs stronger action)
 
-        dynamic_buy_threshold = self.buy_threshold * thresh_mult
-        dynamic_sell_threshold = self.sell_threshold * thresh_mult  # More negative in high vol
+            dynamic_buy_threshold = self.buy_threshold * thresh_mult
+            dynamic_sell_threshold = self.sell_threshold * thresh_mult  # More negative in high vol
 
-        # --- CONFIGURABLE THRESHOLDS ---
-        if action_val > dynamic_buy_threshold: # Buy
-            amount_to_invest = self.balance * action_val
-            if amount_to_invest > 10:
-                shares_bought = amount_to_invest / (current_price + slippage)
-                fee = amount_to_invest * self.trading_fee_multiplier
-                self.balance -= amount_to_invest + fee
-                self.shares_held += shares_bought
+            # --- CONFIGURABLE THRESHOLDS ---
+            if action_val > dynamic_buy_threshold: # Buy
+                amount_to_invest = self.balance * action_val
+                if amount_to_invest > 10:
+                    shares_bought = amount_to_invest / (current_price + slippage)
+                    fee = amount_to_invest * self.trading_fee_multiplier
+                    self.balance -= amount_to_invest + fee
+                    self.shares_held += shares_bought
 
-        elif action_val < dynamic_sell_threshold: # Sell
-            shares_to_sell = self.shares_held * abs(action_val)
-            if shares_to_sell * current_price > 10:
-                trade_value = shares_to_sell * (current_price - slippage)
-                fee = trade_value * self.trading_fee_multiplier
-                self.balance += trade_value - fee
-                self.shares_held -= shares_to_sell
+            elif action_val < dynamic_sell_threshold: # Sell
+                shares_to_sell = self.shares_held * abs(action_val)
+                if shares_to_sell * current_price > 10:
+                    trade_value = shares_to_sell * (current_price - slippage)
+                    fee = trade_value * self.trading_fee_multiplier
+                    self.balance += trade_value - fee
+                    self.shares_held -= shares_to_sell
 
-        self.net_worth = self.balance + (self.shares_held * current_price)
-        self.history_net_worth.append(self.net_worth)
+            self.net_worth = self.balance + (self.shares_held * current_price)
+            self.history_net_worth.append(self.net_worth)
 
-        if self.net_worth > self.max_net_worth:
-            self.max_net_worth = self.net_worth
+            if self.net_worth > self.max_net_worth:
+                self.max_net_worth = self.net_worth
 
     def compute_reward(self, action, portfolio_value, prev_portfolio, benchmark_return, returns, window=24):
         """
@@ -390,6 +475,8 @@ class EnhancedTradingEnv(gym.Env):
         self.net_worth = self.initial_balance
         self.prev_net_worth = self.initial_balance
         self.shares_held = 0
+        if self.phase == 4:
+            self.eth_shares = 0
         self.prev_shares_held = 0
         self.max_net_worth = self.initial_balance
         self.trade_count = 0
@@ -575,6 +662,9 @@ class EnhancedTradingEnv(gym.Env):
 
         # 3. Calculate reward
         reward = self.compute_reward(action[0], self.net_worth, self.prev_portfolio, benchmark_return, list(self.returns))
+
+        if self.phase == 4:
+            reward *= 1.2
 
         # 4. Update Duration Counter
         if trade_occurred:
