@@ -168,6 +168,7 @@ class EnhancedTradingEnv(gym.Env):
         self.trade_fee_penalty = 0.1
 
         self.prev_actions = deque(maxlen=3)
+        self.action_history = []  # For rendering the full action chart
         self.returns = []
 
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
@@ -370,6 +371,7 @@ class EnhancedTradingEnv(gym.Env):
         self.steps_since_last_trade = 0
         self.trades_in_episode = 0
         self.prev_actions = deque(maxlen=3)
+        self.action_history = []
 
         return self._next_observation(), {}
 
@@ -516,8 +518,8 @@ class EnhancedTradingEnv(gym.Env):
 
         # DEBUG: Uncomment this line if you still see issues.
         # It should print values strictly between -1.0 and 1.0
-        # if self.current_step % 1000 == 0:  # Print every 1000 steps to avoid spam
-        #     print(f"Raw: {action[0]:.4f} -> Clipped: {clipped_action[0]:.4f}")
+        if self.current_step % 1000 == 0:  # Print every 1000 steps to avoid spam
+            print(f"Raw: {action[0]:.4f} -> Clipped: {clipped_action[0]:.4f}")
 
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
@@ -525,6 +527,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # Log the clipped action for clean chart
         self.prev_actions.append(action_val)
+        self.action_history.append(action_val)
 
         # Volatility scaling (on a copy, don't modify clipped_action)
         scaled_action = clipped_action.copy()
@@ -588,7 +591,7 @@ class EnhancedTradingEnv(gym.Env):
 
         steps = np.arange(len(self.history_net_worth))
         prices = self.raw_prices[:len(self.history_net_worth)]
-        actions = list(self.prev_actions)[:len(self.history_net_worth)]
+        actions = self.action_history
         net_worths = self.history_net_worth
 
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
