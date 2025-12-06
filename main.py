@@ -13,6 +13,7 @@ import subprocess
 import gymnasium as gym
 from stable_baselines3 import SAC, PPO, A2C, TD3
 from sb3_contrib import RecurrentPPO
+from sb3_contrib.common.torch_layers import TransformerNet
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize, DummyVecEnv, VecFrameStack
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
@@ -335,12 +336,10 @@ def main():
     if args.algo.lower() == 'recurrentppo':
         policy = "MlpLstmPolicy"
         policy_kwargs = dict(
-            ortho_init=False,  # Avoid LAPACK requirement for orthogonal init
-            lstm_hidden_size=256,
-            n_lstm_layers=2,
-            shared_lstm=False,
-            enable_critic_lstm=True,
-            lstm_kwargs=dict(dropout=0.0),
+            net_arch=dict(pi=[128, 128], vf=[128, 128]),
+            lstm_hidden_size=128,
+            features_extractor_class=TransformerNet,
+            features_extractor_kwargs=dict(n_layers=2, n_heads=4, dim_feedforward=256)
         )
     elif args.algo.lower() in ['sac', 'td3']:
         policy_kwargs = dict(net_arch=dict(pi=[256, 256], qf=[256, 256]))
