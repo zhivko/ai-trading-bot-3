@@ -203,7 +203,7 @@ class EnhancedTradingEnv(gym.Env):
         # COOLDOWN (The "Hard" Constraint)
         # The agent cannot trade again for this many steps after a trade.
         # This prevents "machine gun" firing.
-        self.cooldown_steps = 4
+        self.cooldown_steps = 12
 
         # REWARD PENALTIES
         # We switch to a PURE PnL model, but we add a fixed "Cost of Living"
@@ -300,6 +300,20 @@ class EnhancedTradingEnv(gym.Env):
         # 1. COOLDOWN CHECK
         if self.steps_since_last_trade < self.cooldown_steps and self.steps_since_last_trade > 0:
             return False
+
+        # 3. NEW: Saturation Check (Prevent "Machine Gun" Trading)
+        # If we are already fully invested in the direction we want, ignore the action.
+        # This prevents "pyramiding" (adding to an existing position repeatedly).
+        is_buy = action_val > 0
+        is_sell = action_val < 0
+        currently_long = self.shares_held > 0
+        currently_short = self.shares_held < 0  # Note: This env doesn't support shorting, so always False
+
+        if is_buy and currently_long:
+            return False  # Already Long, don't pay fee again
+
+        if is_sell and currently_short:
+            return False  # Already Short, don't pay fee again
 
         # 2. Detect Trade
         # Now we just check the sign of the filtered action
