@@ -96,7 +96,7 @@ def parse_args():
     parser.add_argument("--pair", type=str, default="BTCUSDT", help="Trading pair symbol")
     parser.add_argument("--timeframe", type=str, default="1h", help="Data timeframe")
     parser.add_argument("--initial-balance", type=float, default=10000, help="Starting money")
-    parser.add_argument("--trading-fee", type=float, default=0.00075, help="Trading fee (0.075% default)")
+    parser.add_argument("--trading-fee", type=float, default=0.0015, help="Trading fee (0.15%)")
     parser.add_argument("--buy-threshold", type=float, default=0.4, help="Threshold to trigger buy action")
     parser.add_argument("--sell-threshold", type=float, default=-0.4, help="Threshold to trigger sell action")
     
@@ -110,7 +110,7 @@ def parse_args():
     
     # RL Config
     parser.add_argument("--algo", type=str, default="recurrentppo", choices=["sac", "ppo", "a2c", "td3", "recurrentppo"], help="RL Algorithm")
-    parser.add_argument("--total-timesteps", type=int, default=1_000_000, help="Total training steps")
+    parser.add_argument("--total-timesteps", type=int, default=10_000_000, help="Total training steps")
     parser.add_argument("--batch-size", type=int, default=4096, help="Batch size for training")
     parser.add_argument("--learning-rate", type=float, default=0.0001, help="Learning rate")
     
@@ -495,7 +495,7 @@ def main():
                 gamma=0.99,
                 gae_lambda=0.95,
                 clip_range=0.2,
-                ent_coef=0.01
+                ent_coef=0.02
             ))
         else:
             model_kwargs.update(dict(

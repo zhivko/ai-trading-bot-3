@@ -25,9 +25,9 @@ class EnhancedTradingEnv(gym.Env):
         self.vp_bins = vp_bins
         self.trading_fee_multiplier = trading_fee_multiplier
         
-        # --- THRESHOLDS ---
-        self.buy_threshold = buy_threshold
-        self.sell_threshold = sell_threshold
+        # --- THRESHOLDS (Increased deadband) ---
+        self.buy_threshold = 0.4  # Increased from 0.5 for wider deadband
+        self.sell_threshold = -0.4
         
         # --- 1. DATA PREP ---
         self.raw_df = df.reset_index(drop=False)
@@ -203,12 +203,12 @@ class EnhancedTradingEnv(gym.Env):
         # COOLDOWN (The "Hard" Constraint)
         # The agent cannot trade again for this many steps after a trade.
         # This prevents "machine gun" firing.
-        self.cooldown_steps = 12
+        self.cooldown_steps = 24
 
         # REWARD PENALTIES
         # We switch to a PURE PnL model, but we add a fixed "Cost of Living"
         # for trading to simulate spread/slippage anxiety.
-        self.trade_fee_penalty = 0.1
+        self.trade_fee_penalty = 0.5
 
         self.prev_actions = deque(maxlen=3)
         self.action_history = []  # For rendering the full action chart
@@ -218,6 +218,8 @@ class EnhancedTradingEnv(gym.Env):
 
         self.phase = phase
         self.prev_sign = 0  # Initialize for switch penalty
+        self.hold_steps = 0  # Track hold duration for churn penalty
+        self.last_trade_step = 0  # For churn calculation
         self.reset()
 
     def _detect_divergences(self, series, price_series, window=40, tolerance=8):
@@ -267,33 +269,40 @@ class EnhancedTradingEnv(gym.Env):
         return bullish, bearish
 
     def get_feature_names(self):
-        """Returns a list of labels for the observation space."""
-        # This must match exactly the order of np.concatenate in _next_observation
-        names = [
-            "volume_norm", "trend_ema_norm", "close_pct",
-            "rsi_norm", "stoch_rsi_norm", "macd_norm", "macd_sig_norm", "atr_norm",
-            "regime", "heatmap_max"
-        ]
-        # Add Heatmap buckets
-        names += [f"vp_bucket_{i}" for i in range(self.vp_bins)]
-        # Add Divergence features
+        """
+        Returns a list of labels that EXACTLY matches the observation vector construction.
+        """
+        # 1. Market Features (from self.features in __init__)
+        # This guarantees the order matches self.market_features
+        names = self.features.copy()
+        
+        # 2. Account Features (Added manually in _next_observation)
+        names += ["balance_norm", "holdings_norm"]
+        
+        # 3. Volume Profile Features (Loop matches _next_observation logic)
+        for day in self.vp_days:
+            # Distances (poc, vah, val) added before heatmap
+            prefix = f"vp_{day}d"
+            names += [f"{prefix}_dist_poc", f"{prefix}_dist_vah", f"{prefix}_dist_val"]
+            
+            # Heatmap Buckets
+            names += [f"{prefix}_bucket_{i}" for i in range(self.vp_bins)]
+            
+        # 4. Divergence Features
         names += self.div_features
-
+        
         return names
 
     def _take_action(self, action):
-        # REVERTED: No global clipping.
-        # We use the raw value for threshold checks.
-
-        # 1. DEADBAND (Noise Filter)
-        action_val = action[0]
-        if action_val < self.buy_threshold and action_val > self.sell_threshold:
-            action_val = 0.0
-
-        # 2. SAFETY FOR EXECUTION MATH
-        # When calculating trade size, we must clamp to 100% (-1 to 1).
-        # We create a local variable just for the math.
-        execution_val = np.clip(action_val, -1.0, 1.0)
+        # 1. Clip & Deadband (Keep your existing logic)
+        action_val = action[0] # Raw value for logging
+        
+        # Safety Clip for Logic
+        safe_action = np.clip(action_val, -1.0, 1.0)
+        
+        # Deadband
+        if safe_action < self.buy_threshold and safe_action > self.sell_threshold:
+            safe_action = 0.0
 
         trade_occurred = False
 
@@ -301,23 +310,27 @@ class EnhancedTradingEnv(gym.Env):
         if self.steps_since_last_trade < self.cooldown_steps and self.steps_since_last_trade > 0:
             return False
 
-        # 3. NEW: Saturation Check (Prevent "Machine Gun" Trading)
-        # If we are already fully invested in the direction we want, ignore the action.
-        # This prevents "pyramiding" (adding to an existing position repeatedly).
-        is_buy = action_val > 0
-        is_sell = action_val < 0
+        # 3. NEW: SATURATION CHECK (Stop Pyramiding)
+        # If we are already LONG (>0) and want to BUY (>0) -> Block it.
+        # If we are already SHORT (<0) and want to SELL (<0) -> Block it.
+        # We only allow actions that CHANGE the state (Flip or Close).
+        
+        is_buy_signal = safe_action > 0
+        is_sell_signal = safe_action < 0
+        
         currently_long = self.shares_held > 0
-        currently_short = self.shares_held < 0  # Note: This env doesn't support shorting, so always False
+        currently_short = self.shares_held < 0
+        
+        if is_buy_signal and currently_long:
+            # We are already long. Don't pay the fee again just to say "I still like this".
+            return False
+            
+        if is_sell_signal and currently_short:
+            # We are already short. Don't pay the fee again.
+            return False
 
-        if is_buy and currently_long:
-            return False  # Already Long, don't pay fee again
-
-        if is_sell and currently_short:
-            return False  # Already Short, don't pay fee again
-
-        # 2. Detect Trade
-        # Now we just check the sign of the filtered action
-        current_sign = np.sign(action_val)
+        # 4. Execute Trade (Existing Logic)
+        current_sign = np.sign(safe_action)
 
         # Get last valid action (or 0 if start)
         prev_act = self.prev_actions[-1] if self.prev_actions else 0.0
@@ -336,7 +349,7 @@ class EnhancedTradingEnv(gym.Env):
             heatmap = data['heatmap'][self.current_step]
             vp_max = np.max(heatmap)
             slippage = 0.001 * (1 - vp_max)
-            current_price *= (1 - slippage * np.sign(action_val))
+            current_price *= (1 - slippage * np.sign(safe_action))
 
         # --- TRADE LOGIC ---
         if abs(action_val - self.prev_action) > 0.1:
@@ -353,7 +366,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # --- CONFIGURABLE THRESHOLDS ---
         if action_val > dynamic_buy_threshold: # Buy
-            amount_to_invest = self.balance * execution_val
+            amount_to_invest = self.balance * safe_action
             if amount_to_invest > 10:
                 shares_bought = amount_to_invest / current_price
                 fee = amount_to_invest * self.trading_fee_multiplier
@@ -361,7 +374,7 @@ class EnhancedTradingEnv(gym.Env):
                 self.shares_held += shares_bought
 
         elif action_val < dynamic_sell_threshold: # Sell
-            shares_to_sell = self.shares_held * abs(execution_val)
+            shares_to_sell = self.shares_held * abs(safe_action)
             if shares_to_sell * current_price > 10:
                 trade_value = shares_to_sell * current_price
                 fee = trade_value * self.trading_fee_multiplier
@@ -402,6 +415,25 @@ class EnhancedTradingEnv(gym.Env):
         if abs(self.shares_held) > 0 and not trade_occurred:
             step_reward += 0.005
 
+        # NEW: Dynamic Churn Penalty (only on close/sell actions)
+        if action < -0.5 and self.shares_held > 0:  # Closing a long position
+            hold_duration = self.current_step - self.last_trade_step
+            if hold_duration > 0:
+                # Linear decay: full -0.5 for hold < 4 steps, down to 0 at 24+ steps
+                churn_penalty = max(0, -0.5 * (1 - (hold_duration - 1) / 23))
+                step_reward += churn_penalty
+                logging.debug(f"Churn penalty applied: {churn_penalty:.3f} (hold: {hold_duration})")
+            self.hold_steps = 0
+            self.last_trade_step = self.current_step
+        else:
+            self.hold_steps += 1
+
+        # Action smoothing penalty
+        prev_action = self.prev_actions[-1] if self.prev_actions else 0
+        action_delta = abs(action - prev_action)
+        smoothing_penalty = -0.05 * action_delta
+        step_reward += smoothing_penalty
+
         return step_reward
 
     def set_phase(self, new_phase):
@@ -418,6 +450,8 @@ class EnhancedTradingEnv(gym.Env):
         self.trade_count = 0
         self.prev_action = 0
         self.prev_sign = 0  # Reset for switch penalty
+        self.hold_steps = 0
+        self.last_trade_step = 0
         self.entry_price = 0.0  # Track Entry Price for potential future trade-based rewards
         self.history_net_worth = [self.initial_balance]
         self.episode_returns = deque(maxlen=24)  # For Sortino (last 24 hours)
