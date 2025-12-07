@@ -316,7 +316,7 @@ python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2023-01-01 
 
 ### model = recurrentppo
 ```bash
-python main.py --pair BTCUSDT --vp-days 7 30 --algo recurrentppo --test-split 2023-01-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 4096
+python main.py --pair BTCUSDT --vp-days 7 30 --algo recurrentppo --test-split 2023-06-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 1024
 ```
 
 

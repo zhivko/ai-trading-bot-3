@@ -35,7 +35,7 @@ from wandb.integration.sb3 import WandbCallback
 from enhanced_trading_env import EnhancedTradingEnv
 from callbacks.base_callbacks import TensorboardCallback, CustomEvalCallback
 from callbacks.feature_saliency import FeatureSaliencyCallback
-# from callbacks.recurrent_saliency import RecurrentFeatureSaliencyCallback
+from callbacks.recurrent_saliency import RecurrentFeatureSaliencyCallback
 from volume_profile import get_rolling_vp
 
 # --- Debug Signal Handler for Thread Stack Traces ---
@@ -360,14 +360,15 @@ def main():
                 obs_dim = train_env.observation_space.shape[0]
                 feature_names = [f"F_{i}" for i in range(obs_dim)]
 
-        # Initialize the callback
-        #saliency_cb = RecurrentFeatureSaliencyCallback(
-        #    check_freq=10000,           # Check every 10k steps
-        #    save_path="./logs/saliency",
-        #    feature_names=feature_names,
-        #    verbose=1
-        #)
-        #callbacks.append(saliency_cb)
+        # --- RE-ENABLE SALIENCY ---
+        saliency_callback = RecurrentFeatureSaliencyCallback(
+            check_freq=50000,  # Set to 50k to reduce "freezing" time
+            save_path=os.path.join(log_dir, "saliency"),
+            feature_names=feature_names,
+            verbose=1
+        )
+        callbacks.append(saliency_callback)
+        # --------------------------
 
     callback_list = CallbackList(callbacks)
 
