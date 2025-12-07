@@ -415,8 +415,8 @@ class EnhancedTradingEnv(gym.Env):
         if abs(self.shares_held) > 0 and not trade_occurred:
             step_reward += 0.005
 
-        # NEW: Dynamic Churn Penalty (only on close/sell actions)
-        if action < -0.5 and self.shares_held > 0:  # Closing a long position
+        # NEW: Dynamic Churn Penalty (on close long or short actions)
+        if (action < -0.5 and self.shares_held > 0) or (action > 0.5 and self.shares_held < 0):  # Closing a long or short position
             hold_duration = self.current_step - self.last_trade_step
             if hold_duration > 0:
                 # Linear decay: full -0.5 for hold < 4 steps, down to 0 at 24+ steps
@@ -433,6 +433,9 @@ class EnhancedTradingEnv(gym.Env):
         action_delta = abs(action - prev_action)
         smoothing_penalty = -0.05 * action_delta
         step_reward += smoothing_penalty
+
+        # Cumulative penalty for trades in episode
+        step_reward -= 0.05 * self.trades_in_episode
 
         return step_reward
 
@@ -617,6 +620,10 @@ class EnhancedTradingEnv(gym.Env):
         # 3. Calculate reward
         action_val = float(action[0])
         reward = self.compute_reward(action_val, trade_occurred)
+
+        # Hard trade limit penalty
+        if self.trades_in_episode > 10:
+            reward -= 1.0
 
         # Log RAW action
         # The chart will now show values outside [-1, 1], preserving information.

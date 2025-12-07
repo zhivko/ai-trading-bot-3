@@ -5,12 +5,13 @@ from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from stable_baselines3.common.results_plotter import load_results, ts2xy
 import matplotlib.pyplot as plt
 import matplotlib
-matplotlib.use('Agg')
 import sys
-sys.path.append('..')
 from fetch_metrics import generate_metrics
 import logging
 from tqdm import tqdm
+
+matplotlib.use('Agg')
+sys.path.append('..')
 
 
 class ProgressBarCallback(BaseCallback):
@@ -263,7 +264,8 @@ class TensorboardCallback(BaseCallback):
 
         plt.tight_layout()
         try:
-            if wandb.run is not None: wandb.log({"trade_analysis/thread_0_chart": wandb.Image(fig)})
+            if wandb.run is not None:
+                wandb.log({"trade_analysis/thread_0_chart": wandb.Image(fig)})
         except Exception: pass
         plt.close(fig)
 
@@ -298,6 +300,7 @@ class CustomEvalCallback(EvalCallback):
         # Initialize tracking
         episode_rewards = []
         portfolio_values = []
+        trades_per_episode = []
 
         # 2. Add Progress Bar (tqdm) to see status during "block"
         ep_bar = tqdm(range(self.n_eval_episodes), desc="Evaluating Portfolio", unit="ep")
@@ -343,6 +346,7 @@ class CustomEvalCallback(EvalCallback):
                  current_val = self.initial_balance + episode_reward
 
             portfolio_values.append(current_val)
+            trades_per_episode.append(info.get('trades_per_episode', 0))
             ep_bar.update(1)
 
             # Display explicit Valuation
@@ -360,8 +364,9 @@ class CustomEvalCallback(EvalCallback):
         std_reward = np.std(episode_rewards)
         mean_portfolio = np.mean(portfolio_values)
         std_portfolio = np.std(portfolio_values)
+        mean_trades = np.mean(trades_per_episode)
 
-        return mean_reward, std_reward, mean_portfolio, std_portfolio
+        return mean_reward, std_reward, mean_portfolio, std_portfolio, mean_trades
 
     def _on_step(self) -> bool:
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
@@ -383,8 +388,8 @@ class CustomEvalCallback(EvalCallback):
 
             logging.info("DEBUG: Starting evaluation")
             try:
-                mean_reward, std_reward, mean_portfolio, std_portfolio = self._evaluate_with_portfolio()
-                logging.info(f"DEBUG: Evaluation completed, mean_reward={mean_reward}, mean_portfolio={mean_portfolio}")
+                mean_reward, std_reward, mean_portfolio, std_portfolio, mean_trades = self._evaluate_with_portfolio()
+                logging.info(f"DEBUG: Evaluation completed, mean_reward={mean_reward}, mean_portfolio={mean_portfolio}, mean_trades={mean_trades}")
             except Exception as e:
                 logging.error(f"DEBUG: Evaluation failed with exception: {e}")
                 import traceback
@@ -395,6 +400,7 @@ class CustomEvalCallback(EvalCallback):
                 self.logger.record("eval/std_reward", std_reward)
                 self.logger.record("eval/mean_portfolio", mean_portfolio)
                 self.logger.record("eval/std_portfolio", std_portfolio)
+                self.logger.record("eval/trades_per_episode", mean_trades)
             if mean_reward > self.best_mean_reward:
                 self.best_mean_reward = mean_reward
                 self.best_std_reward = std_reward
