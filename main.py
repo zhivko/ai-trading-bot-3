@@ -346,23 +346,27 @@ def main():
         # -----------------------------------------------------
         # ROBUST FEATURE NAME RETRIEVAL
         # -----------------------------------------------------
+        feature_names = None
         try:
-            # Method A: Try calling the function directly (Best for SubprocVecEnv)
+            # Method A: Try calling the function directly (Best for SubprocVecEnv & VecNormalize)
+            # This allows us to reach through the wrappers to the actual Env code
             feature_names = train_env.env_method("get_feature_names", indices=0)[0]
+            logging.info(f"✅ Successfully retrieved {len(feature_names)} feature names from environment.")
         except Exception as e:
-            logging.warning(f"env_method failed ({e}). Trying attribute access...")
+            logging.warning(f"⚠️ env_method failed to get names ({e}). Trying attribute access...")
             try:
-                # Method B: Try accessing the attribute
+                # Method B: Try accessing the attribute (Backup)
                 feature_names = train_env.get_attr("feature_names", indices=0)[0]
+                logging.info(f"✅ Retrieved {len(feature_names)} feature names via attribute.")
             except Exception as e2:
-                # Method C: Fallback
-                logging.warning(f"Could not retrieve feature names ({e2}). Using generic labels.")
+                # Method C: Fallback to generics
                 obs_dim = train_env.observation_space.shape[0]
+                logging.warning(f"❌ Could not retrieve feature names ({e2}). Generating {obs_dim} generic labels.")
                 feature_names = [f"F_{i}" for i in range(obs_dim)]
 
         # --- RE-ENABLE SALIENCY ---
         saliency_callback = RecurrentFeatureSaliencyCallback(
-            check_freq=eval_freq_adjusted,  # Set to 50k to reduce "freezing" time
+            check_freq=eval_freq_adjusted,  # Run every 50k steps (Heavy computation)
             save_path=os.path.join(log_dir, "saliency"),
             feature_names=feature_names,
             verbose=1
