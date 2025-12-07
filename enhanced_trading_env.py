@@ -605,7 +605,7 @@ class EnhancedTradingEnv(gym.Env):
         heatmap = self.vp_data[primary_day]['heatmap'][idx_safe]
 
         info = {
-            "portfolio_value": self.net_worth,
+            "net_worth": self.net_worth,
             "balance": self.balance,
             "shares_held": self.shares_held,
             "action": action_val,

@@ -35,7 +35,7 @@ from wandb.integration.sb3 import WandbCallback
 from enhanced_trading_env import EnhancedTradingEnv
 from callbacks.base_callbacks import TensorboardCallback, CustomEvalCallback
 from callbacks.feature_saliency import FeatureSaliencyCallback
-from callbacks.recurrent_saliency import RecurrentFeatureSaliencyCallback
+# from callbacks.recurrent_saliency import RecurrentFeatureSaliencyCallback
 from volume_profile import get_rolling_vp
 
 # --- Debug Signal Handler for Thread Stack Traces ---
@@ -53,7 +53,8 @@ def debug_signal_handler(signum, frame):
     for thread_id, stack in sys._current_frames().items():
         name = id2name.get(thread_id, f"Thread ID {thread_id}")
         logging.info(f"--- Stack trace for Thread: {name} ---")
-        traceback.print_stack(stack)
+        stack_trace = ''.join(traceback.format_stack(stack))
+        logging.info(stack_trace)
         logging.info("-" * 40 + "\n")
 
     logging.info("Exiting application...")
@@ -105,7 +106,7 @@ def parse_args():
     parser.add_argument("--vp-days", type=int, nargs='+', default=[7, 30], help="Volume Profile days (e.g. 7 30)")
     parser.add_argument("--vp-bins", type=int, default=40, help="Volume Profile bins")
     parser.add_argument("--window-size", type=int, default=50, help="Observation window size")
-    parser.add_argument("--n-envs", type=int, default=5, help="Number of parallel environments")
+    parser.add_argument("--n-envs", type=int, default=12, help="Number of parallel environments")
     parser.add_argument("--phase", type=int, default=1, help="Curriculum phase (1=profit, 2=sortino, 3=mdd)")
     
     # RL Config
@@ -318,12 +319,12 @@ def main():
     if saliency_callback is not None:
         callbacks.append(saliency_callback)
     
-    if args.wandb:
-        callbacks.append(WandbCallback(
-            gradient_save_freq=0,
-            model_save_path=f"models/{args.algo}_{args.pair}_wb",
-            verbose=0  # Reduced from 2 to minimize logging overhead
-        ))
+    # if args.wandb:
+    #     callbacks.append(WandbCallback(
+    #         gradient_save_freq=0,
+    #         model_save_path=f"models/{args.algo}_{args.pair}_wb",
+    #         verbose=0  # Reduced from 2 to minimize logging overhead
+    #     ))
 
     eval_freq_adjusted = max(50000 // args.n_envs, 1) # e.g., 50000 // 16 = 3125 calls
 

@@ -80,7 +80,7 @@ class TensorboardCallback(BaseCallback):
 
         current_price = info.get('current_price', info.get('price', 0))
         ema_50 = info.get('ema50', 0)
-        portfolio_value = info.get('portfolio_value', 0)
+        portfolio_value = info.get('net_worth', 0)
         current_date = info.get('timestamp', f"{self.n_calls}")
 
         # 3. Store
@@ -244,44 +244,85 @@ class CustomEvalCallback(EvalCallback):
         self.best_std_portfolio = 0
 
     def _evaluate_with_portfolio(self):
-        logging.info("DEBUG: Starting _evaluate_with_portfolio")
-        portfolio_values = []
+        """
+        Evaluate the agent using the portfolio environment.
+        FIXED: Handles VecEnv vs Gym API and adds Progress Bar.
+        """
+        print("DEBUG: Starting _evaluate_with_portfolio")
+
+        # 1. Reset Environment (Handle SB3 VecEnv returning only obs)
+        reset_result = self.eval_env.reset()
+        if isinstance(reset_result, tuple):
+            obs = reset_result[0]  # Gymnasium API
+        else:
+            obs = reset_result     # SB3 VecEnv API
+
+        # Initialize tracking
         episode_rewards = []
-        # Get total steps per episode for accurate bar
-        episode_length = len(self.eval_env.envs[0].df)  # Assumes fixed episode len = test data rows
-        total_eval_steps = self.n_eval_episodes * episode_length
-        logging.info(f"DEBUG: episode_length={episode_length}, n_eval_episodes={self.n_eval_episodes}")
+        portfolio_values = []
 
-        with tqdm(total=self.n_eval_episodes, desc="Eval Episodes", unit="ep") as ep_bar:
-            for ep_num in range(self.n_eval_episodes):
-                obs, _ = self.eval_env.reset()  # Note: reset returns obs, info
-                done = False
-                episode_reward = 0
-                step_count = 0
+        # 2. Add Progress Bar (tqdm) to see status during "block"
+        ep_bar = tqdm(range(self.n_eval_episodes), desc="Evaluating Portfolio", unit="ep")
 
-                # Inner step progress (updates every episode_length steps, but shows granular progress)
-                with tqdm(total=episode_length, desc=f"Ep {ep_num+1}", unit="step", leave=False) as step_bar:
-                    while not done:
-                        action, _ = self.model.predict(obs, deterministic=self.deterministic)
-                        obs, reward, terminated, truncated, info = self.eval_env.step(action)  # Unpack full Gymnasium tuple
-                        reward = reward[0] if hasattr(reward, '__len__') else reward
-                        done = terminated or truncated
-                        info = info[0] if hasattr(info, '__len__') else info
-                        episode_reward += reward
-                        step_count += 1
-                        step_bar.update(1)
-                        step_bar.set_postfix(reward=episode_reward)
+        for _ in ep_bar:
+            done = False
+            episode_reward = 0.0
+            step_count = 0
+            step_bar = tqdm(desc="Steps", unit="step", leave=False)
 
-                episode_rewards.append(episode_reward)
-                portfolio_values.append(info.get('portfolio_value', episode_reward))
-                ep_bar.update(1)
-                ep_bar.set_postfix(mean_portfolio=np.mean(portfolio_values))
+            while not done:
+                action, _ = self.model.predict(obs, deterministic=self.deterministic)
 
+                # Handle Step API (VecEnv returns 4 items, Gymnasium returns 5)
+                step_result = self.eval_env.step(action)
+                if len(step_result) == 4:
+                    obs, reward, done, info = step_result
+                    terminated, truncated = done, done
+                else:
+                    obs, reward, terminated, truncated, info = step_result
+                    done = terminated or truncated
+
+                # Unpack Reward
+                if isinstance(reward, (list, np.ndarray)):
+                    reward = reward[0]
+
+                # Unpack Info (VecEnv returns a list of dicts)
+                if isinstance(info, list):
+                    info = info[0]
+
+                episode_reward += reward
+                step_count += 1
+                step_bar.update(1)
+                step_bar.set_postfix(reward=episode_reward)
+
+            episode_rewards.append(episode_reward)
+
+            # FIX: Check for 'net_worth' OR 'portfolio_value'
+            current_val = info.get('net_worth', info.get('portfolio_value', 0.0))
+
+            # If we still get 0, fall back to initial balance + reward
+            if current_val == 0 and self.initial_balance:
+                 current_val = self.initial_balance + episode_reward
+
+            portfolio_values.append(current_val)
+            ep_bar.update(1)
+
+            # Display explicit Valuation
+            ep_bar.set_postfix(Valuation=f"${np.mean(portfolio_values):.2f}")
+
+            # Reset for next episode
+            reset_result = self.eval_env.reset()
+            if isinstance(reset_result, tuple):
+                obs = reset_result[0]
+            else:
+                obs = reset_result
+
+        # Calculate averages
         mean_reward = np.mean(episode_rewards)
         std_reward = np.std(episode_rewards)
         mean_portfolio = np.mean(portfolio_values)
         std_portfolio = np.std(portfolio_values)
-        logging.info(f"DEBUG: _evaluate_with_portfolio completed, mean_reward={mean_reward}, mean_portfolio={mean_portfolio}")
+
         return mean_reward, std_reward, mean_portfolio, std_portfolio
 
     def _on_step(self) -> bool:
