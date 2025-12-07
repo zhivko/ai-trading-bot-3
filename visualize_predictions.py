@@ -1,173 +1,210 @@
-# visualize_predictions.py
-import torch
-import pandas as pd
-import matplotlib.pyplot as plt
+import argparse
 import numpy as np
-import pickle
-import os
+import pandas as pd
+import torch
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
+from captum.attr import IntegratedGradients
+
+# SB3 Imports
 from sb3_contrib import RecurrentPPO
-import gymnasium as gym
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+
+# Local Imports (Adjust these matches your file structure)
 from trading_env import TradingEnv
-from volume_profile import get_rolling_vp, compute_volume_profile
-from features import get_features
-import logging
+from data_fetcher import DataFetcher  # Assuming you have a class to load data
 
-# 1. Load the trained model
-model = RecurrentPPO.load("ppo_crypto_trader.zip")
-logging.info("Model loaded successfully")
-
-# 2. Load data
-pair = 'BTC/USDT'
-data_file = f'{pair.replace("/", "_")}_data.csv'
-df = pd.read_csv(data_file, parse_dates=['timestamp'])
-df = df.set_index('timestamp').sort_index()
-logging.info(f"Full data length: {len(df)} rows")
-
-# Compute VP with caching
-vp7_file = f'{pair.replace("/", "_")}_vp7.pkl'
-vp30_file = f'{pair.replace("/", "_")}_vp30.pkl'
-
-data_mtime = os.path.getmtime(data_file) if os.path.exists(data_file) else 0
-vp7_mtime = os.path.getmtime(vp7_file) if os.path.exists(vp7_file) else 0
-vp30_mtime = os.path.getmtime(vp30_file) if os.path.exists(vp30_file) else 0
-
-if os.path.exists(vp7_file) and vp7_mtime >= data_mtime:
-    logging.info("Loading cached 7d VP...")
-    with open(vp7_file, 'rb') as f:
-        vp7_df = pickle.load(f)
-else:
-    logging.info("Computing 7d VP...")
-    vp7_df = get_rolling_vp(df, 7)
-    logging.info("Saving 7d VP...")
-    with open(vp7_file, 'wb') as f:
-        pickle.dump(vp7_df, f)
-
-if os.path.exists(vp30_file) and vp30_mtime >= data_mtime:
-    logging.info("Loading cached 30d VP...")
-    with open(vp30_file, 'rb') as f:
-        vp30_df = pickle.load(f)
-else:
-    logging.info("Computing 30d VP...")
-    vp30_df = get_rolling_vp(df, 30)
-    logging.info("Saving 30d VP...")
-    with open(vp30_file, 'wb') as f:
-        pickle.dump(vp30_df, f)
-
-logging.info("VP computation completed.")
-
-# NO ENV SIMULATION: Direct rollout over FULL df for viz (faster, deterministic)
-logging.info("Starting full-data simulation...")
-actions = []
-values = []
-prices = []
-
-# Initialize for recurrent policy
-lstm_states = None
-episode_starts = torch.tensor([1.0], dtype=torch.float32)
-
-for step in range(len(df)):  # FULL df!
-    current_price = df['close'].iloc[step]
-    obs = get_features(df, vp7_df, vp30_df, df.index[step])
+# ==========================================
+# 1. Saliency Calculation Logic
+# ==========================================
+def compute_saliency(model, obs_tensor, lstm_states, device='cuda'):
+    """
+    Computes feature importance using Integrated Gradients.
+    """
+    model.policy.set_training_mode(False)
     
-    # Predict action/value
-    action, lstm_states = model.predict(obs, state=lstm_states, episode_start=episode_starts, deterministic=True)
-    lstm_states = (torch.tensor(lstm_states[0], dtype=torch.float32), torch.tensor(lstm_states[1], dtype=torch.float32)) if lstm_states is not None else None
-    episode_starts = torch.tensor([0.0], dtype=torch.float32)
+    # Wrapper to get the action mean from the policy
+    # IntegratedGradients needs a function that takes input -> output scalar
+    def forward_func(inputs, hidden_states_in):
+        # inputs: [1, 1, num_features]
+        # hidden_states_in: tuple of tensors
+        
+        # RecurrentPPO policy forward pass
+        # We extract the 'distribution' and get the mode (deterministic action) or mean
+        features = model.policy.extract_features(inputs)
+        latent_pi, _ = model.policy.lstm_actor(features, hidden_states_in)
+        mean_actions = model.policy.action_net(latent_pi)
+        
+        # We summarize the action into a scalar (e.g., sum) for gradient calculation
+        # If you have discrete actions (Buy/Sell), this targets the logit of the chosen action
+        return mean_actions.sum(dim=-1)
+
+    ig = IntegratedGradients(forward_func)
     
-    with torch.no_grad():
-        obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
-        value = model.policy.predict_values(obs_tensor, lstm_states, episode_starts).item()
+    # We need to detach states to treat them as fixed context for this step
+    # (Simplified approach: Saliency of current input given current state)
+    obs_tensor.requires_grad = True
     
-    actions.append(action[0])
-    values.append(value)
-    prices.append(current_price)
+    # Run Attribution
+    # Note: This is computationally expensive!
+    attributions, delta = ig.attribute(
+        inputs=obs_tensor,
+        additional_forward_args=(lstm_states,),
+        n_steps=50, # Lower this if it's too slow (e.g. 20)
+        return_convergence_delta=True
+    )
     
-    if step % 5000 == 0:
-        logging.info(f"Processed {step} steps")
+    return attributions.detach().cpu().numpy()[0, 0] # Return 1D array of feature scores
 
-logging.info(f"Full simulation complete. Collected {len(actions)} steps ({len(df)} total)")
-# 4. Plot everything beautifully
-logging.info("Generating plots...")
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10), sharex=True)  # Taller for long timeline
-
-vp_window = 24
-num_bins = 50
-ax1.plot(range(len(prices)), prices, label='Price', color='blue', linewidth=0.8)  # Thinner for long plot
-
-for i in range(vp_window, len(prices)):  # Now full ~40k!
-    window_data = df.iloc[i - vp_window : i]
-    vp = compute_volume_profile(window_data, num_bins=num_bins)
+# ==========================================
+# 2. Plotting Logic
+# ==========================================
+def plot_results(df, feature_names, attributions_matrix, start_step, end_step):
+    """
+    Plots Price/Actions on top and Feature Saliency Heatmap below.
+    """
+    # Slice data
+    df_slice = df.iloc[start_step:end_step]
+    attr_slice = attributions_matrix[start_step:end_step]
     
-    # POC/VA/HVN (unchanged, but now every step across years)
-    ax1.axhline(vp['poc'], xmin=i/len(prices), xmax=(i+1)/len(prices), color='yellow', lw=1, alpha=0.6, label='POC' if i==vp_window else '')
-    ax1.fill_between([i, i+1], vp['val'], vp['vah'], color='cyan', alpha=0.1, label='Value Area' if i==vp_window else '')  # Lower alpha for density
+    # Setup Plot
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10), sharex=True, gridspec_kw={'height_ratios': [2, 1]})
     
-    # HVN (add plot skip for perf: every 10th to avoid overload)
-    if i % 10 == 0:  # ← NEW: Sample for speed (remove for full density)
-        threshold = np.percentile(vp['vp'], 75)
-        hvn_indices = np.where(vp['vp'] > threshold)[0]
-        if len(hvn_indices) > 0:
-            bin_size = (vp['bins'][1] - vp['bins'][0]) if len(vp['bins']) > 1 else 0
-            hvn_levels = vp['bins'][hvn_indices] + bin_size / 2
-            hvn_volumes = vp['vp'][hvn_indices]
-            current_price = prices[i]
-            local_range = current_price * 0.15
-            for level, vol in zip(hvn_levels, hvn_volumes):
-                if abs(level - current_price) > local_range:
-                    continue
-                ax1.scatter(i, level, s=min(vol * 5, 100), marker='^', c='green', alpha=0.5, label='HVN' if i==vp_window else '')  # Smaller s/alpha
-# New version – works with continuous actions [-1, 1]
-long_entries  = [i for i, a in enumerate(actions) if a > 0.6]      # confident long
-short_entries = [i for i, a in enumerate(actions) if a < -0.6]     # confident short
-
-ax1.scatter(long_entries,  [prices[i] for i in long_entries],  marker='^', color='lime',  s=100, edgecolors='black', linewidth=1.5, label='Long Entry', zorder=10, alpha=0.7)
-ax1.scatter(short_entries, [prices[i] for i in short_entries], marker='v', color='red',   s=100, edgecolors='black', linewidth=1.5, label='Short Entry', zorder=10, alpha=0.7)
-
-exit_longs  = []
-exit_shorts = []
-
-for i in range(1, len(actions)):
-    prev = actions[i-1]
-    curr = actions[i]
+    # --- Top Panel: Price & Actions ---
+    ax1.plot(df_slice.index, df_slice['close'], label='Price', color='black', alpha=0.6)
     
-    # Long exit: was clearly long and now clearly reducing / flat
-    if prev > 0.6 and curr <= 0.4 and (i == 1 or actions[i-2] > 0.6):
-        exit_longs.append(i)
+    # Buy Signals
+    buys = df_slice[df_slice['action'] > 0] # Assuming >0 is buy
+    ax1.scatter(buys.index, buys['close'], marker='^', color='green', s=100, label='Buy', zorder=5)
     
-    # Short exit: was clearly short and now reducing / flat
-    if prev < -0.6 and curr >= -0.4 and (i == 1 or actions[i-2] < -0.6):
-        exit_shorts.append(i)
+    # Sell Signals
+    sells = df_slice[df_slice['action'] < 0] # Assuming <0 is sell
+    ax1.scatter(sells.index, sells['close'], marker='v', color='red', s=100, label='Sell', zorder=5)
+    
+    ax1.set_title("Trading Actions")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
 
-# Plot them — now they will actually appear!
-ax1.scatter(exit_longs,  [prices[i] for i in exit_longs],
-            marker='o', facecolors='none', edgecolors='orange', s=80, linewidth=2.5,
-            label='Exit Long', zorder=9, alpha=0.7)
-ax1.scatter(exit_shorts, [prices[i] for i in exit_shorts],
-            marker='o', facecolors='none', edgecolors='purple', s=80, linewidth=2.5,
-            label='Exit Short', zorder=9, alpha=0.7)
+    # --- Bottom Panel: Saliency Heatmap ---
+    # Normalize attributions for better visualization (0 to 1 range per step or globally)
+    # Transpose so Features are Y-axis, Time is X-axis
+    heatmap_data = np.transpose(attr_slice)
+    
+    # Plot using Seaborn
+    sns.heatmap(
+        heatmap_data, 
+        ax=ax2, 
+        cmap="coolwarm", 
+        center=0,
+        yticklabels=feature_names,
+        cbar_kws={'label': 'Feature Importance'}
+    )
+    
+    ax2.set_title("Neural Network Focus (Saliency Map)")
+    ax2.set_xlabel("Time Step")
+    
+    plt.tight_layout()
+    plt.show()
 
-ax1.set_title("Price + Volume Profile Context (Full 5-Year Rollout)")
-ax1.legend()
-ax1.grid(alpha=0.2)
+# ==========================================
+# 3. Main Execution
+# ==========================================
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pair", type=str, default="BTCUSDT")
+    parser.add_argument("--model-path", type=str, required=True, help="Path to .zip model file")
+    parser.add_argument("--data-path", type=str, default="data/BTCUSDT_1h.csv")
+    parser.add_argument("--steps", type=int, default=200, help="How many steps to visualize")
+    parser.add_argument("--start-index", type=int, default=1000, help="Where to start in the dataset")
+    args = parser.parse_args()
 
-ax2.plot(actions, label='Action', color='green', linewidth=0.8)
-ax2.axhline(0, color='black', linestyle='--', alpha=0.5)
-ax2.set_title("Agent Actions (-1=Short, 0=Neutral, 1=Long)")
-ax2.legend()
-ax2.grid(alpha=0.2)
+    # 1. Setup Environment
+    # NOTE: You must recreate the env exactly as it was during training
+    # This might require adjusting arguments to match your main.py
+    print("Setting up environment...")
+    
+    # Load Dataframe (Adapt to your data loading logic)
+    df = pd.read_csv(args.data_path)
+    df['date'] = pd.to_datetime(df['date'])
+    df.set_index('date', inplace=True)
+    
+    # Initialize Env
+    env = TradingEnv(
+        df=df,
+        window_size=40, # Must match training
+        frame_bound=(args.start_index, args.start_index + args.steps + 50)
+    )
+    env = DummyVecEnv([lambda: env])
+    env = VecNormalize.load("metrics/vecnormalize.pkl", env) # Important: Load stats if you used VecNormalize!
+    env.training = False # Don't update stats during test
+    
+    # 2. Load Model
+    print(f"Loading model from {args.model_path}...")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = RecurrentPPO.load(args.model_path, env=env, device=device)
 
-# Fig 2: Now full length
-fig2, ax3 = plt.subplots(figsize=(16, 4))
-ax3.plot(values, color='orange', linewidth=0.5)
-ax3.set_title("Value Function (expected future return)")
-ax3.grid(alpha=0.2)
+    # 3. Run Simulation & Collect Saliency
+    print("Running simulation and calculating saliency (this may take a moment)...")
+    
+    obs = env.reset()
+    
+    # LSTM States (num_layers, batch_size, hidden_size)
+    # Initialize with zeros
+    lstm_states = None
+    
+    # Trackers
+    actions = []
+    attributions_history = []
+    prices = []
+    
+    # Get feature names from env if available, else generic
+    feature_names = [f"Feat_{i}" for i in range(obs.shape[1])]
+    # If you have specific names, define them:
+    # feature_names = ['Close', 'Vol', 'RSI', 'MACD', ...] 
 
-step = max(1, len(df) // 10)  # ~4k for 40k
-date_labels = df.index[::step]
-for ax in (ax1, ax2, ax3):  # Add to fig2 too
-    ax.set_xticks(range(0, len(df), step))
-    ax.set_xticklabels([d.strftime('%Y-%m-%d') for d in date_labels], rotation=45)  # Monthly for long view
-ax3.set_xlabel('Steps (Full Timeline)')
+    # Loop through steps
+    for i in tqdm(range(args.steps)):
+        
+        # 1. Prepare Tensor for Saliency
+        obs_tensor = torch.as_tensor(obs).to(device).float()
+        
+        # 2. Calculate Saliency for THIS step
+        # Note: We do this BEFORE the step() to see what features caused the action
+        if lstm_states is not None:
+             # We need valid states to compute saliency. 
+             # On step 0 it's tricky, skipping step 0 is usually fine.
+             attr = compute_saliency(model, obs_tensor, lstm_states, device)
+             attributions_history.append(attr)
+        else:
+             # Filler for first step
+             attributions_history.append(np.zeros(obs.shape[1]))
 
-plt.tight_layout()
-plt.show()
+        # 3. Predict Action (Normal RL Loop)
+        action, lstm_states = model.predict(obs, state=lstm_states, deterministic=True)
+        
+        # 4. Step Env
+        obs, reward, done, info = env.step(action)
+        
+        # Save Data for plotting
+        actions.append(action[0])
+        # We need the raw price for plotting. Accessing underlying env wrapper.
+        prices.append(env.envs[0].unwrapped._get_price()) 
+
+        if done:
+            break
+
+    # 4. Process Data for Plotting
+    # Create a DataFrame for easy slicing
+    res_df = pd.DataFrame({
+        'close': prices,
+        'action': actions
+    })
+    
+    attributions_matrix = np.array(attributions_history)
+    
+    print("Generating Plots...")
+    plot_results(res_df, feature_names, attributions_matrix, 0, len(res_df))
+
+if __name__ == "__main__":
+    main()

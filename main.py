@@ -34,7 +34,6 @@ from wandb.integration.sb3 import WandbCallback
 # Custom Modules
 from enhanced_trading_env import EnhancedTradingEnv
 from callbacks.base_callbacks import TensorboardCallback, CustomEvalCallback, ProgressBarCallback
-from callbacks.feature_saliency import FeatureSaliencyCallback
 from callbacks.recurrent_saliency import RecurrentFeatureSaliencyCallback
 from volume_profile import get_rolling_vp
 
@@ -363,7 +362,7 @@ def main():
 
         # --- RE-ENABLE SALIENCY ---
         saliency_callback = RecurrentFeatureSaliencyCallback(
-            check_freq=50000,  # Set to 50k to reduce "freezing" time
+            check_freq=eval_freq_adjusted,  # Set to 50k to reduce "freezing" time
             save_path=os.path.join(log_dir, "saliency"),
             feature_names=feature_names,
             verbose=1
