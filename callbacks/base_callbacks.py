@@ -13,6 +13,44 @@ import logging
 from tqdm import tqdm
 
 
+class ProgressBarCallback(BaseCallback):
+    """
+    A custom progress bar that updates less frequently to prevent console spam.
+    """
+    def __init__(self, update_interval=100):
+        super().__init__()
+        self.pbar = None
+        self.update_interval = update_interval
+        self.last_update_step = 0
+
+    def _on_training_start(self):
+        # Initialize tqdm with total timesteps
+        # mininterval=1.0 prevents it from trying to update faster than 1x per second
+        self.pbar = tqdm(total=self.locals['total_timesteps'], mininterval=1.0, desc="Training")
+        self.last_update_step = 0
+
+    def _on_step(self) -> bool:
+        # Only update the progress bar every `update_interval` steps
+        if self.n_calls % self.update_interval == 0:
+            # Calculate how many steps passed since last update (usually == update_interval)
+            step_delta = self.num_timesteps - self.last_update_step
+            
+            if step_delta > 0:
+                self.pbar.update(step_delta)
+                self.pbar.set_description(f"Steps: {self.num_timesteps}")
+                self.last_update_step = self.num_timesteps
+        
+        return True
+
+    def _on_training_end(self) -> None:
+        # Ensure the bar reaches 100% at the end
+        if self.pbar is not None:
+            remaining = self.locals['total_timesteps'] - self.last_update_step
+            if remaining > 0:
+                self.pbar.update(remaining)
+            self.pbar.close()
+
+
 class SaveOnBestTrainingRewardCallback(BaseCallback):
     """
     Callback for saving a model based on the training reward.

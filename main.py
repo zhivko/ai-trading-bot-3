@@ -33,7 +33,7 @@ from wandb.integration.sb3 import WandbCallback
 
 # Custom Modules
 from enhanced_trading_env import EnhancedTradingEnv
-from callbacks.base_callbacks import TensorboardCallback, CustomEvalCallback
+from callbacks.base_callbacks import TensorboardCallback, CustomEvalCallback, ProgressBarCallback
 from callbacks.feature_saliency import FeatureSaliencyCallback
 from callbacks.recurrent_saliency import RecurrentFeatureSaliencyCallback
 from volume_profile import get_rolling_vp
@@ -315,7 +315,8 @@ def main():
     
     tensorboard_callback = TensorboardCallback(verbose=1, buy_threshold=args.buy_threshold, sell_threshold=args.sell_threshold)
 
-    callbacks = [tensorboard_callback, checkpoint_callback]
+    progress_callback = ProgressBarCallback(update_interval=1000)
+    callbacks = [progress_callback, tensorboard_callback, checkpoint_callback]
     if saliency_callback is not None:
         callbacks.append(saliency_callback)
     
@@ -525,7 +526,7 @@ def main():
         model.learn(
             total_timesteps=args.total_timesteps,
             callback=callback_list,
-            progress_bar=True,
+            progress_bar=False,
             reset_num_timesteps=reset_num_timesteps # <--- Handles the resumption of step count
         )
 
