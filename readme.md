@@ -167,7 +167,10 @@ python main.py --pair BTCUSDT --vp-days 7 30 --algo recurrentppo --test-split 20
 
 ## CODE for LLM's to comment on code
 Sources of project are available in:
-https://github.com/zhivko/ai-trading-bot-3/blob/feat/sane-action-reward-v3/main.py
-https://github.com/zhivko/ai-trading-bot-3/blob/feat/sane-action-reward-v3/enhanced_trading_env.py
-https://github.com/zhivko/ai-trading-bot-3/blob/feat/sane-action-reward-v3/callbacks/base_callbacks
-https://github.com/zhivko/ai-trading-bot-3/blob/feat/sane-action-reward-v3/callbacks/feature_saliency.py
+
+https://github.com/zhivko/ai-trading-bot-3/blob/feat/RecurrentPPO/main.py
+https://github.com/zhivko/ai-trading-bot-3/blob/feat/RecurrentPPO/enhanced_trading_env.py
+https://github.com/zhivko/ai-trading-bot-3/blob/feat/RecurrentPPO/callbacks/base_callbacks
+https://github.com/zhivko/ai-trading-bot-3/blob/feat/RecurrentPPO/callbacks/feature_saliency.py
+
+

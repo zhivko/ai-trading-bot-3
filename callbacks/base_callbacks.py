@@ -249,6 +249,7 @@ class TensorboardCallback(BaseCallback):
         ax2.bar(steps, actions, color=colors, width=1.0)
         ax2.axhline(0, color='black', linewidth=0.8)
         ax2.set_ylabel("Action")
+        ax2.autoscale(enable=True, axis='y')
 
         # Date labels
         num_ticks = 8
