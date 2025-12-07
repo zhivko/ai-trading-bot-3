@@ -338,7 +338,6 @@ class EnhancedTradingEnv(gym.Env):
 
         if current_sign != prev_sign:
             trade_occurred = True
-            self.trades_in_episode += 1  # Increment counter
 
         # ... existing logic ...
         current_price = self.raw_prices[self.current_step]
@@ -372,6 +371,7 @@ class EnhancedTradingEnv(gym.Env):
                 fee = amount_to_invest * self.trading_fee_multiplier
                 self.balance -= amount_to_invest + fee
                 self.shares_held += shares_bought
+                self.trades_in_episode += 1  # Increment on actual trade
 
         elif action_val < dynamic_sell_threshold: # Sell
             shares_to_sell = self.shares_held * abs(safe_action)
@@ -380,6 +380,7 @@ class EnhancedTradingEnv(gym.Env):
                 fee = trade_value * self.trading_fee_multiplier
                 self.balance += trade_value - fee
                 self.shares_held -= shares_to_sell
+                self.trades_in_episode += 1  # Increment on actual trade
 
         self.net_worth = self.balance + (self.shares_held * current_price)
         self.history_net_worth.append(self.net_worth)
