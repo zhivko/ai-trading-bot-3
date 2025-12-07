@@ -10,6 +10,7 @@ import sys
 sys.path.append('..')
 from fetch_metrics import generate_metrics
 import logging
+from tqdm import tqdm
 
 
 class SaveOnBestTrainingRewardCallback(BaseCallback):
@@ -243,33 +244,44 @@ class CustomEvalCallback(EvalCallback):
         self.best_std_portfolio = 0
 
     def _evaluate_with_portfolio(self):
+        logging.info("DEBUG: Starting _evaluate_with_portfolio")
         portfolio_values = []
         episode_rewards = []
-        for _ in range(self.n_eval_episodes):
-            obs = self.eval_env.reset()
-            done = False
-            episode_reward = 0
-            while not done:
-                action, _ = self.model.predict(obs, deterministic=self.deterministic)
-                action = action[0]
-                obs, reward, done, info = self.eval_env.step([action])
-                reward = reward[0]
-                done = done[0]
-                info = info[0]
-                episode_reward += reward
-            episode_rewards.append(episode_reward)
+        # Get total steps per episode for accurate bar
+        episode_length = len(self.eval_env.envs[0].df)  # Assumes fixed episode len = test data rows
+        total_eval_steps = self.n_eval_episodes * episode_length
+        logging.info(f"DEBUG: episode_length={episode_length}, n_eval_episodes={self.n_eval_episodes}")
 
-            if isinstance(info, list):
-                current_info = info[0]
-            else:
-                current_info = info
+        with tqdm(total=self.n_eval_episodes, desc="Eval Episodes", unit="ep") as ep_bar:
+            for ep_num in range(self.n_eval_episodes):
+                obs, _ = self.eval_env.reset()  # Note: reset returns obs, info
+                done = False
+                episode_reward = 0
+                step_count = 0
 
-            portfolio_values.append(current_info.get('portfolio_value', episode_reward))
+                # Inner step progress (updates every episode_length steps, but shows granular progress)
+                with tqdm(total=episode_length, desc=f"Ep {ep_num+1}", unit="step", leave=False) as step_bar:
+                    while not done:
+                        action, _ = self.model.predict(obs, deterministic=self.deterministic)
+                        obs, reward, terminated, truncated, info = self.eval_env.step(action)  # Unpack full Gymnasium tuple
+                        reward = reward[0] if hasattr(reward, '__len__') else reward
+                        done = terminated or truncated
+                        info = info[0] if hasattr(info, '__len__') else info
+                        episode_reward += reward
+                        step_count += 1
+                        step_bar.update(1)
+                        step_bar.set_postfix(reward=episode_reward)
+
+                episode_rewards.append(episode_reward)
+                portfolio_values.append(info.get('portfolio_value', episode_reward))
+                ep_bar.update(1)
+                ep_bar.set_postfix(mean_portfolio=np.mean(portfolio_values))
 
         mean_reward = np.mean(episode_rewards)
         std_reward = np.std(episode_rewards)
         mean_portfolio = np.mean(portfolio_values)
         std_portfolio = np.std(portfolio_values)
+        logging.info(f"DEBUG: _evaluate_with_portfolio completed, mean_reward={mean_reward}, mean_portfolio={mean_portfolio}")
         return mean_reward, std_reward, mean_portfolio, std_portfolio
 
     def _on_step(self) -> bool:
@@ -277,6 +289,7 @@ class CustomEvalCallback(EvalCallback):
             logging.info(f"DEBUG: Evaluation triggered at n_calls={self.n_calls}, num_timesteps={self.num_timesteps}, eval_freq={self.eval_freq}")
             # --- UPDATED: Phase Switching ---
             if self.num_timesteps % 250000 == 0:
+                logging.info("DEBUG: Starting phase switching")
                 current_phase = getattr(self.model.env, 'phase', 1)
                 new_phase = min(current_phase + 1, 3)  # Up to phase 3
                 # Broadcast to train env (works for Subproc via attr access)
@@ -287,8 +300,17 @@ class CustomEvalCallback(EvalCallback):
                     self.model.env.phase = new_phase
                 if wandb.run is not None:
                     wandb.log({'curriculum/phase': new_phase, 'step': self.num_timesteps})
+                logging.info(f"DEBUG: Phase switching completed, new_phase={new_phase}")
 
-            mean_reward, std_reward, mean_portfolio, std_portfolio = self._evaluate_with_portfolio()
+            logging.info("DEBUG: Starting evaluation")
+            try:
+                mean_reward, std_reward, mean_portfolio, std_portfolio = self._evaluate_with_portfolio()
+                logging.info(f"DEBUG: Evaluation completed, mean_reward={mean_reward}, mean_portfolio={mean_portfolio}")
+            except Exception as e:
+                logging.error(f"DEBUG: Evaluation failed with exception: {e}")
+                import traceback
+                logging.error(traceback.format_exc())
+                return True
             if self.log_path is not None:
                 self.logger.record("eval/mean_reward", mean_reward)
                 self.logger.record("eval/std_reward", std_reward)

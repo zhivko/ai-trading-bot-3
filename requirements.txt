@@ -1,4 +1,4 @@
-torch @ file:///c:/git/pytorch/dist/fixed/torch-2.10.0a0+git4bebc82-cp312-cp312-win_amd64.whl
+torch
 numpy==1.26.4
 ccxt==4.5.22
 gymnasium==0.29.1
@@ -25,3 +25,5 @@ yfinance
 websockets
 
 mplfinance
+
+seaborn
