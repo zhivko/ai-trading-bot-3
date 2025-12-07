@@ -526,23 +526,37 @@ def main():
             total_timesteps=args.total_timesteps,
             callback=callback_list,
             progress_bar=False,
-            reset_num_timesteps=reset_num_timesteps # <--- Handles the resumption of step count
+            reset_num_timesteps=reset_num_timesteps
         )
-
-        # Save Final Model + Normalize
-        if not os.path.exists(os.path.dirname(model_path)):
-            os.makedirs(os.path.dirname(model_path))
-
+        
+        # --- Normal Finish Save ---
+        logging.info("Training finished normally.")
         model.save(model_path)
-        train_env.save(f"{model_path}.pkl")
-        logging.info(f"Training Complete. Model saved to {model_path}")
+        if hasattr(train_env, 'save'):
+            train_env.save(f"{model_path}.pkl")
+        logging.info(f"Saved final model to {model_path}")
 
     except KeyboardInterrupt:
-        logging.info("Training interrupted manually. Saving model...")
-        model.save(model_path)
-        train_env.save(f"{model_path}.pkl")
+        # --- CTRL+C Save ---
+        logging.info("\n\n⚠️ INTERRUPTED! Saving current state before exiting...")
+        
+        # 1. Save Model
+        if model:
+            model.save(model_path)
+            logging.info(f"✅ Model saved: {model_path}.zip")
+        
+        # 2. Save Normalization Stats (Critical for Resume)
+        if train_env and hasattr(train_env, 'save'):
+            train_env.save(f"{model_path}.pkl")
+            logging.info(f"✅ Normalization stats saved: {model_path}.pkl")
+            
+        logging.info("Exiting gracefully.")
+        try:
+            sys.exit(0)
+        except SystemExit:
+            os._exit(0)
 
 if __name__ == "__main__":
     # Register the signal handler for debugging hangs
-    signal.signal(signal.SIGINT, debug_signal_handler)
+    # signal.signal(signal.SIGINT, debug_signal_handler)
     main()
