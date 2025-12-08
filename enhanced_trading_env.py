@@ -11,11 +11,36 @@ from volume_profile import get_rolling_vp
 import logging
 
 class EnhancedTradingEnv(gym.Env):
-    metadata = {'render.modes': ['human']}
+    metadata = {
+        'render.modes': ['human'],
+        'render_fps': 4,
+    }
 
     def __init__(self, df, initial_balance=10000, lookback_window=50, vp_days=None, vp_bins=40,
-                     buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1, min_trade_value_usd=10.0):
+                      buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1, min_trade_value_usd=10.0,
+                      pair='BTCUSDT', timeframe='1h', split_date=None):
         super(EnhancedTradingEnv, self).__init__()
+
+        # Update metadata with instance-specific info
+        self.metadata.update({
+            'pair': pair,
+            'timeframe': timeframe,
+            'data_range': f"{df.index[0]} to {df.index[-1]}" if not df.empty else None,
+            'split_date': split_date,
+        })
+
+    def __init__(self, df, initial_balance=10000, lookback_window=50, vp_days=None, vp_bins=40,
+                      buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1, min_trade_value_usd=10.0,
+                      pair='BTCUSDT', timeframe='1h', split_date=None):
+        super(EnhancedTradingEnv, self).__init__()
+
+        # Update metadata with instance-specific info
+        self.metadata.update({
+            'pair': pair,
+            'timeframe': timeframe,
+            'data_range': f"{df.index[0]} to {df.index[-1]}" if not df.empty else None,
+            'split_date': split_date,
+        })
         
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
@@ -199,9 +224,10 @@ class EnhancedTradingEnv(gym.Env):
         market_obs_size = self.lookback_window * len(self.features)
         account_obs_size = 2
         vp_obs_size = len(self.vp_days) * (3 + self.vp_bins)
-        total_obs_size = market_obs_size + account_obs_size + vp_obs_size + len(self.div_features)
+        recurrent_obs_size = 10  # 5 recent actions + 5 position deltas
+        total_obs_size = market_obs_size + account_obs_size + vp_obs_size + len(self.div_features) + recurrent_obs_size
 
-        self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
+        self.action_space = spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
 
         self.stability_penalty_coef = 0.02   # Slight increase (0.01 -> 0.02)
@@ -220,6 +246,9 @@ class EnhancedTradingEnv(gym.Env):
         self.prev_actions = deque(maxlen=3)
         self.action_history = []  # For rendering the full action chart
         self.returns = []
+        self.portfolio_returns = deque(maxlen=100)
+        self.recent_actions = deque(maxlen=5)
+        self.recent_position_deltas = deque(maxlen=5)
 
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
 
@@ -284,6 +313,14 @@ class EnhancedTradingEnv(gym.Env):
 
         return bullish, bearish
 
+    def _sync_wallet_balance(self):
+        # Placeholder for syncing wallet balance via API
+        # In a real implementation, this would call an API to get current balance
+        # and update self.balance accordingly, handling dust positions or partial fills.
+        logging.info("Syncing wallet balance via API")
+        # Example: self.balance = api_client.get_balance('USDT')
+        # For now, it's a no-op as this is a simulated environment.
+
     def get_feature_names(self):
         """
         Returns a list of labels that EXACTLY matches the observation vector construction.
@@ -306,35 +343,83 @@ class EnhancedTradingEnv(gym.Env):
             
         # 4. Divergence Features
         names += self.div_features
-        
+
+        # 5. Recurrent Features
+        names += [f"recent_action_{i}" for i in range(5)]
+        names += [f"position_delta_{i}" for i in range(5)]
+
         return names
 
     def _take_action(self, action):
         self.last_trade_cost = 0
-        action_val = action[0] # Raw value for logging
+        target_weight = action[0]  # 0 to 1, desired allocation to asset
+
+        current_price = self.raw_prices[self.current_step]
+        current_value = self.shares_held * current_price
+        total_value = self.balance + current_value
+        if total_value <= 0:
+            return False
+        current_weight = current_value / total_value
 
         trade_occurred = False
+        if abs(target_weight - current_weight) > 1e-6:
+            if target_weight > current_weight:
+                # Buy
+                invest_amount = (target_weight - current_weight) * total_value
+                if invest_amount > self.min_trade_value_usd:
+                    shares_to_buy = invest_amount / current_price
+                    # Apply slippage if trade occurs
+                    primary_day = self.vp_days[0]
+                    data = self.vp_data[primary_day]
+                    heatmap = data['heatmap'][self.current_step]
+                    vp_max = np.max(heatmap)
+                    slippage = 0.001 * (1 - vp_max)
+                    effective_price = current_price * (1 + slippage)  # Buy at higher price
+                    actual_invest = shares_to_buy * effective_price
+                    fee = actual_invest * self.trading_fee_multiplier
+                    self.balance -= actual_invest + fee
+                    self.shares_held += shares_to_buy
+                    # Update entry price
+                    if self.prev_shares_held > 0:
+                        self.entry_price = (self.entry_price * self.prev_shares_held + effective_price * shares_to_buy) / self.shares_held
+                    else:
+                        self.entry_price = effective_price
+                    self.last_trade_cost = fee
+                    trade_occurred = True
+                    self.trades_in_episode += 1
+                    logging.debug(f"Buy: invest {actual_invest:.2f}, shares {shares_to_buy:.4f}")
+            elif target_weight < current_weight:
+                # Sell
+                sell_value = (current_weight - target_weight) * total_value
+                if sell_value > self.min_trade_value_usd:
+                    shares_to_sell = sell_value / current_price
+                    if shares_to_sell <= self.shares_held + 1e-6:
+                        # Apply slippage
+                        primary_day = self.vp_days[0]
+                        data = self.vp_data[primary_day]
+                        heatmap = data['heatmap'][self.current_step]
+                        vp_max = np.max(heatmap)
+                        slippage = 0.001 * (1 - vp_max)
+                        effective_price = current_price * (1 - slippage)  # Sell at lower price
+                        actual_sell_value = shares_to_sell * effective_price
+                        fee = actual_sell_value * self.trading_fee_multiplier
+                        self.balance += actual_sell_value - fee
+                        self.shares_held -= shares_to_sell
+                        self.last_trade_cost = fee
+                        trade_occurred = True
+                        self.trades_in_episode += 1
+                        logging.debug(f"Sell: value {actual_sell_value:.2f}, shares {shares_to_sell:.4f}")
+                    else:
+                        logging.warning(f"Sell rejected: available={self.shares_held:.6f}, requested={shares_to_sell:.6f}")
+                        # No trade
 
-        # 4. Execute Trade (Existing Logic)
-        current_sign = np.sign(action_val)
+        self.net_worth = self.balance + (self.shares_held * current_price)
+        self.history_net_worth.append(self.net_worth)
 
-        # Get last valid action (or 0 if start)
-        prev_act = self.prev_actions[-1] if self.prev_actions else 0.0
-        prev_sign = np.sign(prev_act) if abs(prev_act) > 0.3 else 0
+        if self.net_worth > self.max_net_worth:
+            self.max_net_worth = self.net_worth
 
-        if current_sign != prev_sign:
-            trade_occurred = True
-
-        # ... existing logic ...
-        current_price = self.raw_prices[self.current_step]
-
-        if trade_occurred:
-            primary_day = self.vp_days[0]
-            data = self.vp_data[primary_day]
-            heatmap = data['heatmap'][self.current_step]
-            vp_max = np.max(heatmap)
-            slippage = 0.001 * (1 - vp_max)
-            current_price *= (1 - slippage * np.sign(action_val))
+        return trade_occurred
 
         # --- TRADE LOGIC ---
         if abs(action_val - self.prev_action) > 0.1:
@@ -468,6 +553,18 @@ class EnhancedTradingEnv(gym.Env):
             exploration = 0.0
         step_reward += exploration  # No baseline
 
+        # Penalize holding losses aggressively
+        if self.shares_held > 0:
+            current_price = self.raw_prices[self.current_step]
+            unrealized_pnl = (current_price - self.entry_price) * self.shares_held
+            if unrealized_pnl < 0:
+                step_reward -= unrealized_pnl * 0.1
+
+        # Incorporate risk-adjusted metrics: Sharpe ratio penalty
+        if len(self.portfolio_returns) > 10:
+            volatility = np.std(list(self.portfolio_returns))
+            step_reward -= volatility * 0.1  # lambda = 0.1
+
         return step_reward
 
     def set_phase(self, new_phase):
@@ -483,6 +580,7 @@ class EnhancedTradingEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.balance = self.initial_balance
+        self._sync_wallet_balance()  # Sync balance on reset
         self.net_worth = self.initial_balance
         self.prev_net_worth = self.initial_balance
         self.shares_held = 0
@@ -508,6 +606,8 @@ class EnhancedTradingEnv(gym.Env):
         self.trades_in_episode = 0
         self.prev_actions = deque(maxlen=3)
         self.action_history = []
+        self.recent_actions = deque(maxlen=5)
+        self.recent_position_deltas = deque(maxlen=5)
 
         self.has_traded_once = False  # Reset exploration bonus
 
@@ -585,7 +685,11 @@ class EnhancedTradingEnv(gym.Env):
         # 3. Create vector from self.div_scores, NOT the raw detection variables
         div_vector = np.array([self.div_scores[k] for k in self.div_features], dtype=np.float32)
 
-        full_obs = np.concatenate((std_features, account_features, vp_features, div_vector))
+        # 4. Recurrent Features
+        recent_actions_padded = np.array(list(self.recent_actions) + [0.0] * (5 - len(self.recent_actions)), dtype=np.float32)
+        recent_deltas_padded = np.array(list(self.recent_position_deltas) + [0.0] * (5 - len(self.recent_position_deltas)), dtype=np.float32)
+
+        full_obs = np.concatenate((std_features, account_features, vp_features, div_vector, recent_actions_padded, recent_deltas_padded))
 
         # --- DEBUG LOGGING ---
         # Print stats every 10000 steps to avoid spamming, but see what's happening
@@ -652,8 +756,9 @@ class EnhancedTradingEnv(gym.Env):
     def step(self, action):
         # REVERTED: We keep the raw action magnitude.
         # Values > 1.0 indicate high model confidence.
-    
+
         self.current_step += 1
+        self._sync_wallet_balance()  # Sync balance on each step
         current_price = self.raw_prices[self.current_step]
     
         # === LOOK-AHEAD PnL AVERAGE (this is the magic) ===
@@ -664,26 +769,34 @@ class EnhancedTradingEnv(gym.Env):
                 ret = (future_price - current_price) / current_price
                 # direction matters → multiply by current position (long = +1, short = -1)
                 future_returns.append(ret * self.current_position)
-        
+
         if future_returns:  # always true except very end of dataset
             num_available = len(future_returns)
             weights = self.lookahead_weights[:num_available]
             lookahead_pnl = np.average(future_returns, weights=weights)
         else:
             lookahead_pnl = 0.0
-    
+
         # === 3. Optional: still keep a tiny transaction cost so agent doesn’t flip for free ===
         trade_cost = 0.0005 * abs(action[0] - self.current_position)  # 5 bps, very light
-        
+
         # Final reward = average future PnL minus tiny friction
         reward = lookahead_pnl - trade_cost
-    
+
+        self.prev_shares_held = self.shares_held  # For delta and timely sell bonus
+
         # Pass RAW action to execution logic
         trade_occurred = self._take_action(action)
-    
+
+        # Reward timely sells
+        if trade_occurred and self.shares_held < self.prev_shares_held:
+            realized_pnl = (current_price - self.entry_price) * (self.prev_shares_held - self.shares_held)
+            if realized_pnl > 0:
+                reward += 0.1
+
         if trade_occurred:  # Trigger has_traded_once on any trade
             self.has_traded_once = True
-    
+
         action_val = float(action[0])
 
         # Hard trade limit penalty
@@ -694,6 +807,9 @@ class EnhancedTradingEnv(gym.Env):
         # The chart will now show values outside [-1, 1], preserving information.
         self.prev_actions.append(action_val)
         self.action_history.append(action_val)
+        self.recent_actions.append(action_val)
+        delta = self.shares_held - self.prev_shares_held
+        self.recent_position_deltas.append(delta)
 
         # Append to returns
         self.returns.append(reward)
@@ -706,6 +822,10 @@ class EnhancedTradingEnv(gym.Env):
             self.steps_since_last_trade = 0
         else:
             self.steps_since_last_trade += 1
+
+        # Update portfolio returns for Sharpe ratio
+        return_step = (self.net_worth - self.prev_net_worth) / (self.prev_net_worth + 1e-8)
+        self.portfolio_returns.append(return_step)
 
         self.prev_net_worth = self.net_worth
         self.prev_shares_held = self.shares_held
@@ -789,3 +909,10 @@ class EnhancedTradingEnv(gym.Env):
         plt.close(fig)
 
         return data  # Return the Numpy Array (Safe for SubprocVecEnv)
+
+# Register the environment with Gym
+gym.register(
+    id='EnhancedTradingEnv-v0',
+    entry_point='enhanced_trading_env:EnhancedTradingEnv',
+    # Note: df must be provided when creating the env
+)

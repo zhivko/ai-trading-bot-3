@@ -236,6 +236,9 @@ def main():
         'trading_fee_multiplier': args.trading_fee,
         'phase': args.phase,
         'min_trade_value_usd': 1.0,  # ← Critical: allow $1 trades
+        'pair': args.pair,
+        'timeframe': args.timeframe,
+        'split_date': args.test_split,
     }
     logging.info(f"Env kwargs: {env_kwargs}")
 

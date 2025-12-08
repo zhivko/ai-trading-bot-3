@@ -54,3 +54,6 @@ checkpoints/
 __pycache__/
 
 *.npz
+
+
+*.log
