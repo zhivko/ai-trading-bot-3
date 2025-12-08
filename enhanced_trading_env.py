@@ -311,47 +311,12 @@ class EnhancedTradingEnv(gym.Env):
 
     def _take_action(self, action):
         self.last_trade_cost = 0
-        # 1. Clip & Deadband (Keep your existing logic)
         action_val = action[0] # Raw value for logging
-
-        # Safety Clip for Logic
-        safe_action = np.clip(action_val, -1.0, 1.0)
-
-        # if abs(safe_action) < self.min_action_threshold:
-        #    safe_action = 0.0
 
         trade_occurred = False
 
-        # 1. COOLDOWN CHECK
-        if self.steps_since_last_trade < self.cooldown_steps and self.steps_since_last_trade > 0:
-            logging.debug(f"Trade blocked: cooldown active ({self.steps_since_last_trade}/{self.cooldown_steps})")
-            return False
-
-        # 3. NEW: SATURATION CHECK (Stop Pyramiding)
-        # If we are already LONG (>0) and want to BUY (>0) -> Block it.
-        # If we are already SHORT (<0) and want to SELL (<0) -> Block it.
-        # We only allow actions that CHANGE the state (Flip or Close).
-
-        is_buy_signal = safe_action > 0
-        is_sell_signal = safe_action < 0
-
-        currently_long = self.shares_held > 0
-        currently_short = self.shares_held < 0
-
-        if is_buy_signal and currently_long:
-            # We are already long. Don't pay the fee again just to say "I still like this".
-            logging.debug(f"Trade blocked: already long, buy signal ignored")
-            self.action_was_blocked = True
-            return False
-
-        if is_sell_signal and currently_short:
-            # We are already short. Don't pay the fee again.
-            logging.debug(f"Trade blocked: already short, sell signal ignored")
-            self.action_was_blocked = True
-            return False
-
         # 4. Execute Trade (Existing Logic)
-        current_sign = np.sign(safe_action)
+        current_sign = np.sign(action_val)
 
         # Get last valid action (or 0 if start)
         prev_act = self.prev_actions[-1] if self.prev_actions else 0.0
@@ -369,7 +334,7 @@ class EnhancedTradingEnv(gym.Env):
             heatmap = data['heatmap'][self.current_step]
             vp_max = np.max(heatmap)
             slippage = 0.001 * (1 - vp_max)
-            current_price *= (1 - slippage * np.sign(safe_action))
+            current_price *= (1 - slippage * np.sign(action_val))
 
         # --- TRADE LOGIC ---
         if abs(action_val - self.prev_action) > 0.1:
