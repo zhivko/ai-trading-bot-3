@@ -29,19 +29,6 @@ class EnhancedTradingEnv(gym.Env):
             'split_date': split_date,
         })
 
-    def __init__(self, df, initial_balance=10000, lookback_window=50, vp_days=None, vp_bins=40,
-                      buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1, min_trade_value_usd=10.0,
-                      pair='BTCUSDT', timeframe='1h', split_date=None):
-        super(EnhancedTradingEnv, self).__init__()
-
-        # Update metadata with instance-specific info
-        self.metadata.update({
-            'pair': pair,
-            'timeframe': timeframe,
-            'data_range': f"{df.index[0]} to {df.index[-1]}" if not df.empty else None,
-            'split_date': split_date,
-        })
-        
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
         self.action_penalty = 0.0005             # tiny L1 penalty to discourage twitching
