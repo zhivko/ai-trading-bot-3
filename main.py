@@ -30,6 +30,7 @@ from stable_baselines3.common.utils import set_random_seed
 # WandB
 import wandb
 from wandb.integration.sb3 import WandbCallback
+wandb.require("core")
 
 # Custom Modules
 from enhanced_trading_env import EnhancedTradingEnv

@@ -264,7 +264,6 @@ class EnhancedTradingEnv(gym.Env):
         self.prev_sign = 0  # Initialize for switch penalty
         self.hold_steps = 0  # Track hold duration for churn penalty
         self.last_trade_step = 0  # For churn calculation
-        self.reset()
 
     def _detect_divergences(self, series, price_series, window=40, tolerance=8):
         if self.current_step < window + 20:
