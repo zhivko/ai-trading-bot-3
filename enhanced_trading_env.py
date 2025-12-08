@@ -37,9 +37,9 @@ class EnhancedTradingEnv(gym.Env):
         self.vp_bins = vp_bins
         self.trading_fee_multiplier = trading_fee_multiplier
         
-        # === FIX: Lower thresholds to encourage crossing into trades ===
-        self.buy_threshold = 0.05  # Lower to trigger on weaker signals
-        self.sell_threshold = -0.05
+        # === FIX: Use lower defaults from args (0.05/-0.05) but cap dynamic scaling ===
+        self.buy_threshold = min(buy_threshold, 0.05)  # Cap at 5% to match action scale
+        self.sell_threshold = max(sell_threshold, -0.05)  # Symmetric
         
         # --- 1. DATA PREP ---
         self.raw_df = df.reset_index(drop=False)
@@ -311,10 +311,10 @@ class EnhancedTradingEnv(gym.Env):
         self.last_trade_cost = 0
         # 1. Clip & Deadband (Keep your existing logic)
         action_val = action[0] # Raw value for logging
-        
+
         # Safety Clip for Logic
         safe_action = np.clip(action_val, -1.0, 1.0)
-        
+
         # === FIX 2: Force hold on tiny actions (kills micro-trades) ===
         if abs(safe_action) < self.min_action_threshold:
             safe_action = 0.0
@@ -323,25 +323,28 @@ class EnhancedTradingEnv(gym.Env):
 
         # 1. COOLDOWN CHECK
         if self.steps_since_last_trade < self.cooldown_steps and self.steps_since_last_trade > 0:
+            logging.debug(f"Trade blocked: cooldown active ({self.steps_since_last_trade}/{self.cooldown_steps})")
             return False
 
         # 3. NEW: SATURATION CHECK (Stop Pyramiding)
         # If we are already LONG (>0) and want to BUY (>0) -> Block it.
         # If we are already SHORT (<0) and want to SELL (<0) -> Block it.
         # We only allow actions that CHANGE the state (Flip or Close).
-        
+
         is_buy_signal = safe_action > 0
         is_sell_signal = safe_action < 0
-        
+
         currently_long = self.shares_held > 0
         currently_short = self.shares_held < 0
-        
+
         if is_buy_signal and currently_long:
             # We are already long. Don't pay the fee again just to say "I still like this".
+            logging.debug(f"Trade blocked: already long, buy signal ignored")
             return False
-            
+
         if is_sell_signal and currently_short:
             # We are already short. Don't pay the fee again.
+            logging.debug(f"Trade blocked: already short, sell signal ignored")
             return False
 
         # 4. Execute Trade (Existing Logic)
@@ -374,9 +377,17 @@ class EnhancedTradingEnv(gym.Env):
         atr_idx = self.features.index('atr_norm')
         atr_norm = self.market_features[self.current_step, atr_idx]
         thresh_mult = 1 + (atr_norm * 0.5)  # Higher vol → higher threshold (needs stronger action)
+        # === FIX: Cap multiplier to prevent unachievable thresholds ===
+        thresh_mult = min(thresh_mult, 1.1)  # Max 10% boost; keeps dynamic_buy <= 0.055
 
         dynamic_buy_threshold = self.buy_threshold * thresh_mult
         dynamic_sell_threshold = self.sell_threshold * thresh_mult  # More negative in high vol
+
+        # Debug log (remove after testing)
+        if self.current_step % 100 == 0:  # Every 100 steps
+            logging.debug(f"Step {self.current_step}: atr_norm={atr_norm:.4f}, thresh_mult={thresh_mult:.3f}, buy_th={dynamic_buy_threshold:.3f}")
+
+        logging.debug(f"Action: {action_val:.3f}, Buy thresh: {dynamic_buy_threshold:.3f}, Sell thresh: {dynamic_sell_threshold:.3f}, ATR: {atr_norm:.3f}")
 
         # --- CONFIGURABLE THRESHOLDS ---
         if action_val > dynamic_buy_threshold: # Buy
@@ -388,6 +399,9 @@ class EnhancedTradingEnv(gym.Env):
                 self.balance -= amount_to_invest + fee
                 self.shares_held += shares_bought
                 self.trades_in_episode += 1  # Increment on actual trade
+                logging.debug(f"Buy trade executed: amount {amount_to_invest:.2f}, shares {shares_bought:.4f}")
+            else:
+                logging.debug(f"Buy trade blocked: amount {amount_to_invest:.2f} < 10")
 
         elif action_val < dynamic_sell_threshold: # Sell
             shares_to_sell = self.shares_held * abs(safe_action)
@@ -398,6 +412,9 @@ class EnhancedTradingEnv(gym.Env):
                 self.balance += trade_value - fee
                 self.shares_held -= shares_to_sell
                 self.trades_in_episode += 1  # Increment on actual trade
+                logging.debug(f"Sell trade executed: shares {shares_to_sell:.4f}, value {trade_value:.2f}")
+            else:
+                logging.debug(f"Sell trade blocked: value {shares_to_sell * current_price:.2f} < 10")
 
         self.net_worth = self.balance + (self.shares_held * current_price)
         self.history_net_worth.append(self.net_worth)
@@ -732,7 +749,8 @@ class EnhancedTradingEnv(gym.Env):
             "ema50": self.data_matrix[self.current_step, self.ema_50_idx],
             "timestamp": str(self.raw_df.index[self.current_step]),
             "vp_heatmap": heatmap,
-            "trades_per_episode": self.trades_in_episode
+            "trades_per_episode": self.trades_in_episode,
+            # Add for debug: "debug_thresholds": {"buy": dynamic_buy_threshold, "sell": dynamic_sell_threshold}
         }
 
         return obs, reward, terminated, truncated, info
