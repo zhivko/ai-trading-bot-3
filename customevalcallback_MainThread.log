@@ -1,0 +1,3 @@
+2025-12-08 17:54:36,829 - INFO - MainThread - base_callbacks.py:308 - CustomEvalCallback eval_env type: <class 'stable_baselines3.common.vec_env.dummy_vec_env.DummyVecEnv'>
+2025-12-08 17:56:17,196 - INFO - MainThread - base_callbacks.py:397 - Evaluation triggered at n_calls=4166, num_timesteps=49992, eval_freq=4166
+2025-12-08 17:56:17,197 - INFO - MainThread - base_callbacks.py:413 - Starting evaluation

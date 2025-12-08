@@ -85,7 +85,7 @@ def parse_args():
     parser.add_argument("--algo", type=str, default="recurrentppo", choices=["sac", "ppo", "a2c", "td3", "recurrentppo"], help="RL Algorithm")
     parser.add_argument("--total-timesteps", type=int, default=10_000_000, help="Total training steps")
     parser.add_argument("--batch-size", type=int, default=4096, help="Batch size for training")
-    parser.add_argument("--learning-rate", type=float, default=0.0001, help="Learning rate")
+    parser.add_argument("--learning-rate", type=float, default=0.0003, help="Learning rate")
     
     # System Config
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Training device")

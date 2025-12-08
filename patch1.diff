@@ -1,0 +1,63 @@
+diff --git a/enhanced_trading_env.py b/enhanced_trading_env.py
+index a1b2c3d..x9y8z7w 100644
+--- a/enhanced_trading_env.py
++++ b/enhanced_trading_env.py
+@@ -37,8 +37,8 @@ class EnhancedTradingEnv(gym.Env):
+         self.trading_fee_multiplier = trading_fee_multiplier
+         
+-        # === FIX: Use lower defaults from args (0.01/-0.01) but cap dynamic scaling ===
+-        self.buy_threshold = min(buy_threshold, 0.01)  # Cap at 1% to match action scale
+-        self.sell_threshold = max(sell_threshold, -0.01)  # Symmetric
++        # === FIX: Use args directly so 0.0 works ===
++        self.buy_threshold = buy_threshold
++        self.sell_threshold = sell_threshold
+         
+         # --- 1. DATA PREP ---
+@@ -142,8 +142,8 @@ class EnhancedTradingEnv(gym.Env):
+         # === FIX: Soften churn/cooldown to not over-punish trading ===
+-        self.target_hold_duration = 12
+-        self.cooldown_steps = 12             # Was 24 → shorter cooldown
++        self.target_hold_duration = 0
++        self.cooldown_steps = 1              # Allow frequent trading for learning
+ 
+         # REWARD PENALTIES
+@@ -165,10 +165,10 @@ class EnhancedTradingEnv(gym.Env):
+         # === PHASE-AWARE THRESHOLDS (this is the correct way) ===
+         if self.phase == 0:
+             self.min_trade_value      = 1.0    # $1  → allow baby steps
+-            self.min_action_threshold = 0.02   # 2%   → let small signals through
++            self.min_action_threshold = 0.0    # No deadband
+         else:
+             self.min_trade_value      = 10.0   # $10 → real anti-churn
+-            self.min_action_threshold = 0.05   # 5%  → strong hold bias
++            self.min_action_threshold = 0.0    # No deadband
+ 
+         # === FIX: Anti-zero-reward params ===
+@@ -262,8 +262,8 @@ class EnhancedTradingEnv(gym.Env):
+         # === FIX 2: Force hold on tiny actions (kills micro-trades) ===
+-        if abs(safe_action) < self.min_action_threshold:
+-            safe_action = 0.0
++        # if abs(safe_action) < self.min_action_threshold:
++        #    safe_action = 0.0
+ 
+         trade_occurred = False
+@@ -325,4 +325,5 @@ class EnhancedTradingEnv(gym.Env):
+         logging.debug(f"Action: {action_val:.3f}, Buy thresh: {dynamic_buy_threshold:.3f}, Sell thresh: {dynamic_sell_threshold:.3f}, ATR: {atr_norm:.3f}")
++        self.action_was_blocked = False # Reset flag
+ 
+         # --- CONFIGURABLE THRESHOLDS ---
+@@ -348,4 +349,5 @@ class EnhancedTradingEnv(gym.Env):
+             else:
+                 logging.debug(f"Sell trade blocked: value {trade_value:.2f} < {self.min_trade_value}")
++                self.action_was_blocked = True # Mark for penalty
+ 
+         self.net_worth = self.balance + (self.shares_held * current_price)
+@@ -367,4 +369,8 @@ class EnhancedTradingEnv(gym.Env):
+         step_reward -= self.action_penalty * abs(action)
+ 
++        # === FIX: Punish invalid attempts (Trying to sell nothing) ===
++        if hasattr(self, 'action_was_blocked') and self.action_was_blocked:
++            step_reward -= 0.1
++
+         # 2. The Fee (Real Cost)
+         # If a trade occurred, we subtract a fixed "mental friction" cost
