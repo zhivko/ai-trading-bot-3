@@ -223,6 +223,12 @@ class EnhancedTradingEnv(gym.Env):
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
 
         self.phase = phase
+
+        # === FIX: Anti-zero-reward params ===
+        self.hold_bonus = 0.0001  # Tiny baseline (0.01% per step ~ 3% annual proxy)
+        self.exploration_bonus = 0.01  # One-time nudge to open first trade
+        self.has_traded_once = False  # Track to fade bonus
+
         self.prev_sign = 0  # Initialize for switch penalty
         self.hold_steps = 0  # Track hold duration for churn penalty
         self.last_trade_step = 0  # For churn calculation
@@ -433,8 +439,10 @@ class EnhancedTradingEnv(gym.Env):
         if (action < -0.5 and self.shares_held > 0) or (action > 0.5 and self.shares_held < 0):  # Closing a long or short position
             hold_duration = self.current_step - self.last_trade_step
             if hold_duration > 0:
-                # Linear decay: full -0.5 for hold < 4 steps, down to 0 at 24+ steps
-                churn_penalty = max(0, -0.5 * (1 - (hold_duration - 1) / 23))
+                if hold_duration < 12:                     # Softer: min hold 12 steps (less punitive)
+                    churn_penalty = -0.1 * (1 - hold_duration / 12.0)   # Max -0.1 (was -0.5)
+                else:
+                    churn_penalty = 0.0
                 step_reward += churn_penalty
                 logging.debug(f"Churn penalty applied: {churn_penalty:.3f} (hold: {hold_duration})")
             self.hold_steps = 0
@@ -450,6 +458,11 @@ class EnhancedTradingEnv(gym.Env):
 
         # Cumulative penalty for trades in episode
         step_reward -= 0.05 * self.trades_in_episode
+
+        # === FIX: Add baseline + exploration to break zero-reward trap ===
+        baseline = self.hold_bonus  # Small positive for any survival (beats zero)
+        exploration = self.exploration_bonus if not self.has_traded_once else 0.0
+        step_reward += baseline + exploration
 
         return step_reward
 
@@ -482,6 +495,8 @@ class EnhancedTradingEnv(gym.Env):
         self.trades_in_episode = 0
         self.prev_actions = deque(maxlen=3)
         self.action_history = []
+
+        self.has_traded_once = False  # Reset exploration bonus
 
         return self._next_observation(), {}
 
@@ -630,6 +645,9 @@ class EnhancedTradingEnv(gym.Env):
 
         # Pass RAW action to execution logic
         trade_occurred = self._take_action(action)
+
+        if trade_occurred and self.shares_held != 0:  # Opened a real position
+            self.has_traded_once = True
 
         # 3. Calculate reward
         action_val = float(action[0])
