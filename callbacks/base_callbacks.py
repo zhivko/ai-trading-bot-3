@@ -306,7 +306,6 @@ class CustomEvalCallback(EvalCallback):
             self._logger.addHandler(handler)
             self._logger.setLevel(logging.INFO)
         self._logger.info(f"CustomEvalCallback eval_env type: {type(self.eval_env)}")
-        self._logger.info(f"CustomEvalCallback model env type: {type(self.model.get_env())}")
 
     def _evaluate_with_portfolio(self):
         """
