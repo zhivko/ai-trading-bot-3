@@ -31,9 +31,9 @@ class EnhancedTradingEnv(gym.Env):
         self.vp_bins = vp_bins
         self.trading_fee_multiplier = trading_fee_multiplier
         
-        # --- THRESHOLDS (Increased deadband) ---
-        self.buy_threshold = 0.4  # Increased from 0.5 for wider deadband
-        self.sell_threshold = -0.4
+        # === FIX: Lower thresholds to encourage crossing into trades ===
+        self.buy_threshold = 0.15  # Lower to trigger on weaker signals
+        self.sell_threshold = -0.15
         
         # --- 1. DATA PREP ---
         self.raw_df = df.reset_index(drop=False)
@@ -203,13 +203,9 @@ class EnhancedTradingEnv(gym.Env):
         self.interaction_penalty = 0.0
         self.reward_scaling = 1.0
 
-        # --- DYNAMIC CHURN SETTINGS ---
-        self.target_hold_duration = 48       # 48 Hours target hold
-
-        # COOLDOWN (The "Hard" Constraint)
-        # The agent cannot trade again for this many steps after a trade.
-        # This prevents "machine gun" firing.
-        self.cooldown_steps = 24
+        # === FIX: Soften churn/cooldown to not over-punish trading ===
+        self.target_hold_duration = 12
+        self.cooldown_steps = 12             # Was 24 → shorter cooldown
 
         # REWARD PENALTIES
         # We switch to a PURE PnL model, but we add a fixed "Cost of Living"
@@ -225,8 +221,8 @@ class EnhancedTradingEnv(gym.Env):
         self.phase = phase
 
         # === FIX: Anti-zero-reward params ===
-        self.hold_bonus = 0.0001  # Tiny baseline (0.01% per step ~ 3% annual proxy)
-        self.exploration_bonus = 0.01  # One-time nudge to open first trade
+        self.hold_bonus = 0.0  # Remove: No free positive for flat holds
+        self.exploration_bonus = 0.005  # Keep but lower; apply only on first trade
         self.has_traded_once = False  # Track to fade bonus
 
         self.prev_sign = 0  # Initialize for switch penalty
@@ -459,10 +455,13 @@ class EnhancedTradingEnv(gym.Env):
         # Cumulative penalty for trades in episode
         step_reward -= 0.05 * self.trades_in_episode
 
-        # === FIX: Add baseline + exploration to break zero-reward trap ===
-        baseline = self.hold_bonus  # Small positive for any survival (beats zero)
-        exploration = self.exploration_bonus if not self.has_traded_once else 0.0
-        step_reward += baseline + exploration
+        # Exploration: Only on first trade (not upfront)
+        if trade_occurred and not self.has_traded_once:
+            exploration = self.exploration_bonus
+            self.has_traded_once = True
+        else:
+            exploration = 0.0
+        step_reward += exploration  # No baseline
 
         return step_reward
 
@@ -646,7 +645,7 @@ class EnhancedTradingEnv(gym.Env):
         # Pass RAW action to execution logic
         trade_occurred = self._take_action(action)
 
-        if trade_occurred and self.shares_held != 0:  # Opened a real position
+        if trade_occurred:  # Trigger has_traded_once on any trade
             self.has_traded_once = True
 
         # 3. Calculate reward

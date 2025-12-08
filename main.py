@@ -483,13 +483,13 @@ def main():
         model = RecurrentPPO(
             "MlpLstmPolicy",
             train_env,
+            ent_coef=0.01,  # === FIX: Add entropy to encourage exploration (trades) ===
             learning_rate=1e-4,
             n_steps=4096,
             batch_size=128,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.3,
-            ent_coef=0.05,
             vf_coef=0.5,
             max_grad_norm=0.5,
             tensorboard_log=f"./logs/{args.algo}_tensorboard",
