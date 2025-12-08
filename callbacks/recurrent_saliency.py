@@ -162,9 +162,11 @@ class RecurrentFeatureSaliencyCallback(BaseCallback):
             plt.close()
             
             if self.verbose > 0:
-                top_feat = df_attrs.iloc[0]['Feature']
-                top_val = df_attrs.iloc[0]['Importance']
-                logging.info(f"[Saliency] Top feature: {top_feat} ({top_val:.4f})")
+                logging.info("[Saliency] Top 10 features:")
+                for i in range(min(10, len(df_attrs))):
+                    feat = df_attrs.iloc[i]['Feature']
+                    val = df_attrs.iloc[i]['Importance']
+                    logging.info(f"  {i+1}. {feat} ({val:.4f})")
 
         except Exception as e:
             logging.info(f"[Saliency] Error computing gradients: {e}")

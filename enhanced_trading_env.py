@@ -19,7 +19,7 @@ class EnhancedTradingEnv(gym.Env):
         
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
-        self.min_action_threshold = 0.05         # if |action| < 5% → force hold (Fix 2)
+        self.min_action_threshold = 0.01         # if |action| < 1% → force hold (Fix 2)
         self.action_penalty = 0.0005             # tiny L1 penalty to discourage twitching
         self.last_trade_cost = 0
         
@@ -38,8 +38,8 @@ class EnhancedTradingEnv(gym.Env):
         self.trading_fee_multiplier = trading_fee_multiplier
         
         # === FIX: Lower thresholds to encourage crossing into trades ===
-        self.buy_threshold = 0.15  # Lower to trigger on weaker signals
-        self.sell_threshold = -0.15
+        self.buy_threshold = 0.05  # Lower to trigger on weaker signals
+        self.sell_threshold = -0.05
         
         # --- 1. DATA PREP ---
         self.raw_df = df.reset_index(drop=False)
@@ -660,7 +660,9 @@ class EnhancedTradingEnv(gym.Env):
                 future_returns.append(ret * self.current_position)
         
         if future_returns:  # always true except very end of dataset
-            lookahead_pnl = np.average(future_returns, weights=self.lookahead_weights)
+            num_available = len(future_returns)
+            weights = self.lookahead_weights[:num_available]
+            lookahead_pnl = np.average(future_returns, weights=weights)
         else:
             lookahead_pnl = 0.0
     

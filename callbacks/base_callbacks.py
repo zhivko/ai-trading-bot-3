@@ -8,6 +8,7 @@ import matplotlib
 import sys
 from fetch_metrics import generate_metrics
 import logging
+import threading
 from tqdm import tqdm
 
 matplotlib.use('Agg')
@@ -23,6 +24,13 @@ class ProgressBarCallback(BaseCallback):
         self.pbar = None
         self.update_interval = update_interval
         self.last_update_step = 0
+        self._logger = logging.getLogger(self.__class__.__name__)
+        if not self._logger.handlers:
+            thread_name = threading.current_thread().name
+            handler = logging.FileHandler(f"{self.__class__.__name__.lower()}_{thread_name}.log")
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s'))
+            self._logger.addHandler(handler)
+            self._logger.setLevel(logging.INFO)
 
     def _on_training_start(self):
         # Initialize tqdm with total timesteps
@@ -62,6 +70,13 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
         self.log_dir = log_dir
         self.save_path = os.path.join(log_dir, 'best_model')
         self.best_mean_reward = -np.inf
+        self._logger = logging.getLogger(self.__class__.__name__)
+        if not self._logger.handlers:
+            thread_name = threading.current_thread().name
+            handler = logging.FileHandler(f"{self.__class__.__name__.lower()}_{thread_name}.log")
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s'))
+            self._logger.addHandler(handler)
+            self._logger.setLevel(logging.INFO)
 
     def _init_callback(self) -> None:
         if self.save_path is not None:
@@ -73,13 +88,13 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
             if len(x) > 0:
                 mean_reward = np.mean(y[-100:])
                 if self.verbose > 0:
-                    logging.info(f"Num timesteps: {self.num_timesteps}")
-                    logging.info(f"Best mean reward: {self.best_mean_reward:.2f} - Last mean reward per episode: {mean_reward:.2f}")
+                    self._logger.info(f"Num timesteps: {self.num_timesteps}")
+                    self._logger.info(f"Best mean reward: {self.best_mean_reward:.2f} - Last mean reward per episode: {mean_reward:.2f}")
 
                 if mean_reward > self.best_mean_reward:
                     self.best_mean_reward = mean_reward
                     if self.verbose > 0:
-                        logging.info(f"Saving new best model to {self.save_path}")
+                        self._logger.info(f"Saving new best model to {self.save_path}")
                     self.model.save(self.save_path)
         return True
 
@@ -283,6 +298,15 @@ class CustomEvalCallback(EvalCallback):
         self.callback_on_new_best = None  # Avoid init_callback error by not setting to function
         self.best_mean_portfolio = -np.inf
         self.best_std_portfolio = 0
+        self._logger = logging.getLogger(self.__class__.__name__)
+        if not self._logger.handlers:
+            thread_name = threading.current_thread().name
+            handler = logging.FileHandler(f"{self.__class__.__name__.lower()}_{thread_name}.log")
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s'))
+            self._logger.addHandler(handler)
+            self._logger.setLevel(logging.INFO)
+        self._logger.info(f"CustomEvalCallback eval_env type: {type(self.eval_env)}")
+        self._logger.info(f"CustomEvalCallback model env type: {type(self.model.get_env())}")
 
     def _evaluate_with_portfolio(self):
         """
@@ -371,10 +395,10 @@ class CustomEvalCallback(EvalCallback):
 
     def _on_step(self) -> bool:
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
-            logging.info(f"DEBUG: Evaluation triggered at n_calls={self.n_calls}, num_timesteps={self.num_timesteps}, eval_freq={self.eval_freq}")
+            self._logger.info(f"Evaluation triggered at n_calls={self.n_calls}, num_timesteps={self.num_timesteps}, eval_freq={self.eval_freq}")
             # --- UPDATED: Phase Switching ---
             if self.num_timesteps % 250000 == 0:
-                logging.info("DEBUG: Starting phase switching")
+                self._logger.info("Starting phase switching")
                 current_phase = getattr(self.model.env, 'phase', 1)
                 new_phase = min(current_phase + 1, 3)  # Up to phase 3
                 # Broadcast to train env (works for Subproc via attr access)
@@ -385,16 +409,16 @@ class CustomEvalCallback(EvalCallback):
                     self.model.env.phase = new_phase
                 if wandb.run is not None:
                     wandb.log({'curriculum/phase': new_phase, 'step': self.num_timesteps})
-                logging.info(f"DEBUG: Phase switching completed, new_phase={new_phase}")
+                self._logger.info(f"Phase switching completed, new_phase={new_phase}")
 
-            logging.info("DEBUG: Starting evaluation")
+            self._logger.info("Starting evaluation")
             try:
                 mean_reward, std_reward, mean_portfolio, std_portfolio, mean_trades = self._evaluate_with_portfolio()
-                logging.info(f"DEBUG: Evaluation completed, mean_reward={mean_reward}, mean_portfolio={mean_portfolio}, mean_trades={mean_trades}")
+                self._logger.info(f"Evaluation completed, mean_reward={mean_reward}, mean_portfolio={mean_portfolio}, mean_trades={mean_trades}")
             except Exception as e:
-                logging.error(f"DEBUG: Evaluation failed with exception: {e}")
+                self._logger.error(f"Evaluation failed with exception: {e}")
                 import traceback
-                logging.error(traceback.format_exc())
+                self._logger.error(traceback.format_exc())
                 return True
             if self.log_path is not None:
                 self.logger.record("eval/mean_reward", mean_reward)

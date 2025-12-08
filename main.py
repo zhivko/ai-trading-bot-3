@@ -70,8 +70,8 @@ def parse_args():
     parser.add_argument("--timeframe", type=str, default="1h", help="Data timeframe")
     parser.add_argument("--initial-balance", type=float, default=10000, help="Starting money")
     parser.add_argument("--trading-fee", type=float, default=0.0015, help="Trading fee (0.15%)")
-    parser.add_argument("--buy-threshold", type=float, default=0.4, help="Threshold to trigger buy action")
-    parser.add_argument("--sell-threshold", type=float, default=-0.4, help="Threshold to trigger sell action")
+    parser.add_argument("--buy-threshold", type=float, default=0.1, help="Threshold to trigger buy action")
+    parser.add_argument("--sell-threshold", type=float, default=-0.1, help="Threshold to trigger sell action")
     
     # Environment Config
     # REVERTED TO YOUR DEFAULT: [7, 30]
@@ -133,6 +133,10 @@ def main():
     # Delete old log file to start fresh
     if os.path.exists('ml.log'):
         os.remove('ml.log')
+    # Delete old callback log files
+    callback_log_files = glob.glob('*callback*_*.log')
+    for f in callback_log_files:
+        os.remove(f)
     logging.basicConfig(filename='ml.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s')
     logging.info("Starting main function...")
     args = parse_args()
@@ -210,6 +214,7 @@ def main():
     logging.info("Applying VecNormalize to training env...")
     train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., clip_reward=10.)
     logging.info("VecNormalize applied.")
+    logging.info(f"Train env type after normalization: {type(train_env)}")
 
     # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
 
@@ -221,6 +226,7 @@ def main():
 
     eval_env = DummyVecEnv([lambda: EnhancedTradingEnv(**eval_env_kwargs)])
     logging.info("Evaluation environment created.")
+    logging.info(f"Eval env type before normalization: {type(eval_env)}")
 
     # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
     # Optional: Load train stats for eval (set training=False)
@@ -325,6 +331,7 @@ def main():
             # This allows us to reach through the wrappers to the actual Env code
             feature_names = train_env.env_method("get_feature_names", indices=0)[0]
             logging.info(f"✅ Successfully retrieved {len(feature_names)} feature names from environment.")
+            logging.info(f"Feature names: {feature_names}")
         except Exception as e:
             logging.warning(f"⚠️ env_method failed to get names ({e}). Trying attribute access...")
             try:
@@ -378,8 +385,8 @@ def main():
     
     # Resume Logic
     model_path = f"./models/{args.algo}_{args.pair}"
-    best_model_path = f"{log_dir}/best_model.zip"
-    norm_path = f"{log_dir}/vec_normalize.pkl"
+    best_model_path = f"{log_dir}/best_model_{args.algo}.zip"
+    norm_path = f"{log_dir}/vec_normalize_{args.algo}.pkl"
     
     model = None
     reset_num_timesteps = True
