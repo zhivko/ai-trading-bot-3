@@ -305,4 +305,4 @@ def generate_metrics():
     thread.start()
 
 if __name__ == "__main__":
-    oics()
+    generate_metrics()

@@ -9,7 +9,7 @@ PAIRS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
 TIMEFRAME = '1h'
 
 # Configure logging
-logging.basicConfig(filename='data_fetcher.log', level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(filename='data_fetcher.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def fetch_historical_ohlcv(pair, start_date, end_date=None):
     """
