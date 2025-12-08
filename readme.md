@@ -173,4 +173,12 @@ https://github.com/zhivko/ai-trading-bot-3/blob/feat/RecurrentPPO/enhanced_tradi
 https://github.com/zhivko/ai-trading-bot-3/blob/feat/RecurrentPPO/callbacks/base_callbacks
 https://github.com/zhivko/ai-trading-bot-3/blob/feat/RecurrentPPO/callbacks/feature_saliency.py
 
+visualisation
 
+https://github.com/zhivko/ai-trading-bot-3/blob/feat/RecurrentPPO/callbacks/visualize_predictions.py
+
+
+## to kILL python processes
+```cmd
+taskkill /F /IM python.exe
+```
