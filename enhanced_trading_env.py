@@ -351,17 +351,23 @@ class EnhancedTradingEnv(gym.Env):
         return names
 
     def _take_action(self, action):
+        """
+        Executes trades based on a continuous target weight in [0, 1].
+        Also logs when BUY/SELL are blocked so they are visible in logs.
+        """
         self.last_trade_cost = 0
-        target_weight = action[0]  # 0 to 1, desired allocation to asset
+        target_weight = float(action[0])  # 0 to 1, desired allocation to asset
 
         current_price = self.raw_prices[self.current_step]
         current_value = self.shares_held * current_price
         total_value = self.balance + current_value
+
         if total_value <= 0:
             return False
-        current_weight = current_value / total_value
 
+        current_weight = current_value / total_value
         trade_occurred = False
+
         if abs(target_weight - current_weight) > 1e-6:
             if target_weight > current_weight:
                 # Buy
@@ -388,10 +394,21 @@ class EnhancedTradingEnv(gym.Env):
                     trade_occurred = True
                     self.trades_in_episode += 1
                     logging.debug(f"Buy: invest {actual_invest:.2f}, shares {shares_to_buy:.4f}")
+                else:
+                    logging.debug(
+                        f"Buy trade BLOCKED: amount {invest_amount:.2f} < min_trade_value_usd={self.min_trade_value_usd}"
+                    )
+                    # Mark this so reward can penalize spammy blocked trades
+                    self.action_was_blocked = True
             elif target_weight < current_weight:
                 # Sell
                 sell_value = (current_weight - target_weight) * total_value
-                if sell_value > self.min_trade_value_usd:
+                # Allow a tiny "close all" even if below min_trade_value_usd,
+                # so agent can fully exit instead of getting stuck with dust.
+                min_close_value = min(self.min_trade_value_usd * 0.2, self.min_trade_value_usd)
+                effective_min_value = min_close_value if target_weight < 1e-3 else self.min_trade_value_usd
+
+                if sell_value > effective_min_value:
                     shares_to_sell = sell_value / current_price
                     if shares_to_sell <= self.shares_held + 1e-6:
                         # Apply slippage
@@ -411,14 +428,16 @@ class EnhancedTradingEnv(gym.Env):
                         logging.debug(f"Sell: value {actual_sell_value:.2f}, shares {shares_to_sell:.4f}")
                     else:
                         logging.warning(f"Sell rejected: available={self.shares_held:.6f}, requested={shares_to_sell:.6f}")
-                        # No trade
+                else:
+                    logging.debug(
+                        f"Sell trade BLOCKED: value {sell_value:.2f} < effective_min_value={effective_min_value}"
+                    )
+                    self.action_was_blocked = True
 
         self.net_worth = self.balance + (self.shares_held * current_price)
         self.history_net_worth.append(self.net_worth)
-
         if self.net_worth > self.max_net_worth:
             self.max_net_worth = self.net_worth
-
         return trade_occurred
 
         # --- TRADE LOGIC ---
@@ -788,18 +807,19 @@ class EnhancedTradingEnv(gym.Env):
         # Pass RAW action to execution logic
         trade_occurred = self._take_action(action)
 
-        # Reward timely sells
+        # Extra reward for profitable position reductions (SELLs)
         if trade_occurred and self.shares_held < self.prev_shares_held:
             realized_pnl = (current_price - self.entry_price) * (self.prev_shares_held - self.shares_held)
             if realized_pnl > 0:
-                reward += 0.1
+                # Small bump; enough for PPO to notice but not dominate PnL
+                reward += 0.2
 
         if trade_occurred:  # Trigger has_traded_once on any trade
             self.has_traded_once = True
 
         action_val = float(action[0])
 
-        # Hard trade limit penalty
+        # Hard trade limit penalty (avoid absurd overtrading)
         if self.trades_in_episode > 10:
             reward -= 1.0
 
