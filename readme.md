@@ -108,14 +108,21 @@ docker run --gpus all -it --rm --ipc=host -v "c:\git\ai-trading-bot-3:/workspace
 cd bot
 source .venv/Scripts/activate
 pip install -r requirements
+```
 
-# after you save it with (run in docker host)
+after you save it with (run in docker host)
+```bash
 docker commit 802dad3739eb my-saved-pytorch-image:latest
 sha256:a60aca26f88eb88e5b078dff2be2d0dda3583b28e4c98122ced32556f336c8bd
+```
 
+```python
 python main.py --pair BTCUSDT --vp-days 7 30 --algo recurrentppo --test-split 2023-06-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 1024
+```
 
-# you can start it with
+
+... and you can start it with
+```bash
 docker run --gpus all -it --ipc=host -v "c:\git\ai-trading-bot-3:/workspace/bot" my-saved-pytorch-image:latest
 ```
 
