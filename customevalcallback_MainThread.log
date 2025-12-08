@@ -1,3 +1,9 @@
-2025-12-08 20:35:49,099 - INFO - MainThread - base_callbacks.py:308 - CustomEvalCallback eval_env type: <class 'stable_baselines3.common.vec_env.dummy_vec_env.DummyVecEnv'>
-2025-12-08 20:38:20,035 - INFO - MainThread - base_callbacks.py:397 - Evaluation triggered at n_calls=4166, num_timesteps=49992, eval_freq=4166
-2025-12-08 20:38:20,035 - INFO - MainThread - base_callbacks.py:413 - Starting evaluation
+2025-12-08 20:45:11,383 - INFO - MainThread - base_callbacks.py:308 - CustomEvalCallback eval_env type: <class 'stable_baselines3.common.vec_env.dummy_vec_env.DummyVecEnv'>
+2025-12-08 20:47:39,711 - INFO - MainThread - base_callbacks.py:397 - Evaluation triggered at n_calls=4166, num_timesteps=49992, eval_freq=4166
+2025-12-08 20:47:39,711 - INFO - MainThread - base_callbacks.py:413 - Starting evaluation
+2025-12-08 20:50:54,235 - INFO - MainThread - base_callbacks.py:416 - Evaluation completed, mean_reward=-0.24736684852796315, mean_portfolio=10000.0, trades_per_episode=0.0
+2025-12-08 20:53:19,051 - INFO - MainThread - base_callbacks.py:397 - Evaluation triggered at n_calls=8332, num_timesteps=99984, eval_freq=4166
+2025-12-08 20:53:19,052 - INFO - MainThread - base_callbacks.py:413 - Starting evaluation
+2025-12-08 20:57:25,935 - INFO - MainThread - base_callbacks.py:416 - Evaluation completed, mean_reward=-0.42473234657336434, mean_portfolio=10000.0, trades_per_episode=0.0
+2025-12-08 20:59:47,637 - INFO - MainThread - base_callbacks.py:397 - Evaluation triggered at n_calls=12498, num_timesteps=149976, eval_freq=4166
+2025-12-08 20:59:47,638 - INFO - MainThread - base_callbacks.py:413 - Starting evaluation
