@@ -59,33 +59,6 @@ def debug_signal_handler(signum, frame):
     logging.info("Exiting application...")
     sys.exit(1)
 
-# --- Custom Callback for Train Reward Logging ---
-class TrainRewardCallback(BaseCallback):
-    def __init__(self, check_freq):
-        super(TrainRewardCallback, self).__init__(verbose=1)
-        self.check_freq = check_freq
-
-    def _on_step(self) -> bool:
-        if self.n_calls % self.check_freq == 0:
-            # Retrieve training reward (approximation)
-            # 'rollout/ep_rew_mean' is usually available in self.logger.name_to_value
-            # But direct access via locals is harder in SB3.
-            # We rely on standard logging.
-            pass
-        return True
-# --- Fee Scheduler Callback ---
-class FeeSchedulerCallback(BaseCallback):
-    def __init__(self, total_steps):
-        super(FeeSchedulerCallback, self).__init__(verbose=1)
-        self.total_steps = total_steps
-
-    def _on_step(self) -> bool:
-        step = self.n_calls
-        ramp = 0.00025 + 0.0005 * (1 - step / self.total_steps)
-        new_fee = ramp
-        self.model.env.set_attr('trading_fee_multiplier', new_fee)
-        return True
-
 # ---------------------------------------------------------
 # 1. Configuration & Arguments
 # ---------------------------------------------------------

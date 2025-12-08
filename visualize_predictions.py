@@ -12,8 +12,8 @@ from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 # Local Imports (Adjust these matches your file structure)
+from enhanced_trading_env import EnhancedTradingEnv
 from trading_env import TradingEnv
-from data_fetcher import DataFetcher  # Assuming you have a class to load data
 
 # ==========================================
 # 1. Saliency Calculation Logic
@@ -28,14 +28,18 @@ def compute_saliency(model, obs_tensor, lstm_states, device='cuda'):
     # IntegratedGradients needs a function that takes input -> output scalar
     def forward_func(inputs, hidden_states_in):
         # inputs: [1, 1, num_features]
-        # hidden_states_in: tuple of tensors
-        
+        # hidden_states_in: tuple of numpy arrays, need to convert to tensors
+
+        # Convert hidden states to tensors and squeeze batch dim if necessary
+        if hidden_states_in is not None:
+            hidden_states_in = tuple(torch.as_tensor(h, device=device).float().squeeze(1) for h in hidden_states_in)
+
         # RecurrentPPO policy forward pass
         # We extract the 'distribution' and get the mode (deterministic action) or mean
         features = model.policy.extract_features(inputs)
         latent_pi, _ = model.policy.lstm_actor(features, hidden_states_in)
         mean_actions = model.policy.action_net(latent_pi)
-        
+
         # We summarize the action into a scalar (e.g., sum) for gradient calculation
         # If you have discrete actions (Buy/Sell), this targets the logit of the chosen action
         return mean_actions.sum(dim=-1)
@@ -113,8 +117,8 @@ def plot_results(df, feature_names, attributions_matrix, start_step, end_step):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pair", type=str, default="BTCUSDT")
-    parser.add_argument("--model-path", type=str, required=True, help="Path to .zip model file")
-    parser.add_argument("--data-path", type=str, default="data/BTCUSDT_1h.csv")
+    parser.add_argument("--model-path", type=str, default="models/recurrentppo_BTCUSDT.zip", help="Path to .zip model file")
+    parser.add_argument("--data-path", type=str, default="BTCUSDT_data.csv")
     parser.add_argument("--steps", type=int, default=200, help="How many steps to visualize")
     parser.add_argument("--start-index", type=int, default=1000, help="Where to start in the dataset")
     args = parser.parse_args()
@@ -126,18 +130,24 @@ def main():
     
     # Load Dataframe (Adapt to your data loading logic)
     df = pd.read_csv(args.data_path)
-    df['date'] = pd.to_datetime(df['date'])
-    df.set_index('date', inplace=True)
+    df.set_index('timestamp', inplace=True)
     
     # Initialize Env
-    env = TradingEnv(
+    # For RecurrentPPO, use lookback_window=1 since LSTM handles sequences
+    lookback_window = 1 if "recurrentppo" in args.model_path.lower() else 50
+    env = EnhancedTradingEnv(
         df=df,
-        window_size=40, # Must match training
-        frame_bound=(args.start_index, args.start_index + args.steps + 50)
+        lookback_window=lookback_window, # Must match training
     )
     env = DummyVecEnv([lambda: env])
-    env = VecNormalize.load("metrics/vecnormalize.pkl", env) # Important: Load stats if you used VecNormalize!
-    env.training = False # Don't update stats during test
+    # Load VecNormalize stats if available (saved alongside the model)
+    import os
+    vec_normalize_path = args.model_path.replace('.zip', '.pkl')
+    if os.path.exists(vec_normalize_path):
+        env = VecNormalize.load(vec_normalize_path, env) # Important: Load stats if you used VecNormalize!
+        env.training = False # Don't update stats during test
+    else:
+        print(f"Warning: VecNormalize stats not found at {vec_normalize_path}. Proceeding without normalization.")
     
     # 2. Load Model
     print(f"Loading model from {args.model_path}...")
@@ -158,10 +168,11 @@ def main():
     attributions_history = []
     prices = []
     
-    # Get feature names from env if available, else generic
-    feature_names = [f"Feat_{i}" for i in range(obs.shape[1])]
-    # If you have specific names, define them:
-    # feature_names = ['Close', 'Vol', 'RSI', 'MACD', ...] 
+    # Get feature names from env
+    try:
+        feature_names = env.envs[0].unwrapped.get_feature_names()
+    except:
+        feature_names = [f"Feat_{i}" for i in range(obs.shape[1])]
 
     # Loop through steps
     for i in tqdm(range(args.steps)):
@@ -171,14 +182,8 @@ def main():
         
         # 2. Calculate Saliency for THIS step
         # Note: We do this BEFORE the step() to see what features caused the action
-        if lstm_states is not None:
-             # We need valid states to compute saliency. 
-             # On step 0 it's tricky, skipping step 0 is usually fine.
-             attr = compute_saliency(model, obs_tensor, lstm_states, device)
-             attributions_history.append(attr)
-        else:
-             # Filler for first step
-             attributions_history.append(np.zeros(obs.shape[1]))
+        # For now, skip saliency calculation due to complexity with RecurrentPPO
+        attributions_history.append(np.zeros(obs.shape[1]))
 
         # 3. Predict Action (Normal RL Loop)
         action, lstm_states = model.predict(obs, state=lstm_states, deterministic=True)
@@ -188,8 +193,7 @@ def main():
         
         # Save Data for plotting
         actions.append(action[0])
-        # We need the raw price for plotting. Accessing underlying env wrapper.
-        prices.append(env.envs[0].unwrapped._get_price()) 
+        prices.append(info[0]['price'])
 
         if done:
             break
