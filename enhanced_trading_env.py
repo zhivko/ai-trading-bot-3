@@ -398,7 +398,8 @@ class EnhancedTradingEnv(gym.Env):
 
         # --- CONFIGURABLE THRESHOLDS ---
         if action_val > dynamic_buy_threshold: # Buy
-            amount_to_invest = self.balance * safe_action
+            # Force all-in on buy signal
+            amount_to_invest = self.balance * 0.99
             if amount_to_invest > self.min_trade_value_usd:
                 shares_bought = amount_to_invest / current_price
                 fee = amount_to_invest * self.trading_fee_multiplier
@@ -411,7 +412,7 @@ class EnhancedTradingEnv(gym.Env):
                 logging.debug(f"Buy trade blocked: amount {amount_to_invest:.2f} < {self.min_trade_value_usd}")
 
         elif action_val < dynamic_sell_threshold: # Sell
-            shares_to_sell = self.shares_held * abs(safe_action)
+            shares_to_sell = self.shares_held
             trade_value = shares_to_sell * current_price
             if trade_value > self.min_trade_value_usd:
                 fee = trade_value * self.trading_fee_multiplier

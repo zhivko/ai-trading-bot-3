@@ -70,8 +70,8 @@ def parse_args():
     parser.add_argument("--timeframe", type=str, default="1h", help="Data timeframe")
     parser.add_argument("--initial-balance", type=float, default=10000, help="Starting money")
     parser.add_argument("--trading-fee", type=float, default=0.0015, help="Trading fee (0.15%)")
-    parser.add_argument("--buy-threshold", type=float, default=0.1, help="Threshold to trigger buy action")
-    parser.add_argument("--sell-threshold", type=float, default=-0.1, help="Threshold to trigger sell action")
+    parser.add_argument("--buy-threshold", type=float, default=0.0, help="Threshold to trigger buy action")
+    parser.add_argument("--sell-threshold", type=float, default=0.0, help="Threshold to trigger sell action")
     
     # Environment Config
     # REVERTED TO YOUR DEFAULT: [7, 30]
