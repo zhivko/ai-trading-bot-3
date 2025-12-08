@@ -37,9 +37,9 @@ class EnhancedTradingEnv(gym.Env):
         self.vp_bins = vp_bins
         self.trading_fee_multiplier = trading_fee_multiplier
         
-        # === FIX: Use lower defaults from args (0.05/-0.05) but cap dynamic scaling ===
-        self.buy_threshold = min(buy_threshold, 0.05)  # Cap at 5% to match action scale
-        self.sell_threshold = max(sell_threshold, -0.05)  # Symmetric
+        # === FIX: Use lower defaults from args (0.01/-0.01) but cap dynamic scaling ===
+        self.buy_threshold = min(buy_threshold, 0.01)  # Cap at 1% to match action scale
+        self.sell_threshold = max(sell_threshold, -0.01)  # Symmetric
         
         # --- 1. DATA PREP ---
         self.raw_df = df.reset_index(drop=False)

@@ -137,7 +137,7 @@ def main():
     callback_log_files = glob.glob('*callback*_*.log')
     for f in callback_log_files:
         os.remove(f)
-    logging.basicConfig(filename='ml.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s')
+    logging.basicConfig(filename='ml.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s')
     logging.info("Starting main function...")
     args = parse_args()
     logging.info(f"Parsed args: {args}")
