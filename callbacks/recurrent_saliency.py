@@ -146,7 +146,7 @@ class RecurrentFeatureSaliencyCallback(BaseCallback):
 
             # Plot
             plt.figure(figsize=(10, 6))
-            sns.barplot(x='Importance', y='Feature', data=df_attrs, palette='viridis')
+            sns.barplot(x='Importance', y='Feature', data=df_attrs, hue='Feature', palette='viridis', legend=False)
             plt.title(f"RecurrentPPO Feature Saliency (Step {self.n_calls})")
             plt.tight_layout()
 

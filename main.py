@@ -134,7 +134,7 @@ def load_and_process_data(filepath):
 
     # Minimal preprocessing before passing to Env (Env handles indicators)
     # But we ensure no NaNs and sort by date
-    df = df.fillna(method='bfill').fillna(method='ffill')
+    df = df.bfill().ffill()
     
     return df
 

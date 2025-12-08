@@ -225,9 +225,17 @@ class EnhancedTradingEnv(gym.Env):
         account_obs_size = 2
         vp_obs_size = len(self.vp_days) * (3 + self.vp_bins)
         recurrent_obs_size = 10  # 5 recent actions + 5 position deltas
-        total_obs_size = market_obs_size + account_obs_size + vp_obs_size + len(self.div_features) + recurrent_obs_size
+        total_obs_size = (
+            market_obs_size
+            + account_obs_size
+            + vp_obs_size
+            + len(self.div_features)
+            + recurrent_obs_size
+        )
 
-        self.action_space = spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32)
+        # Action now encodes signed target exposure in [-1, 1]
+        # -1 = max short, 0 = flat, 1 = max long (before leverage scaling)
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
 
         self.stability_penalty_coef = 0.02   # Slight increase (0.01 -> 0.02)
@@ -254,6 +262,10 @@ class EnhancedTradingEnv(gym.Env):
 
         self.phase = phase
         self.min_trade_value_usd = float(min_trade_value_usd)
+
+        # --- Leverage & shorting parameters ---
+        self.max_leverage = 5.0          # allow 1x .. 5x long/short
+        self.leverage_buffer = 0.95      # small safety margin
 
         self.min_action_threshold = 0.0    # No deadband
 
@@ -350,161 +362,137 @@ class EnhancedTradingEnv(gym.Env):
 
         return names
 
-    def _take_action(self, action):
-        """
-        Executes trades based on a continuous target weight in [0, 1].
-        Also logs when BUY/SELL are blocked so they are visible in logs.
-        """
-        self.last_trade_cost = 0
-        target_weight = float(action[0])  # 0 to 1, desired allocation to asset
+def _take_action(self, action):
+    """
+    Execute trade based on a signed target exposure:
+    action[0] in [-1, 1] → target_leverage in [-max_leverage, +max_leverage].
 
-        current_price = self.raw_prices[self.current_step]
-        current_value = self.shares_held * current_price
-        total_value = self.balance + current_value
+    Negative target_leverage = net short, positive = net long.
+    self.shares_held is allowed to be negative to represent shorts.
+    """
+    self.last_trade_cost = 0.0
+    self.action_was_blocked = False
 
-        if total_value <= 0:
-            return False
+    raw = float(action[0])
+    raw = np.clip(raw, -1.0, 1.0)
 
-        current_weight = current_value / total_value
-        trade_occurred = False
+    # Map raw action to leveraged target exposure (e.g. -5 .. +5)
+    target_leverage = raw * self.max_leverage
 
-        if abs(target_weight - current_weight) > 1e-6:
-            if target_weight > current_weight:
-                # Buy
-                invest_amount = (target_weight - current_weight) * total_value
-                if invest_amount > self.min_trade_value_usd:
-                    shares_to_buy = invest_amount / current_price
-                    # Apply slippage if trade occurs
-                    primary_day = self.vp_days[0]
-                    data = self.vp_data[primary_day]
-                    heatmap = data['heatmap'][self.current_step]
-                    vp_max = np.max(heatmap)
-                    slippage = 0.001 * (1 - vp_max)
-                    effective_price = current_price * (1 + slippage)  # Buy at higher price
-                    actual_invest = shares_to_buy * effective_price
-                    fee = actual_invest * self.trading_fee_multiplier
-                    self.balance -= actual_invest + fee
-                    self.shares_held += shares_to_buy
-                    # Update entry price
-                    if self.prev_shares_held > 0:
-                        self.entry_price = (self.entry_price * self.prev_shares_held + effective_price * shares_to_buy) / self.shares_held
-                    else:
-                        self.entry_price = effective_price
-                    self.last_trade_cost = fee
-                    trade_occurred = True
-                    self.trades_in_episode += 1
-                    logging.debug(f"Buy: invest {actual_invest:.2f}, shares {shares_to_buy:.4f}")
-                else:
-                    logging.debug(
-                        f"Buy trade BLOCKED: amount {invest_amount:.2f} < min_trade_value_usd={self.min_trade_value_usd}"
-                    )
-                    # Mark this so reward can penalize spammy blocked trades
-                    self.action_was_blocked = True
-            elif target_weight < current_weight:
-                # Sell
-                sell_value = (current_weight - target_weight) * total_value
-                # Allow a tiny "close all" even if below min_trade_value_usd,
-                # so agent can fully exit instead of getting stuck with dust.
-                min_close_value = min(self.min_trade_value_usd * 0.2, self.min_trade_value_usd)
-                effective_min_value = min_close_value if target_weight < 1e-3 else self.min_trade_value_usd
+    current_price = self.raw_prices[self.current_step]
+    position_value = self.shares_held * current_price  # can be negative
 
-                if sell_value > effective_min_value:
-                    shares_to_sell = sell_value / current_price
-                    if shares_to_sell <= self.shares_held + 1e-6:
-                        # Apply slippage
-                        primary_day = self.vp_days[0]
-                        data = self.vp_data[primary_day]
-                        heatmap = data['heatmap'][self.current_step]
-                        vp_max = np.max(heatmap)
-                        slippage = 0.001 * (1 - vp_max)
-                        effective_price = current_price * (1 - slippage)  # Sell at lower price
-                        actual_sell_value = shares_to_sell * effective_price
-                        fee = actual_sell_value * self.trading_fee_multiplier
-                        self.balance += actual_sell_value - fee
-                        self.shares_held -= shares_to_sell
-                        self.last_trade_cost = fee
-                        trade_occurred = True
-                        self.trades_in_episode += 1
-                        logging.debug(f"Sell: value {actual_sell_value:.2f}, shares {shares_to_sell:.4f}")
-                    else:
-                        logging.warning(f"Sell rejected: available={self.shares_held:.6f}, requested={shares_to_sell:.6f}")
-                else:
-                    logging.debug(
-                        f"Sell trade BLOCKED: value {sell_value:.2f} < effective_min_value={effective_min_value}"
-                    )
-                    self.action_was_blocked = True
+    equity = self.balance + position_value
+    if equity <= 0:
+        logging.warning("Equity <= 0, skipping trade.")
+        return False
 
-        self.net_worth = self.balance + (self.shares_held * current_price)
+    current_leverage = position_value / equity  # can be negative
+
+    # Respect leverage limit with a small safety buffer
+    max_abs = self.max_leverage * self.leverage_buffer
+    target_leverage = float(np.clip(target_leverage, -max_abs, max_abs))
+
+    delta_lev = target_leverage - current_leverage
+    if abs(delta_lev) < 1e-6:
+        # No meaningful change requested
+        self.net_worth = equity
         self.history_net_worth.append(self.net_worth)
-        if self.net_worth > self.max_net_worth:
-            self.max_net_worth = self.net_worth
-        return trade_occurred
+        self.max_net_worth = max(self.max_net_worth, self.net_worth)
+        return False
 
-        # --- TRADE LOGIC ---
-        if abs(action_val - self.prev_action) > 0.1:
-            self.trade_count += 1
-            self.prev_action = action_val
+    # Desired change in position value (can be positive or negative)
+    trade_value = delta_lev * equity
 
-        # --- UPDATED: Dynamic Thresholds via ATR ---
-        atr_idx = self.features.index('atr_norm')
-        atr_norm = self.market_features[self.current_step, atr_idx]
-        logging.debug(f"Dynamic threshold calc: atr_norm (ATR/current_price) = {atr_norm:.4f}")
-        thresh_mult = 1 + (atr_norm * 0.5)  # Higher vol → higher threshold (needs stronger action)
-        logging.debug(f"thresh_mult = 1 + (atr_norm * 0.5) = {thresh_mult:.3f}")
-        # === FIX: Cap multiplier to prevent unachievable thresholds ===
-        thresh_mult = min(thresh_mult, 1.1)  # Max 10% boost; keeps dynamic_buy <= 0.055
-        logging.debug(f"thresh_mult capped at 1.1: {thresh_mult:.3f}")
-
-        dynamic_buy_threshold = self.buy_threshold * thresh_mult
-        dynamic_sell_threshold = self.sell_threshold * thresh_mult  # More negative in high vol
-        logging.debug(f"dynamic_buy_threshold = {self.buy_threshold} * {thresh_mult} = {dynamic_buy_threshold:.3f}")
-        logging.debug(f"dynamic_sell_threshold = {self.sell_threshold} * {thresh_mult} = {dynamic_sell_threshold:.3f}")
-
-        # Debug log (remove after testing)
-        if self.current_step % 100 == 0:  # Every 100 steps
-            logging.debug(f"Step {self.current_step}: atr_norm={atr_norm:.4f}, thresh_mult={thresh_mult:.3f}, buy_th={dynamic_buy_threshold:.3f}")
-
-        logging.debug(f"Action: {action_val:.3f}, Buy thresh: {dynamic_buy_threshold:.3f}, Sell thresh: {dynamic_sell_threshold:.3f}, ATR: {atr_norm:.3f}")
-        self.action_was_blocked = False # Reset flag
-
-        # --- CONFIGURABLE THRESHOLDS ---
-        if action_val > dynamic_buy_threshold: # Buy
-            # FIXED: Force All-In (99% of balance) to prevent "dust" trades
-            amount_to_invest = self.balance * 0.99
-            if amount_to_invest > self.min_trade_value_usd:
-                shares_bought = amount_to_invest / current_price
-                fee = amount_to_invest * self.trading_fee_multiplier
-                self.last_trade_cost = fee
-                self.balance -= amount_to_invest + fee
-                self.shares_held += shares_bought
-                self.trades_in_episode += 1  # Increment on actual trade
-                logging.debug(f"Buy trade executed: amount {amount_to_invest:.2f}, shares {shares_bought:.4f}")
-            else:
-                logging.debug(f"Buy trade blocked: amount {amount_to_invest:.2f} < {self.min_trade_value_usd}")
-                self.action_was_blocked = True
-
-        elif action_val < dynamic_sell_threshold: # Sell
-            # FIXED: Force All-Out (100% of holdings) to prevent "dust" trades
-            shares_to_sell = self.shares_held
-            trade_value = shares_to_sell * current_price
-            if trade_value > self.min_trade_value_usd:
-                fee = trade_value * self.trading_fee_multiplier
-                self.last_trade_cost = fee
-                self.balance += trade_value - fee
-                self.shares_held -= shares_to_sell
-                self.trades_in_episode += 1  # Increment on actual trade
-                logging.debug(f"Sell trade executed: shares {shares_to_sell:.4f}, value {trade_value:.2f}")
-            else:
-                logging.debug(f"Sell trade blocked: value {trade_value:.2f} < {self.min_trade_value_usd}")
-                self.action_was_blocked = True # Mark for penalty
-
-        self.net_worth = self.balance + (self.shares_held * current_price)
+    if abs(trade_value) < self.min_trade_value_usd:
+        logging.debug(
+            f"Trade blocked: |trade_value|={abs(trade_value):.2f} "
+            f"< min_trade_value_usd={self.min_trade_value_usd}"
+        )
+        self.action_was_blocked = True
+        self.net_worth = equity
         self.history_net_worth.append(self.net_worth)
+        self.max_net_worth = max(self.max_net_worth, self.net_worth)
+        return False
 
-        if self.net_worth > self.max_net_worth:
-            self.max_net_worth = self.net_worth
+    shares_to_trade = trade_value / current_price
+    trade_occurred = False
 
-        return trade_occurred
+    # Slippage via VP (same structure you already use)
+    primary_day = self.vp_days[0]
+    data = self.vp_data[primary_day]
+    heatmap = data["heatmap"][self.current_step]
+    vp_max = np.max(heatmap)
+    slippage = 0.001 * (1 - vp_max)
+
+    if trade_value > 0:
+        # Buy more / reduce short
+        effective_price = current_price * (1 + slippage)
+        cost = shares_to_trade * effective_price
+        fee = cost * self.trading_fee_multiplier
+
+        if self.balance >= cost + fee:
+            self.balance -= cost + fee
+            self.shares_held += shares_to_trade
+            self.last_trade_cost = fee
+            trade_occurred = True
+            self.trades_in_episode += 1
+            logging.debug(
+                f"BUY / REDUCE SHORT: cost={cost:.2f}, shares={shares_to_trade:.6f}, "
+                f"new_shares={self.shares_held:.6f}, target_lev={target_leverage:.2f}"
+            )
+        else:
+            logging.debug(
+                f"Buy blocked: need {cost + fee:.2f}, balance={self.balance:.2f}"
+            )
+            self.action_was_blocked = True
+    else:
+        # Sell / increase short
+        effective_price = current_price * (1 - slippage)
+        proceeds = abs(shares_to_trade) * effective_price
+        fee = proceeds * self.trading_fee_multiplier
+
+        # For shorts we don't need balance upfront; proceeds increase balance
+        self.balance += proceeds - fee
+        self.shares_held += shares_to_trade  # shares_to_trade < 0 if increasing short
+        self.last_trade_cost = fee
+        trade_occurred = True
+        self.trades_in_episode += 1
+        logging.debug(
+            f"SELL / INCREASE SHORT: proceeds={proceeds:.2f}, shares={shares_to_trade:.6f}, "
+            f"new_shares={self.shares_held:.6f}, target_lev={target_leverage:.2f}"
+        )
+
+    # Recompute after trade and enforce leverage cap (hard stop)
+    position_value = self.shares_held * current_price
+    equity = self.balance + position_value
+
+    if equity <= 0:
+        # Force liquidation to avoid negative equity
+        logging.warning("Equity <= 0 after trade, forcing flat.")
+        self.balance = max(0.0, self.balance + position_value)
+        self.shares_held = 0.0
+        position_value = 0.0
+        equity = self.balance
+
+    # Hard clamp if leverage drifted over limit
+    if equity > 0:
+        actual_leverage = abs(position_value) / equity
+        if actual_leverage > self.max_leverage * 1.05:
+            logging.warning(
+                f"Leverage {actual_leverage:.2f} > max_leverage, forcing de‑leveraging."
+            )
+            # Liquidate to flat
+            self.balance = equity
+            self.shares_held = 0.0
+            position_value = 0.0
+
+    self.net_worth = self.balance + position_value
+    self.history_net_worth.append(self.net_worth)
+    if self.net_worth > self.max_net_worth:
+        self.max_net_worth = self.net_worth
+
+    return trade_occurred
 
     def compute_reward(self, action, trade_occurred=False):
         """

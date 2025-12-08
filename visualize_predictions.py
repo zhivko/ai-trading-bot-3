@@ -166,7 +166,7 @@ def plot_results(df, feature_names, attributions_matrix, start_step, end_step, f
     df_avg = pd.DataFrame({'Feature': feature_names[:len(avg_attr)], 'Avg_Importance': avg_attr})
     df_avg = df_avg.sort_values('Avg_Importance', ascending=False).head(20)
 
-    sns.barplot(x='Avg_Importance', y='Feature', data=df_avg, palette='viridis', ax=ax4)
+    sns.barplot(x='Avg_Importance', y='Feature', data=df_avg, hue='Feature', palette='viridis', legend=False, ax=ax4)
     ax4.set_title("Average Feature Saliency")
     ax4.set_xlabel("Average Absolute Importance")
     ax4.tick_params(axis='y', labelsize=8)
