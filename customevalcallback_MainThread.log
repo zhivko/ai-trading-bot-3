@@ -1,0 +1,6 @@
+2025-12-08 20:07:03,338 - INFO - MainThread - base_callbacks.py:308 - CustomEvalCallback eval_env type: <class 'stable_baselines3.common.vec_env.dummy_vec_env.DummyVecEnv'>
+2025-12-08 20:09:32,388 - INFO - MainThread - base_callbacks.py:397 - Evaluation triggered at n_calls=4166, num_timesteps=49992, eval_freq=4166
+2025-12-08 20:09:32,389 - INFO - MainThread - base_callbacks.py:413 - Starting evaluation
+2025-12-08 20:12:33,653 - INFO - MainThread - base_callbacks.py:416 - Evaluation completed, mean_reward=-1.9899979272820851, mean_portfolio=9985.15, trades_per_episode=1.0
+2025-12-08 20:14:57,534 - INFO - MainThread - base_callbacks.py:397 - Evaluation triggered at n_calls=8332, num_timesteps=99984, eval_freq=4166
+2025-12-08 20:14:57,534 - INFO - MainThread - base_callbacks.py:413 - Starting evaluation
