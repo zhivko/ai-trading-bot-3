@@ -25,7 +25,7 @@ from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize, DummyVecEnv, VecFrameStack
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
-from stable_baselines3.common.utils import set_random_seed
+from stable_baselines3.common.utils import set_random_seed, ConstantSchedule
 
 # WandB
 import wandb
@@ -523,16 +523,16 @@ def main():
             model_kwargs.update(dict(
                 n_steps=4096,  # Increased from 1024 to reduce CPU-GPU bottleneck
                 batch_size=16384,
-                learning_rate=3e-4,
+                learning_rate=ConstantSchedule(3e-4),
                 gamma=0.99,
                 gae_lambda=0.95,
-                clip_range=0.2,
-                ent_coef=0.02
+                clip_range=ConstantSchedule(0.2),
+                ent_coef=ConstantSchedule(0.02)
             ))
         else:
             model_kwargs.update(dict(
                 batch_size=args.batch_size,
-                learning_rate=args.learning_rate,
+                learning_rate=ConstantSchedule(args.learning_rate),
             ))
 
         if args.algo.lower() == 'sac':
@@ -542,13 +542,13 @@ def main():
         model = RecurrentPPO(
             "MlpLstmPolicy",
             train_env,
-            ent_coef=0.01,  # === FIX: Add entropy to encourage exploration (trades) ===
-            learning_rate=1e-4,
+            ent_coef=ConstantSchedule(0.01),  # === FIX: Add entropy to encourage exploration (trades) ===
+            learning_rate=ConstantSchedule(1e-4),
             n_steps=4096,
             batch_size=128,
             gamma=0.99,
             gae_lambda=0.95,
-            clip_range=0.3,
+            clip_range=ConstantSchedule(0.3),
             vf_coef=0.5,
             max_grad_norm=0.5,
             tensorboard_log=f"./logs/{args.algo}_tensorboard",

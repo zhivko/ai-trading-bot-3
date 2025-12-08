@@ -233,48 +233,94 @@ class TensorboardCallback(BaseCallback):
             pass
 
     def _plot_regime_chart(self):
-        if len(self.ep_prices) < 10: return
-        steps = np.arange(len(self.ep_prices))
-        prices = np.array(self.ep_prices)
-        emas = np.array(self.ep_emas)
-        actions = np.array(self.ep_actions)
-        dates = self.ep_dates
+        if len(self.ep_prices) < 10:
+            return
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True, gridspec_kw={'height_ratios': [3, 1]})
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        steps   = np.arange(len(self.ep_prices))
+        prices  = np.array(self.ep_prices, dtype=float)
+        emas    = np.array(self.ep_emas,   dtype=float)
+        actions = np.array(self.ep_actions, dtype=float)
+        dates   = self.ep_dates
+
+        fig, (ax1, ax2) = plt.subplots(
+            2, 1, figsize=(12, 8), sharex=True,
+            gridspec_kw={'height_ratios': [3, 1]}
+        )
+
+        # Price + EMA + bull/bear shading
         ax1.plot(steps, prices, label='Price', color='black', linewidth=1.2)
-        if any(x > 0 for x in emas):
+        if np.any(emas > 0):
             ax1.plot(steps, emas, label='EMA 50', color='orange', linestyle='--', linewidth=1)
             min_len = min(len(prices), len(emas))
-            ax1.fill_between(steps[:min_len], prices[:min_len], emas[:min_len], where=(prices[:min_len] > emas[:min_len]), color='green', alpha=0.1, label='Bull')
-            ax1.fill_between(steps[:min_len], prices[:min_len], emas[:min_len], where=(prices[:min_len] <= emas[:min_len]), color='red', alpha=0.1, label='Bear')
+            ax1.fill_between(
+                steps[:min_len], prices[:min_len], emas[:min_len],
+                where=(prices[:min_len] > emas[:min_len]),
+                color='green', alpha=0.1, label='Bull'
+            )
+            ax1.fill_between(
+                steps[:min_len], prices[:min_len], emas[:min_len],
+                where=(prices[:min_len] <= emas[:min_len]),
+                color='red', alpha=0.1, label='Bear'
+            )
 
-        # Plot actions on top of price chart
-        for i, act in enumerate(actions):
-            if act >= self.buy_threshold:
-                ax1.scatter(steps[i], prices[i], color='green', marker='^', s=50, label='Buy' if i == 0 else "")
-            elif act <= self.sell_threshold:
-                ax1.scatter(steps[i], prices[i], color='red', marker='v', s=50, label='Sell' if i == 0 else "")
+        # --- Trade markers based on exposure changes ---
+        # We look at the sign and magnitude delta between consecutive actions.
+        # Positive delta ⇒ increasing long / closing short → mark as "Buy".
+        # Negative delta ⇒ increasing short / closing long → mark as "Sell".
+        buy_label_used = False
+        sell_label_used = False
+        for i in range(1, len(actions)):
+            prev_a = actions[i - 1]
+            a      = actions[i]
+            delta  = a - prev_a
 
-        last_pv = self.ep_portfolio[-1] if self.ep_portfolio else 0
+            # Small jitter for zero‑noise
+            if abs(delta) < 1e-3:
+                continue
+
+            if delta > 0:
+                ax1.scatter(
+                    steps[i], prices[i],
+                    color='green', marker='^', s=50,
+                    label='Buy' if not buy_label_used else ""
+                )
+                buy_label_used = True
+            elif delta < 0:
+                ax1.scatter(
+                    steps[i], prices[i],
+                    color='red', marker='v', s=50,
+                    label='Sell' if not sell_label_used else ""
+                )
+                sell_label_used = True
+
+        last_pv = self.ep_portfolio[-1] if self.ep_portfolio else 0.0
         ax1.set_title(f"Thread 0 | PV: {last_pv:.2f}")
         ax1.legend(loc='upper left')
         ax1.grid(True, alpha=0.3)
 
-        colors = ['green' if a > 0 else 'red' for a in actions]
+        # --- Action bar plot: color = long/short, height = exposure ---
+        # If actions are in [-max_leverage, +max_leverage], this shows exposure directly.
+        colors = ['green' if a >= 0 else 'red' for a in actions]
         ax2.bar(steps, actions, color=colors, width=1.0)
         ax2.axhline(0, color='black', linewidth=0.8)
-        ax2.set_ylabel("Action")
-        ax2.autoscale(enable=True, axis='y')
+        ax2.set_ylabel("Exposure")
+        ax2.grid(True, axis='y', alpha=0.3)
 
         # Date labels
-        num_ticks = 8
+        num_ticks = min(8, len(steps))
         tick_indices = np.linspace(0, len(steps) - 1, num_ticks, dtype=int)
         tick_labels = []
         for idx in tick_indices:
             raw_date = dates[idx]
-            if hasattr(raw_date, 'strftime'): d_str = raw_date.strftime('%Y-%m-%d\n%H:%M')
-            else: d_str = str(raw_date)[:16]
+            if hasattr(raw_date, 'strftime'):
+                d_str = raw_date.strftime('%Y-%m-%d\n%H:%M')
+            else:
+                d_str = str(raw_date)[:16]
             tick_labels.append(d_str)
+
         ax2.set_xticks(tick_indices)
         ax2.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
 
