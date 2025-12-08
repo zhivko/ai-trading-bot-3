@@ -376,12 +376,17 @@ class EnhancedTradingEnv(gym.Env):
         # --- UPDATED: Dynamic Thresholds via ATR ---
         atr_idx = self.features.index('atr_norm')
         atr_norm = self.market_features[self.current_step, atr_idx]
+        logging.debug(f"Dynamic threshold calc: atr_norm (ATR/current_price) = {atr_norm:.4f}")
         thresh_mult = 1 + (atr_norm * 0.5)  # Higher vol → higher threshold (needs stronger action)
+        logging.debug(f"thresh_mult = 1 + (atr_norm * 0.5) = {thresh_mult:.3f}")
         # === FIX: Cap multiplier to prevent unachievable thresholds ===
         thresh_mult = min(thresh_mult, 1.1)  # Max 10% boost; keeps dynamic_buy <= 0.055
+        logging.debug(f"thresh_mult capped at 1.1: {thresh_mult:.3f}")
 
         dynamic_buy_threshold = self.buy_threshold * thresh_mult
         dynamic_sell_threshold = self.sell_threshold * thresh_mult  # More negative in high vol
+        logging.debug(f"dynamic_buy_threshold = {self.buy_threshold} * {thresh_mult} = {dynamic_buy_threshold:.3f}")
+        logging.debug(f"dynamic_sell_threshold = {self.sell_threshold} * {thresh_mult} = {dynamic_sell_threshold:.3f}")
 
         # Debug log (remove after testing)
         if self.current_step % 100 == 0:  # Every 100 steps

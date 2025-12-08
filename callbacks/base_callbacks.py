@@ -413,7 +413,7 @@ class CustomEvalCallback(EvalCallback):
             self._logger.info("Starting evaluation")
             try:
                 mean_reward, std_reward, mean_portfolio, std_portfolio, mean_trades = self._evaluate_with_portfolio()
-                self._logger.info(f"Evaluation completed, mean_reward={mean_reward}, mean_portfolio={mean_portfolio}, mean_trades={mean_trades}")
+                self._logger.info(f"Evaluation completed, mean_reward={mean_reward}, mean_portfolio={mean_portfolio}, trades_per_episode={mean_trades}")
             except Exception as e:
                 self._logger.error(f"Evaluation failed with exception: {e}")
                 import traceback
@@ -425,6 +425,16 @@ class CustomEvalCallback(EvalCallback):
                 self.logger.record("eval/mean_portfolio", mean_portfolio)
                 self.logger.record("eval/std_portfolio", std_portfolio)
                 self.logger.record("eval/trades_per_episode", mean_trades)
+
+            # Log to WandB if available
+            if wandb.run is not None:
+                wandb.log({
+                    "eval/mean_reward": mean_reward,
+                    "eval/std_reward": std_reward,
+                    "eval/mean_portfolio": mean_portfolio,
+                    "eval/std_portfolio": std_portfolio,
+                    "eval/trades_per_episode": mean_trades
+                }, step=self.num_timesteps)
             if mean_reward > self.best_mean_reward:
                 self.best_mean_reward = mean_reward
                 self.best_std_reward = std_reward
