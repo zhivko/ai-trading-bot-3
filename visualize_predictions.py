@@ -16,6 +16,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 # Local Imports (Adjust these matches your file structure)
 from enhanced_trading_env import EnhancedTradingEnv
 from trading_env import TradingEnv
+from fetch_metrics import generate_metrics
 
 # ==========================================
 # 1. Saliency Calculation Logic
@@ -296,6 +297,9 @@ def main():
     
     print("Generating Plots...")
     plot_results(res_df, feature_names, attributions_matrix, 0, len(res_df), first_timestamp, last_timestamp)
+
+    print("Generating metrics report...")
+    generate_metrics()
 
 if __name__ == "__main__":
     main()

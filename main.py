@@ -480,15 +480,19 @@ def main():
             model_kwargs['buffer_size'] = 100000
             model_kwargs['ent_coef'] = 'auto'
 
-        model = AlgoClass(
+        model = RecurrentPPO(
             "MlpLstmPolicy",
             train_env,
-            verbose=1,
+            learning_rate=1e-4,
+            n_steps=4096,
+            batch_size=128,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_range=0.3,
+            ent_coef=0.05,
+            vf_coef=0.5,
+            max_grad_norm=0.5,
             tensorboard_log=f"./logs/{args.algo}_tensorboard",
-            learning_rate=args.learning_rate,
-            batch_size=args.batch_size,
-            n_steps=args.batch_size,  # Ensure n_steps is aligned with batch logic if needed
-            seed=args.seed,
             device=args.device,
             policy_kwargs=policy_kwargs
         )

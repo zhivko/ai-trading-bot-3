@@ -17,6 +17,12 @@ class EnhancedTradingEnv(gym.Env):
                  buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1):
         super(EnhancedTradingEnv, self).__init__()
         
+        # === OVERTRADING FIXES ===
+        self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
+        self.min_action_threshold = 0.05         # if |action| < 5% → force hold (Fix 2)
+        self.action_penalty = 0.0005             # tiny L1 penalty to discourage twitching
+        self.last_trade_cost = 0
+        
         # --- CONFIGURATION ---
         self.initial_balance = initial_balance
         self.lookback_window = lookback_window
@@ -294,14 +300,15 @@ class EnhancedTradingEnv(gym.Env):
         return names
 
     def _take_action(self, action):
+        self.last_trade_cost = 0
         # 1. Clip & Deadband (Keep your existing logic)
         action_val = action[0] # Raw value for logging
         
         # Safety Clip for Logic
         safe_action = np.clip(action_val, -1.0, 1.0)
         
-        # Deadband
-        if safe_action < self.buy_threshold and safe_action > self.sell_threshold:
+        # === FIX 2: Force hold on tiny actions (kills micro-trades) ===
+        if abs(safe_action) < self.min_action_threshold:
             safe_action = 0.0
 
         trade_occurred = False
@@ -369,6 +376,7 @@ class EnhancedTradingEnv(gym.Env):
             if amount_to_invest > 10:
                 shares_bought = amount_to_invest / current_price
                 fee = amount_to_invest * self.trading_fee_multiplier
+                self.last_trade_cost = fee
                 self.balance -= amount_to_invest + fee
                 self.shares_held += shares_bought
                 self.trades_in_episode += 1  # Increment on actual trade
@@ -378,6 +386,7 @@ class EnhancedTradingEnv(gym.Env):
             if shares_to_sell * current_price > 10:
                 trade_value = shares_to_sell * current_price
                 fee = trade_value * self.trading_fee_multiplier
+                self.last_trade_cost = fee
                 self.balance += trade_value - fee
                 self.shares_held -= shares_to_sell
                 self.trades_in_episode += 1  # Increment on actual trade
@@ -403,6 +412,10 @@ class EnhancedTradingEnv(gym.Env):
         # Base Reward = % Change in Portfolio
         # e.g. +1% gain = +1.0 reward
         step_reward = np.log(current_val / prev_val) * 100
+
+        # === FIX 1: Transaction cost + action penalty ===
+        step_reward -= self.last_trade_cost
+        step_reward -= self.action_penalty * abs(action)
 
         # 2. The Fee (Real Cost)
         # If a trade occurred, we subtract a fixed "mental friction" cost
