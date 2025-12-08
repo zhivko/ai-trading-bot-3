@@ -341,11 +341,13 @@ class EnhancedTradingEnv(gym.Env):
         if is_buy_signal and currently_long:
             # We are already long. Don't pay the fee again just to say "I still like this".
             logging.debug(f"Trade blocked: already long, buy signal ignored")
+            self.action_was_blocked = True
             return False
 
         if is_sell_signal and currently_short:
             # We are already short. Don't pay the fee again.
             logging.debug(f"Trade blocked: already short, sell signal ignored")
+            self.action_was_blocked = True
             return False
 
         # 4. Execute Trade (Existing Logic)
@@ -398,7 +400,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # --- CONFIGURABLE THRESHOLDS ---
         if action_val > dynamic_buy_threshold: # Buy
-            # Force all-in on buy signal
+            # FIXED: Force All-In (99% of balance) to prevent "dust" trades
             amount_to_invest = self.balance * 0.99
             if amount_to_invest > self.min_trade_value_usd:
                 shares_bought = amount_to_invest / current_price
@@ -410,8 +412,10 @@ class EnhancedTradingEnv(gym.Env):
                 logging.debug(f"Buy trade executed: amount {amount_to_invest:.2f}, shares {shares_bought:.4f}")
             else:
                 logging.debug(f"Buy trade blocked: amount {amount_to_invest:.2f} < {self.min_trade_value_usd}")
+                self.action_was_blocked = True
 
         elif action_val < dynamic_sell_threshold: # Sell
+            # FIXED: Force All-Out (100% of holdings) to prevent "dust" trades
             shares_to_sell = self.shares_held
             trade_value = shares_to_sell * current_price
             if trade_value > self.min_trade_value_usd:
@@ -451,9 +455,9 @@ class EnhancedTradingEnv(gym.Env):
         step_reward -= self.last_trade_cost
         step_reward -= self.action_penalty * abs(action)
 
-        # === FIX: Punish invalid attempts (Trying to sell nothing) ===
-        if hasattr(self, 'action_was_blocked') and self.action_was_blocked:
-            step_reward -= 0.1
+        # 2. Invalid Action Penalty (Teach agent to stop spamming blocked trades)
+        if getattr(self, 'action_was_blocked', False):
+            step_reward -= 0.5
 
         # 2. The Fee (Real Cost)
         # If a trade occurred, we subtract a fixed "mental friction" cost

@@ -138,6 +138,38 @@ def main():
     for f in callback_log_files:
         os.remove(f)
     logging.basicConfig(filename='ml.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s')
+
+    # Filter to only log from our own files
+    class OurFilter(logging.Filter):
+        def __init__(self, allowed_files):
+            super().__init__()
+            self.allowed_files = allowed_files
+
+        def filter(self, record):
+            return record.filename in self.allowed_files
+
+    # List of our source files
+    our_files = [
+        'main.py',
+        'enhanced_trading_env.py',
+        'volume_profile.py',
+        'data_fetcher.py',
+        'backtest.py',
+        'test_trading_env.py',
+        'temp_check.py',
+        'visualize_predictions.py',
+        'fetch_metrics.py'
+    ]
+    # Add callback files
+    import glob
+    callback_files = glob.glob('callbacks/*.py')
+    our_files.extend([os.path.basename(f) for f in callback_files])
+
+    # Apply filter to the root logger's handler
+    logger = logging.getLogger()
+    for handler in logger.handlers:
+        handler.addFilter(OurFilter(our_files))
+
     logging.info("Starting main function...")
     args = parse_args()
     logging.info(f"Parsed args: {args}")
