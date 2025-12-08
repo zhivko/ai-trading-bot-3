@@ -25,6 +25,12 @@ class EnhancedTradingEnv(gym.Env):
         
         # --- CONFIGURATION ---
         self.initial_balance = initial_balance
+        self.last_price = 0
+        self.current_position = 0
+        # === LOOK-AHEAD REWARD SHAPING (the nuclear weapon against overtrading) ===
+        # How many bars into the future we peek: 1h, 4h, 12h, 24h on 1h data → indices 1,4,12,24
+        self.lookahead_horizons = [1, 4, 12, 24]          # adjust if you use 4h or daily data
+        self.lookahead_weights  = [0.4, 0.3, 0.2, 0.1]     # more weight on near-term
         self.lookback_window = lookback_window
         # Default to [3, 7] if None
         self.vp_days = vp_days if vp_days else [3, 7]
@@ -475,6 +481,8 @@ class EnhancedTradingEnv(gym.Env):
         self.prev_net_worth = self.initial_balance
         self.shares_held = 0
         self.prev_shares_held = 0
+        self.last_price = 0
+        self.current_position = 0
         self.max_net_worth = self.initial_balance
         self.trade_count = 0
         self.prev_action = 0
@@ -638,19 +646,37 @@ class EnhancedTradingEnv(gym.Env):
     def step(self, action):
         # REVERTED: We keep the raw action magnitude.
         # Values > 1.0 indicate high model confidence.
-
+    
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
-
+    
+        # === LOOK-AHEAD PnL AVERAGE (this is the magic) ===
+        future_returns = []
+        for horizon in self.lookahead_horizons:
+            if self.current_step + horizon < len(self.df):
+                future_price = self.df.iloc[self.current_step + horizon]['close']
+                ret = (future_price - current_price) / current_price
+                # direction matters → multiply by current position (long = +1, short = -1)
+                future_returns.append(ret * self.current_position)
+        
+        if future_returns:  # always true except very end of dataset
+            lookahead_pnl = np.average(future_returns, weights=self.lookahead_weights)
+        else:
+            lookahead_pnl = 0.0
+    
+        # === 3. Optional: still keep a tiny transaction cost so agent doesn’t flip for free ===
+        trade_cost = 0.0005 * abs(action[0] - self.current_position)  # 5 bps, very light
+        
+        # Final reward = average future PnL minus tiny friction
+        reward = lookahead_pnl - trade_cost
+    
         # Pass RAW action to execution logic
         trade_occurred = self._take_action(action)
-
+    
         if trade_occurred:  # Trigger has_traded_once on any trade
             self.has_traded_once = True
-
-        # 3. Calculate reward
+    
         action_val = float(action[0])
-        reward = self.compute_reward(action_val, trade_occurred)
 
         # Hard trade limit penalty
         if self.trades_in_episode > 10:
@@ -684,6 +710,9 @@ class EnhancedTradingEnv(gym.Env):
             reward = -10
 
         obs = self._next_observation()
+
+        self.last_price = current_price
+        self.current_position = np.sign(self.shares_held) if abs(self.shares_held) > 1e-6 else 0
 
         # Info
         primary_day = self.vp_days[0]
