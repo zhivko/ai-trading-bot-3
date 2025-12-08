@@ -101,6 +101,18 @@ ALGO_MAP = {
     "recurrentppo": RecurrentPPO
 }
 
+class PhaseSwitchCallback(BaseCallback):
+    def __init__(self, switch_at=300_000, verbose=1):
+        super().__init__(verbose)
+        self.switch_at = switch_at
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps >= self.switch_at:
+            self.training_env.env_method("set_min_trade_value", 50.0)
+            self.training_env.env_method("set_thresholds", 0.01, -0.01)
+            print(f"\nSWITCHED TO PHASE 1 @ {self.num_timesteps:,} steps — real trading mode!")
+        return True
+
 # ---------------------------------------------------------
 # 2. Data Preprocessing
 # ---------------------------------------------------------
@@ -161,7 +173,6 @@ def main():
         'fetch_metrics.py'
     ]
     # Add callback files
-    import glob
     callback_files = glob.glob('callbacks/*.py')
     our_files.extend([os.path.basename(f) for f in callback_files])
 
@@ -220,10 +231,11 @@ def main():
         'vp_days': args.vp_days,
         'vp_bins': args.vp_bins,
         'lookback_window': window_size,
-        'buy_threshold': args.buy_threshold,
-        'sell_threshold': args.sell_threshold,
+        'buy_threshold': 0.0,        # ← Allow any signal
+        'sell_threshold': 0.0,
         'trading_fee_multiplier': args.trading_fee,
-        'phase': args.phase  # New: Pass phase
+        'phase': args.phase,
+        'min_trade_value_usd': 1.0,  # ← Critical: allow $1 trades
     }
     logging.info(f"Env kwargs: {env_kwargs}")
 
@@ -351,6 +363,10 @@ def main():
         initial_balance=args.initial_balance
     )
     callbacks.append(eval_callback)
+
+    # Optional: Auto-Switch to Phase 1 After 300k Steps
+    if args.phase == 0:
+        callbacks.append(PhaseSwitchCallback(switch_at=300_000))
 
     # Add Recurrent Saliency Callback for RecurrentPPO
     if args.algo.lower() == 'recurrentppo':

@@ -224,7 +224,7 @@ class EnhancedTradingEnv(gym.Env):
         self.max_lookback = max(max([d * 24 for d in self.vp_days]), 30) + self.lookback_window
 
         self.phase = phase
-        self.min_trade_value_usd = min_trade_value_usd
+        self.min_trade_value_usd = float(min_trade_value_usd)
 
         self.min_action_threshold = 0.0    # No deadband
 
@@ -507,6 +507,13 @@ class EnhancedTradingEnv(gym.Env):
 
     def set_phase(self, new_phase):
         self.phase = new_phase
+
+    def set_min_trade_value(self, value):
+        self.min_trade_value_usd = float(value)
+
+    def set_thresholds(self, buy, sell):
+        self.buy_threshold = buy
+        self.sell_threshold = sell
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
