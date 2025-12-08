@@ -19,7 +19,6 @@ class EnhancedTradingEnv(gym.Env):
         
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
-        self.min_action_threshold = 0.01         # if |action| < 1% → force hold (Fix 2)
         self.action_penalty = 0.0005             # tiny L1 penalty to discourage twitching
         self.last_trade_cost = 0
         
@@ -226,6 +225,14 @@ class EnhancedTradingEnv(gym.Env):
 
         self.phase = phase
 
+        # === PHASE-AWARE THRESHOLDS (this is the correct way) ===
+        if self.phase == 0:
+            self.min_trade_value      = 1.0    # $1  → allow baby steps
+            self.min_action_threshold = 0.02   # 2%   → let small signals through
+        else:
+            self.min_trade_value      = 10.0   # $10 → real anti-churn
+            self.min_action_threshold = 0.05   # 5%  → strong hold bias
+
         # === FIX: Anti-zero-reward params ===
         self.hold_bonus = 0.0  # Remove: No free positive for flat holds
         self.exploration_bonus = 0.005  # Keep but lower; apply only on first trade
@@ -397,7 +404,7 @@ class EnhancedTradingEnv(gym.Env):
         # --- CONFIGURABLE THRESHOLDS ---
         if action_val > dynamic_buy_threshold: # Buy
             amount_to_invest = self.balance * safe_action
-            if amount_to_invest > 10:
+            if amount_to_invest > self.min_trade_value:
                 shares_bought = amount_to_invest / current_price
                 fee = amount_to_invest * self.trading_fee_multiplier
                 self.last_trade_cost = fee
@@ -406,12 +413,12 @@ class EnhancedTradingEnv(gym.Env):
                 self.trades_in_episode += 1  # Increment on actual trade
                 logging.debug(f"Buy trade executed: amount {amount_to_invest:.2f}, shares {shares_bought:.4f}")
             else:
-                logging.debug(f"Buy trade blocked: amount {amount_to_invest:.2f} < 10")
+                logging.debug(f"Buy trade blocked: amount {amount_to_invest:.2f} < {self.min_trade_value}")
 
         elif action_val < dynamic_sell_threshold: # Sell
             shares_to_sell = self.shares_held * abs(safe_action)
-            if shares_to_sell * current_price > 10:
-                trade_value = shares_to_sell * current_price
+            trade_value = shares_to_sell * current_price
+            if trade_value > self.min_trade_value:
                 fee = trade_value * self.trading_fee_multiplier
                 self.last_trade_cost = fee
                 self.balance += trade_value - fee
@@ -419,7 +426,7 @@ class EnhancedTradingEnv(gym.Env):
                 self.trades_in_episode += 1  # Increment on actual trade
                 logging.debug(f"Sell trade executed: shares {shares_to_sell:.4f}, value {trade_value:.2f}")
             else:
-                logging.debug(f"Sell trade blocked: value {shares_to_sell * current_price:.2f} < 10")
+                logging.debug(f"Sell trade blocked: value {trade_value:.2f} < {self.min_trade_value}")
 
         self.net_worth = self.balance + (self.shares_held * current_price)
         self.history_net_worth.append(self.net_worth)
