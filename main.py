@@ -349,6 +349,7 @@ def main():
 
     progress_callback = ProgressBarCallback(update_interval=1000)
     callbacks = [progress_callback, tensorboard_callback, checkpoint_callback]
+    #callbacks = [tensorboard_callback, checkpoint_callback]
     
     #if saliency_callback is not None:
     #    callbacks.append(saliency_callback)

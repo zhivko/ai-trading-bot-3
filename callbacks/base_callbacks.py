@@ -453,7 +453,11 @@ class CustomEvalCallback(EvalCallback):
 
     def _on_step(self) -> bool:
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
-            self._logger.info(f"Evaluation triggered at n_calls={self.n_calls}, num_timesteps={self.num_timesteps}, eval_freq={self.eval_freq}")
+            # Diagnostic logs for mangled output
+            import shutil
+            terminal_width = shutil.get_terminal_size().columns
+            self._logger.info(f"Evaluation triggered at n_calls={self.n_calls}, num_timesteps={self.num_timesteps}, eval_freq={self.eval_freq}, terminal_width={terminal_width}")
+            self._logger.info(f"About to log eval metrics - checking for output interference")
             # --- UPDATED: Phase Switching ---
             if self.num_timesteps % 250000 == 0:
                 self._logger.info("Starting phase switching")
@@ -479,11 +483,13 @@ class CustomEvalCallback(EvalCallback):
                 self._logger.error(traceback.format_exc())
                 return True
             if self.log_path is not None:
+                self._logger.info(f"Recording eval metrics: mean_reward={mean_reward}, mean_portfolio={mean_portfolio}")
                 self.logger.record("eval/mean_reward", mean_reward)
                 self.logger.record("eval/std_reward", std_reward)
                 self.logger.record("eval/mean_portfolio", mean_portfolio)
                 self.logger.record("eval/std_portfolio", std_portfolio)
                 self.logger.record("eval/trades_per_episode", mean_trades)
+                self._logger.info("Eval metrics recorded to SB3 logger")
 
             # Log to WandB if available
             if wandb.run is not None:
