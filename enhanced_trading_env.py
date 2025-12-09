@@ -512,8 +512,8 @@ class EnhancedTradingEnv(gym.Env):
         # 3. "Closer's Bonus" (Realized PnL Stimulus)
         if self.prev_shares_held != 0 and self.shares_held == 0:
              realized_pnl_val = (current_price - self.entry_price) * self.prev_shares_held
-             trade_return_pct = realized_pnl_val / (self.entry_price * self.prev_shares_held)
-             
+             trade_return_pct = realized_pnl_val / abs(self.entry_price * self.prev_shares_held + 1e-8)
+
              # Store for next observation
              self.last_trade_pnl = trade_return_pct
 
