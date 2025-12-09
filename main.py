@@ -1,4 +1,4 @@
-import os
+timport os
 import argparse
 import glob
 import shutil
@@ -81,7 +81,8 @@ def parse_args():
     parser.add_argument("--window-size", type=int, default=50, help="Observation window size")
     parser.add_argument("--n-envs", type=int, default=12, help="Number of parallel environments")
     parser.add_argument("--phase", type=int, default=1, help="Curriculum phase (1=profit, 2=sortino, 3=mdd)")
-    
+    parser.add_argument('--total-phases', type=int, default=10, help='Total number of curriculum phases')
+
     # RL Config
     parser.add_argument("--algo", type=str, default="recurrentppo", choices=["sac", "ppo", "a2c", "td3", "recurrentppo"], help="RL Algorithm")
     parser.add_argument("--total-timesteps", type=int, default=10_000_000, help="Total training steps")
@@ -236,6 +237,7 @@ def main():
         'sell_threshold': 0.0,
         'trading_fee_multiplier': args.trading_fee,
         'phase': args.phase,
+        'total_phases': args.total_phases,
         'min_trade_value_usd': 5.0,  # ← Critical: increased to reduce dust noise
         'pair': args.pair,
         'timeframe': args.timeframe,
@@ -379,9 +381,10 @@ def main():
     )
     callbacks.append(eval_callback)
 
-    # Optional: Auto-Switch to Phase 1 After 300k Steps
+    # Optional: Auto-Switch Phases for Curriculum Learning
     if args.phase == 0:
-        callbacks.append(PhaseSwitchCallback(switch_at=300_000))
+        switch_interval = args.total_timesteps // args.total_phases
+        callbacks.append(PhaseSwitchCallback(total_phases=args.total_phases, switch_interval=switch_interval))
 
     # Add Recurrent Saliency Callback for RecurrentPPO
     if args.algo.lower() == 'recurrentppo':

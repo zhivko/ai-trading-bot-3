@@ -14,7 +14,6 @@ from tqdm import tqdm
 matplotlib.use('Agg')
 sys.path.append('..')
 
-
 class ProgressBarCallback(BaseCallback):
     """
     A custom progress bar that updates less frequently to prevent console spam.
@@ -260,11 +259,12 @@ class TensorboardCallback(BaseCallback):
         prices  = np.array(self.ep_prices, dtype=float)
         emas    = np.array(self.ep_emas,   dtype=float)
         actions = np.array(self.ep_actions, dtype=float)
+        portfolio = np.array(self.ep_portfolio, dtype=float)
         dates   = self.ep_dates
 
-        fig, (ax1, ax2) = plt.subplots(
-            2, 1, figsize=(12, 8), sharex=True,
-            gridspec_kw={'height_ratios': [3, 1]}
+        fig, (ax1, ax2, ax3) = plt.subplots(
+            3, 1, figsize=(12, 10), sharex=True,
+            gridspec_kw={'height_ratios': [3, 1, 1]}
         )
 
         # Price + EMA + bull/bear shading
@@ -326,6 +326,12 @@ class TensorboardCallback(BaseCallback):
         ax2.set_ylabel("Exposure")
         ax2.grid(True, axis='y', alpha=0.3)
 
+        # Networth subplot
+        ax3.plot(steps, portfolio, label='Networth', color='blue', linewidth=1.5)
+        ax3.set_ylabel("Networth")
+        ax3.grid(True, alpha=0.3)
+        ax3.legend(loc='upper left')
+
         # Date labels
         num_ticks = min(8, len(steps))
         tick_indices = np.linspace(0, len(steps) - 1, num_ticks, dtype=int)
@@ -338,8 +344,8 @@ class TensorboardCallback(BaseCallback):
                 d_str = str(raw_date)[:16]
             tick_labels.append(d_str)
 
-        ax2.set_xticks(tick_indices)
-        ax2.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
+        ax3.set_xticks(tick_indices)
+        ax3.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
 
         plt.tight_layout()
         try:

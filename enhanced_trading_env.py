@@ -19,8 +19,8 @@ class EnhancedTradingEnv(gym.Env):
     }
 
     def __init__(self, df, initial_balance=10000, lookback_window=50, vp_days=None, vp_bins=40,
-                      buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1, min_trade_value_usd=10.0,
-                      pair='BTCUSDT', timeframe='1h', split_date=None):
+                       buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1, total_phases=10, min_trade_value_usd=10.0,
+                       pair='BTCUSDT', timeframe='1h', split_date=None):
         logging.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {vp_bins}) ---")
         super(EnhancedTradingEnv, self).__init__()
 
@@ -36,6 +36,7 @@ class EnhancedTradingEnv(gym.Env):
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
         self.reward_fee_multiplier = 2.0        # Magnify fee 10x in reward calculation to stop churning
         self.action_penalty = 0.001              # FIX: Reduced by 50x. Allows switching, but still punishes noise.
+        self.holding_penalty = 0.0005        # NEW: A tiny "rent" for holding a position
         self.last_trade_cost = 0
         self.reward_trade_cost = 0.0
         self.steps_in_trade = 0
@@ -52,11 +53,7 @@ class EnhancedTradingEnv(gym.Env):
         self.vp_days = vp_days if vp_days else [3, 7]
         self.vp_bins = vp_bins
         self.trading_fee_multiplier = trading_fee_multiplier
-        
-        # === FIX: Use args directly so 0.0 works ===
-        self.buy_threshold = buy_threshold
-        self.sell_threshold = sell_threshold
-        
+
         # --- 1. DATA PREP ---
         self.raw_df = df.reset_index(drop=False)
         self.df = self.raw_df.copy()
@@ -266,6 +263,25 @@ class EnhancedTradingEnv(gym.Env):
 
         # Phase
         self.phase = phase
+        self.total_phases = max(1, total_phases)  # Safety: ensure at least 1
+
+        # === DYNAMIC THRESHOLD LOGIC ===
+        if self.total_phases > 1:
+            # Calculate increment size
+            # If phases=10, we want range 0.0 to 0.5 over 9 steps
+            increment = 0.5 / (self.total_phases - 1)
+
+            # Phase 1: (0)*inc = 0.0  (Trade on everything)
+            # Phase 10: (9)*inc = 0.5 (Only trade on strong signals)
+            self.buy_threshold = (self.phase - 1) * increment
+            self.sell_threshold = -((self.phase - 1) * increment)
+        else:
+            # Fallback for single phase training
+            self.buy_threshold = 0.0
+            self.sell_threshold = 0.0
+
+        # Log it so you can verify it's working
+        # print(f"Phase {self.phase}/{self.total_phases} :: thresholds: {self.sell_threshold:.4f} / {self.buy_threshold:.4f}")
 
         # Max lookback for VP + features
         self.max_lookback = max(max(d * 24 for d in self.vp_days), 50) + self.lookback_window
@@ -592,9 +608,24 @@ class EnhancedTradingEnv(gym.Env):
         # NEW: Real portfolio return (no look-ahead)
         portfolio_return = (self.net_worth - self.prev_net_worth) / (self.prev_net_worth + 1e-8)
 
-        # Execute action
-        self.prev_shares_held = self.shares_held
-        trade_occurred = self._take_action(action)
+        # === THRESHOLD CHECK ===
+        trade_occurred = False
+
+        # Check against dynamic thresholds
+        if action_val > self.buy_threshold:
+            # BUY SIGNAL
+            trade_occurred = self._take_action(action) # Positive action passed inside
+
+        elif action_val < self.sell_threshold:
+            # SELL SIGNAL
+            trade_occurred = self._take_action(action) # Negative action passed inside
+
+        else:
+            # HOLD (Dead Zone)
+            # Action is between -0.1 and 0.1 (for example)
+            # We explicitly do nothing.
+            trade_occurred = False
+            self.steps_since_last_trade += 1
 
         # === FIX STARTS HERE ===
         # 1. Calculate the actual size of the trade in dollars
@@ -635,6 +666,13 @@ class EnhancedTradingEnv(gym.Env):
         # 2. Subtract costs (Fee is now reduced to 2x multiplier in init)
         reward -= reward_trade_cost  # Now this variable is definitely defined
         reward += reward_inertia
+
+        # Calculate "Rent" (Funding Fee) to discourage camping on a position
+        current_holding_cost = 0.0
+        if self.shares_held != 0:
+            current_holding_cost = self.holding_penalty
+            
+        reward -= current_holding_cost  # Apply the rent
 
         # 3. "Closer's Bonus" (Realized PnL Stimulus)
         if self.prev_shares_held != 0 and self.shares_held == 0:
