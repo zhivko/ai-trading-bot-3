@@ -33,7 +33,7 @@ class EnhancedTradingEnv(gym.Env):
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
         self.reward_fee_multiplier = 10.0        # Magnify fee 10x in reward calculation to stop churning
-        self.action_penalty = 0.05               # Increased: Stronger penalty for changing actions rapidly
+        self.action_penalty = 0.01               # Increased: Stronger penalty for changing actions rapidly
         self.last_trade_cost = 0
         
         # --- CONFIGURATION ---
@@ -225,10 +225,7 @@ class EnhancedTradingEnv(gym.Env):
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
 
-        self.stability_penalty_coef = 0.02   # Slight increase (0.01 -> 0.02)
-        self.interaction_penalty = 0.0
         self.entry_price = 0.0  # + NEW: Initialize to fix AttributeError in step
-        self.reward_scaling = 1.0
 
         # === FIX: Soften churn/cooldown to not over-punish trading ===
         self.target_hold_duration = 24       # Target 24h hold
