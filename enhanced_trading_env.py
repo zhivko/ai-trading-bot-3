@@ -334,130 +334,118 @@ class EnhancedTradingEnv(gym.Env):
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
 
-        # --- NEW: Hard Cooldown Enforcer ---
-        # If we traded recently, force the agent to stick to its previous side (Long or Short)
+        # 1. Hard Cooldown Enforcer
         if self.steps_since_last_trade < self.cooldown_steps and self.trades_in_episode > 0:
             current_sign = np.sign(self.shares_held) if abs(self.shares_held) > 1e-6 else 0
             new_sign = np.sign(action_val) if abs(action_val) > 1e-6 else 0
-            # If trying to flip direction during cooldown, block it
             if current_sign != 0 and new_sign != 0 and current_sign != new_sign:
-                _logger.debug(f"Trade blocked by cooldown direction flip: steps_since_last_trade={self.steps_since_last_trade}, cooldown_steps={self.cooldown_steps}, current_sign={current_sign}, new_sign={new_sign}, action_val={action_val:.4f}")
+                _logger.debug(f"Trade blocked by cooldown direction flip: steps={self.steps_since_last_trade}")
                 return False
 
-        # Calculate the Target Magnitude (Always Positive)
+        # 2. Calculate Initial Target Size (Always Positive)
         trade_usd = abs(action_val) * self.net_worth * self.max_leverage * self.leverage_buffer
 
-        # Check Minimum Trade Size (Global Check)
+        # 3. Global Min Check
         if trade_usd < self.min_trade_value_usd:
-            _logger.debug(f"Trade blocked by minimum trade value: trade_usd={trade_usd:.2f}, min_trade_value_usd={self.min_trade_value_usd:.2f}, action_val={action_val:.4f}")
+            # _logger.debug(...) # Optional: Uncomment if debugging silence
             return False
 
-        # Execute trade
-        shares_to_trade = trade_usd / current_price
-        cost = shares_to_trade * current_price * self.transaction_cost_rate
-
         trade_occurred = False
-        if action_val > 0:  # Buy (or Cover Short)
+        shares_to_trade = 0.0
+        final_trade_cost = 0.0
 
-            # Clamp to available Balance
+        # --- BRANCH: BUY OR SELL ---
+        if action_val > 0:  # BUY (Long)
+            
+            # A. Clamp to available Balance (Cannot buy with money we don't have)
             if trade_usd > self.balance:
                 trade_usd = self.balance
 
-            # Double check min size after clamping
+            # B. Re-Check Min Size
             if trade_usd < self.min_trade_value_usd:
                 return False
 
-            # Calculate shares
             if current_price == 0:
-                _logger.error(f"Buy blocked: current_price is 0, cannot divide")
                 return False
+
+            # C. Calculate Shares & Update State
             shares_to_buy = trade_usd / current_price
             current_shares = self.shares_held
             new_shares = current_shares + shares_to_buy
 
-            # === ENTRY PRICE UPDATE ===
-            old_entry_price = self.entry_price
+            # Entry Price Update Logic
             if current_shares > 0:
-                # Scenario A: Adding to an existing LONG
-                # Weighted Average Entry Price: (OldCost + NewCost) / TotalShares
                 old_cost = current_shares * self.entry_price
                 new_buy_cost = shares_to_buy * current_price
                 self.entry_price = (old_cost + new_buy_cost) / new_shares
-                _logger.debug(f"Entry price updated - Scenario A: old_entry={old_entry_price:.2f}, new_entry={self.entry_price:.2f}, current_shares={current_shares:.6f}, shares_to_buy={shares_to_buy:.6f}")
-
             elif current_shares < 0 and new_shares > 0:
-                # Scenario B: Flipping from SHORT to LONG
-                # The Short portion is closed. The Long portion starts fresh.
-                # New Entry Price is the current price for the net long position.
                 self.entry_price = current_price
-                _logger.debug(f"Entry price updated - Scenario B: flipped from short to long, old_entry={old_entry_price:.2f}, new_entry={self.entry_price:.2f}, current_shares={current_shares:.6f}, new_shares={new_shares:.6f}")
-
             elif current_shares == 0:
-                # Scenario C: Opening fresh LONG
                 self.entry_price = current_price
-                _logger.debug(f"Entry price updated - Scenario C: opening fresh long, entry={self.entry_price:.2f}")
-
-            # Scenario D: Covering Short (Negative -> Less Negative)
-            # Entry price (average) typically stays the same when reducing position.
-            else:
-                _logger.debug(f"Entry price unchanged - Scenario D: covering short, entry remains {self.entry_price:.2f}, current_shares={current_shares:.6f}, new_shares={new_shares:.6f}")
-
-            # === EXECUTE ===
+            
+            # Execute
             self.balance -= trade_usd
             self.shares_held += shares_to_buy
+            
+            # Set Flags
+            shares_to_trade = shares_to_buy
             trade_occurred = True
-            self.trades_in_episode += 1
-            _logger.debug(f"Buy executed: trade_usd={trade_usd:.2f}, shares_to_buy={shares_to_buy:.6f}, new_balance={self.balance:.2f}, new_shares_held={self.shares_held:.6f}")
 
-            return True
-        elif action_val < 0:  # Sell (or Open Short)
-            # Calculate Max Allowed Sell (Longs + Margin)
+        elif action_val < 0:  # SELL (Short)
+            
+            # A. Calculate Max Allowed Sell (Longs + Margin)
             current_shares = self.shares_held
             value_of_longs = (current_shares * current_price) if current_shares > 0 else 0.0
             short_exposure = abs(current_shares * current_price) if current_shares < 0 else 0.0
+            
             available_margin = self.net_worth - short_exposure
             if available_margin < 0: available_margin = 0.0
+            
             max_sell = value_of_longs + available_margin
 
-            # Clamp
+            # B. Clamp
             if trade_usd > max_sell:
                 trade_usd = max_sell
 
-            # Double check min size after clamping
+            # C. Re-Check Min Size
             if trade_usd < self.min_trade_value_usd:
                 return False
 
-            # Calculate shares
+            # D. Calculate Shares & Update State
             shares_to_sell = trade_usd / current_price
             new_shares = current_shares - shares_to_sell
 
-            # === ENTRY PRICE UPDATE ===
+            # Entry Price Update Logic
             if current_shares < 0:
-                # Scenario A: Adding to an existing SHORT
-                # Weighted Average Entry Price
                 old_cost = current_shares * self.entry_price
                 new_sell_cost = -(shares_to_sell * current_price)
                 self.entry_price = (old_cost + new_sell_cost) / new_shares
-                
             elif current_shares > 0 and new_shares < 0:
-                # Scenario B: Flipping from LONG to SHORT
-                # The Long portion is closed. The Short portion starts fresh.
                 self.entry_price = current_price
             
-            # Scenario C: Reducing Long (entry price stays same)
-
-            # === EXECUTE ===
-            self.balance += (shares_to_sell * current_price) - cost
+            # Execute (Subtract cost later in common block)
+            self.balance += (shares_to_sell * current_price)
             self.shares_held -= shares_to_sell
-            trade_occurred = True
-            self.trades_in_episode += 1
             
-            return True
+            # Set Flags
+            shares_to_trade = shares_to_sell
+            trade_occurred = True
 
+        # --- COMMON LOGGING & CLEANUP ---
         if trade_occurred:
+            # Calculate cost on the FINAL clamped trade_usd
+            final_trade_cost = trade_usd * self.transaction_cost_rate
+            
+            # Apply cost to balance (Slippage/Fee)
+            self.balance -= final_trade_cost
+            
+            # Update Trackers
             self.steps_since_last_trade = 0
-            self.reward_trade_cost = cost
-            _logger.debug(f"Trade executed: shares_to_trade={shares_to_trade:.6f}, trade_usd={trade_usd:.2f}, cost={cost:.2f}, action_val={action_val:.4f}")
+            self.trades_in_episode += 1
+            self.reward_trade_cost = final_trade_cost
+            self.has_traded_once = True
+
+            _logger.debug(f"Trade executed: action={action_val:.4f}, usd={trade_usd:.2f}, shares={shares_to_trade:.6f}, cost={final_trade_cost:.4f}")
         else:
             self.steps_since_last_trade += 1
 
