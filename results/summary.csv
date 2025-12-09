@@ -1,28 +1,17 @@
 key,value
-Explainability/Feature_Saliency,"{'_type': 'image-file', 'format': 'png', 'height': 600, 'path': 'media/images/Explainability/Feature_Saliency_249964_d1134bd6eec8afe65c36.png', 'sha256': 'd1134bd6eec8afe65c3637977da9f80019205da0709e59417408ad12a16cf368', 'size': 72683, 'width': 1000}"
-_runtime,2592.2838141918182
-_step,49
-_timestamp,1765142420.9941893
-best_eval/mean_portfolio,10000
-best_eval/mean_reward,-1.0938017428755011
-best_eval/std_portfolio,0
-best_eval/std_reward,0.7668907280235193
-eval/mean_portfolio,10000
-eval/mean_reward,-4.977225303649902
-eval/std_portfolio,0
-eval/std_reward,0.8872416615486145
-eval/trades_per_episode,0
-global_step,466944
-rollout/ep_len_mean,14878.0712890625
-rollout/ep_rew_mean,-463829.5
-time/fps,180
-train/approx_kl,0.01020434219390154
-train/clip_fraction,0.0831705704331398
-train/clip_range,0.20000000298023224
-train/entropy_loss,-1.3337898254394531
-train/explained_variance,0.8759927749633789
-train/learning_rate,9.999999747378752e-05
-train/loss,-0.003437618725001812
-train/policy_gradient_loss,-0.011443424038589
-train/std,0.9163093566894532
-train/value_loss,0.02234221063554287
+Explainability/Feature_Saliency,"{'_type': 'image-file', 'format': 'png', 'height': 600, 'path': 'media/images/Explainability/Feature_Saliency_32_c50f2cc73a93ff6d526a.png', 'sha256': 'c50f2cc73a93ff6d526abbf55e63be1062955cff4c95374eba74b3ede520b0cc', 'size': 73252, 'width': 1000}"
+_runtime,845.59865526
+_step,32
+_timestamp,1765238677.1648662
+_wandb,{'runtime': 0}
+best_eval/mean_portfolio,11395.832341120442
+best_eval/mean_reward,-4458.791476478215
+best_eval/std_portfolio,1197.8174646390917
+best_eval/std_reward,2276.230293012027
+best_eval/trades_per_episode,3703
+eval/mean_portfolio,16947.203018630134
+eval/mean_reward,-6496.303898733311
+eval/std_portfolio,6057.462211340825
+eval/std_reward,2071.644797696694
+eval/trades_per_episode,2482
+global_step,943128
