@@ -31,7 +31,6 @@ from stable_baselines3.common.utils import set_random_seed, ConstantSchedule
 import wandb
 from wandb.integration.sb3 import WandbCallback
 wandb.require("core")
-wandb.login(key=os.getenv('WANDB_API_KEY'))
 
 # Custom Modules
 from enhanced_trading_env import EnhancedTradingEnv
@@ -638,4 +637,5 @@ def main():
 if __name__ == "__main__":
     # Register the signal handler for debugging hangs
     # signal.signal(signal.SIGINT, debug_signal_handler)
+    wandb.login(key=os.getenv('WANDB_API_KEY'))
     main()
