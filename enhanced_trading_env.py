@@ -464,7 +464,7 @@ class EnhancedTradingEnv(gym.Env):
         act_pad = np.array(list(self.recent_actions) + [0.0] * (5 - len(self.recent_actions)), dtype=np.float32)
         delta_pad = np.array(list(self.recent_position_deltas) + [0.0] * (5 - len(self.recent_position_deltas)), dtype=np.float32)
 
-        time_held_feature = self.steps_in_current_trade / 100.0
+        time_held_feature = self.steps_in_trade / 100.0
         current_pnl_pct = ((current_price - self.entry_price) * self.shares_held) / (abs(self.entry_price * self.shares_held) + 1e-8) if self.shares_held != 0 else 0.0
 
         # Full obs
@@ -488,25 +488,44 @@ class EnhancedTradingEnv(gym.Env):
         self.prev_shares_held = self.shares_held
         trade_occurred = self._take_action(action)
 
+        # === FIX STARTS HERE ===
+        # 1. Calculate the actual size of the trade in dollars
+        shares_diff = abs(self.shares_held - self.prev_shares_held)
+        trade_value = shares_diff * current_price
+
+        # 2. Calculate the actual dollar cost (Fee)
+        actual_cost = trade_value * self.transaction_cost_rate
+
+        # 3. Convert to Percentage of Net Worth
+        # (Because your main reward is percentage-based, the penalty must match)
+        cost_pct = 0.0
+        if self.net_worth > 0:
+            cost_pct = actual_cost / self.net_worth
+
+        # 4. Apply the Multiplier (The "Pain" Factor)
+        # We multiply by 100 to match the 'reward' scale (where 1% = 1.0)
+        reward_trade_cost = (cost_pct * 100.0) * self.reward_fee_multiplier
+        # === FIX ENDS HERE ===
+
         # NEW: Inertia penalty (discourage twitching)
         reward_inertia = 0.0
         if self.shares_held == self.prev_shares_held and abs(action_val) > 0.5:
              reward_inertia = -0.05
 
         # --- UPDATE AGENT STATE ---
-        if self.shares_held > 0:
+        if abs(self.shares_held) > 0:
             self.steps_in_trade += 1
         else:
             self.steps_in_trade = 0
 
         # --- REWARD CALCULATION ---
-        
+
         # 1. Base Reward: Net Worth Change (Captures Unrealized PnL naturally)
         # If price goes up while holding, this is positive. If price goes down, this is negative.
         reward = ((self.net_worth - prev_net_worth) / prev_net_worth) * 100.0
 
         # 2. Subtract costs (Fee is now reduced to 2x multiplier in init)
-        reward -= reward_trade_cost
+        reward -= reward_trade_cost  # Now this variable is definitely defined
         reward += reward_inertia
 
         # 3. "Closer's Bonus" (Realized PnL Stimulus)
