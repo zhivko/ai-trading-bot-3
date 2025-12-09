@@ -32,9 +32,12 @@ class EnhancedTradingEnv(gym.Env):
 
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
-        self.reward_fee_multiplier = 10.0        # Magnify fee 10x in reward calculation to stop churning
+        self.reward_fee_multiplier = 2.0        # Magnify fee 10x in reward calculation to stop churning
         self.action_penalty = 0.01               # Increased: Stronger penalty for changing actions rapidly
         self.last_trade_cost = 0
+        self.reward_trade_cost = 0.0
+        self.steps_in_trade = 0
+        self.last_trade_pnl = 0.0
         
         # --- CONFIGURATION ---
         self.initial_balance = initial_balance
@@ -209,7 +212,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # --- 3. SPACE DEFINITION (Updated for new features) ---
         market_obs_size = self.lookback_window * len(self.features)
-        account_obs_size = 2
+        account_obs_size = 6
         vp_obs_size = len(self.vp_days) * (3 + self.vp_bins)
         recurrent_obs_size = 10  # 5 recent actions + 5 position deltas
         total_obs_size = (
@@ -269,7 +272,7 @@ class EnhancedTradingEnv(gym.Env):
     def get_feature_names(self):
         """Returns list of feature names for saliency analysis."""
         names = self.features * self.lookback_window
-        names += ["balance_norm", "holdings_norm"]
+        names += ["balance_norm", "holdings_norm", "pos_flag", "unrealized_pnl", "time_held", "last_pnl"]
         for day in self.vp_days:
             p = f"vp_{day}d"
             names += [f"{p}_dist_poc", f"{p}_dist_vah", f"{p}_dist_val"]
@@ -356,6 +359,7 @@ class EnhancedTradingEnv(gym.Env):
 
         if trade_occurred:
             self.steps_since_last_trade = 0
+            self.reward_trade_cost = cost
         else:
             self.steps_since_last_trade += 1
 
@@ -386,6 +390,9 @@ class EnhancedTradingEnv(gym.Env):
         self.steps_since_last_trade = 0
         self.has_traded_once = False
         self.prev_action = 0.0  # NEW: Reset prev action
+        self.reward_trade_cost = 0.0
+        self.steps_in_trade = 0
+        self.last_trade_pnl = 0.0
         self.history_net_worth = [self.initial_balance]
         self.portfolio_returns = deque(maxlen=100)
         self.returns = deque(maxlen=100)
@@ -412,7 +419,11 @@ class EnhancedTradingEnv(gym.Env):
         current_price = self.raw_prices[self.current_step]
         balance_norm = self.balance / self.initial_balance
         holdings_norm = (self.shares_held * current_price) / self.initial_balance
-        account = np.array([balance_norm, holdings_norm], dtype=np.float32)
+        pos_flag = 1.0 if self.shares_held > 0 else -1.0 if self.shares_held < 0 else 0.0
+        unrealized_pnl = ((current_price - self.entry_price) * self.shares_held) / self.initial_balance if self.shares_held != 0 else 0.0
+        time_held = self.steps_in_trade / 100.0
+        last_pnl = self.last_trade_pnl / self.initial_balance
+        account = np.array([balance_norm, holdings_norm, pos_flag, unrealized_pnl, time_held, last_pnl], dtype=np.float32)
 
         # VP features
         vp_parts = []
@@ -453,8 +464,11 @@ class EnhancedTradingEnv(gym.Env):
         act_pad = np.array(list(self.recent_actions) + [0.0] * (5 - len(self.recent_actions)), dtype=np.float32)
         delta_pad = np.array(list(self.recent_position_deltas) + [0.0] * (5 - len(self.recent_position_deltas)), dtype=np.float32)
 
+        time_held_feature = self.steps_in_current_trade / 100.0
+        current_pnl_pct = ((current_price - self.entry_price) * self.shares_held) / (abs(self.entry_price * self.shares_held) + 1e-8) if self.shares_held != 0 else 0.0
+
         # Full obs
-        full_obs = np.concatenate([market, account, vp_vec, div_vec, act_pad, delta_pad])
+        full_obs = np.concatenate([market, account, vp_vec, div_vec, act_pad, delta_pad, np.array([time_held_feature, current_pnl_pct], dtype=np.float32)])
         return full_obs.astype(np.float32)
 
     def step(self, action):
@@ -474,38 +488,48 @@ class EnhancedTradingEnv(gym.Env):
         self.prev_shares_held = self.shares_held
         trade_occurred = self._take_action(action)
 
-        # NEW: Real transaction cost penalty
-        trade_cost = self.transaction_cost_rate if trade_occurred else 0.0
-        # We magnify this in the reward to force high conviction
-        reward_trade_cost = trade_cost * self.reward_fee_multiplier
-
         # NEW: Inertia penalty (discourage twitching)
-        inertia_penalty = self.action_penalty * abs(action_val - self.prev_action)
+        reward_inertia = 0.0
+        if self.shares_held == self.prev_shares_held and abs(action_val) > 0.5:
+             reward_inertia = -0.05
 
-        # NEW: Holding bonus (reward stability)
-        # Give extra bonus if we are holding a PROFITABLE position
-        holding_bonus = 0.0
-        if self.shares_held != 0:
-            current_val = self.shares_held * current_price
-            entry_val = self.shares_held * self.entry_price
-            if (self.shares_held > 0 and current_val > entry_val) or \
-               (self.shares_held < 0 and current_val < entry_val):
-                holding_bonus = 0.0005  # Drip reward for riding a trend
+        # --- UPDATE AGENT STATE ---
+        if self.shares_held > 0:
+            self.steps_in_trade += 1
+        else:
+            self.steps_in_trade = 0
 
-        # Base reward: portfolio return minus costs + bonuses
-        reward = portfolio_return - reward_trade_cost - inertia_penalty + holding_bonus
+        # --- REWARD CALCULATION ---
+        
+        # 1. Base Reward: Net Worth Change (Captures Unrealized PnL naturally)
+        # If price goes up while holding, this is positive. If price goes down, this is negative.
+        reward = ((self.net_worth - prev_net_worth) / prev_net_worth) * 100.0
 
-        # If we just closed a position (and it wasn't a flat-to-flat noise trade)
+        # 2. Subtract costs (Fee is now reduced to 2x multiplier in init)
+        reward -= reward_trade_cost
+        reward += reward_inertia
+
+        # 3. "Closer's Bonus" (Realized PnL Stimulus)
         if self.prev_shares_held != 0 and self.shares_held == 0:
-            realized_pnl = (current_price - self.entry_price) * self.prev_shares_held
-            if realized_pnl > 0:
-                # FIX: Use += to ADD bonus, do not overwrite costs/penalties
-                reward += (realized_pnl / self.initial_balance) * 0.5
-            else:
-                reward += (realized_pnl / self.initial_balance) * 1.0
+             realized_pnl_val = (current_price - self.entry_price) * self.prev_shares_held
+             trade_return_pct = realized_pnl_val / (self.entry_price * self.prev_shares_held)
+             
+             # Store for next observation
+             self.last_trade_pnl = trade_return_pct
 
-        # Hard overtrading cap
-        if self.trades_in_episode > 20:  # Increased from 10
+             if realized_pnl_val > 0:
+                 # BONUS: Reward realizing a win 2x more than just holding it
+                 reward += (trade_return_pct * 100.0) * 2.0
+             else:
+                 # Standard penalty for realizing a loss
+                 reward += (trade_return_pct * 100.0) * 1.0
+             
+             # Reset entry price
+             self.entry_price = 0.0
+
+        # 4. FIX: Death Spiral Bug
+        # Only penalize overtrading IF a trade actually occurred this step
+        if trade_occurred and self.trades_in_episode > 20:
             reward -= 0.5
 
         if trade_occurred:
