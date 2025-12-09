@@ -3,6 +3,8 @@ import argparse
 import numpy as np
 import pandas as pd
 import torch
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend to prevent tkinter issues
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from tqdm import tqdm
