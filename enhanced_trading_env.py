@@ -463,8 +463,11 @@ class EnhancedTradingEnv(gym.Env):
         if self.shares_held == 0:
             return reward_bonus
 
+        # Get current price from raw_prices array
+        current_price = self.raw_prices[self.current_step]
+
         # Existing flatten logic...
-        proceeds = self.shares_held * self.current_price
+        proceeds = self.shares_held * current_price
         fee = abs(proceeds) * self.trading_fee_multiplier
         self.balance += proceeds - fee if self.shares_held > 0 else proceeds + fee
         self.shares_held = 0
@@ -599,6 +602,8 @@ class EnhancedTradingEnv(gym.Env):
         self._sync_wallet_balance()
         prev_net_worth = self.net_worth
 
+        info = {}                     # ← ADD THIS LINE
+
         # NEW: Real portfolio return (no look-ahead)
         portfolio_return = (self.net_worth - self.prev_net_worth) / (self.prev_net_worth + 1e-8)
 
@@ -620,9 +625,9 @@ class EnhancedTradingEnv(gym.Env):
             info["panic_close"] = False
 
         # === NORMAL TRADING (only if panic wasn't triggered) ===
+        trade_occurred = False  # Initialize to avoid UnboundLocalError
         if not panic_triggered:
             # === THRESHOLD CHECK ===
-            trade_occurred = False
 
             # Check against dynamic thresholds
             if target_exposure_action > self.buy_threshold:
@@ -637,7 +642,6 @@ class EnhancedTradingEnv(gym.Env):
                 # HOLD (Dead Zone)
                 # Action is between -0.1 and 0.1 (for example)
                 # We explicitly do nothing.
-                trade_occurred = False
                 self.steps_since_last_trade += 1
 
         # === Rest of your existing step code (unchanged) ===
