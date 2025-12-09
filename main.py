@@ -343,8 +343,9 @@ def main():
 
     progress_callback = ProgressBarCallback(update_interval=1000)
     callbacks = [progress_callback, tensorboard_callback, checkpoint_callback]
-    if saliency_callback is not None:
-        callbacks.append(saliency_callback)
+    
+    #if saliency_callback is not None:
+    #    callbacks.append(saliency_callback)
     
     # if args.wandb:
     #     callbacks.append(WandbCallback(
@@ -397,13 +398,13 @@ def main():
                 feature_names = [f"F_{i}" for i in range(obs_dim)]
 
         # --- RE-ENABLE SALIENCY ---
-        saliency_callback = RecurrentFeatureSaliencyCallback(
-            check_freq=eval_freq_adjusted,  # Run every 50k steps (Heavy computation)
-            save_path=os.path.join(log_dir, "saliency"),
-            feature_names=feature_names,
-            verbose=1
-        )
-        callbacks.append(saliency_callback)
+        #saliency_callback = RecurrentFeatureSaliencyCallback(
+        #    check_freq=eval_freq_adjusted,  # Run every 50k steps (Heavy computation)
+        #    save_path=os.path.join(log_dir, "saliency"),
+        #    feature_names=feature_names,
+        #    verbose=1
+        #)
+        #callbacks.append(saliency_callback)
         # --------------------------
 
     callback_list = CallbackList(callbacks)
@@ -542,21 +543,28 @@ def main():
         model = RecurrentPPO(
             "MlpLstmPolicy",
             train_env,
-            ent_coef=ConstantSchedule(0.01),  # === FIX: Add entropy to encourage exploration (trades) ===
-            learning_rate=ConstantSchedule(1e-4),
+            # + NEW: Force float to avoid ConstantSchedule * Tensor error in sb3-contrib
+            ent_coef=float(0.01),
+            vf_coef=float(0.5),
+            learning_rate=float(1e-4),
             n_steps=4096,
             batch_size=128,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=ConstantSchedule(0.3),
-            vf_coef=0.5,
             max_grad_norm=0.5,
             tensorboard_log=f"./logs/{args.algo}_tensorboard",
             device=args.device,
             policy_kwargs=policy_kwargs
         )
-        reset_num_timesteps = True
 
+        # + CRITICAL: Fix for RecurrentPPO bug in older sb3-contrib
+        model.ent_coef = float(model.ent_coef)
+        model.vf_coef = float(model.vf_coef)
+        model.learning_rate = float(model.learning_rate)
+        logging.info("Applied RecurrentPPO coefficient fix (ConstantSchedule → float)")
+
+        reset_num_timesteps = True
     # --- Train ---
     logging.info(f"Training started... Target: {args.total_timesteps} steps")
     logging.info(f"Model: {args.algo.upper()}, Device: {args.device}")

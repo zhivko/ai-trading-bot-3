@@ -5,7 +5,7 @@ ccxt==4.5.22
 gymnasium==0.29.1
 stable-baselines3
 stable-baselines3[extra]
-sb3-contrib==2.3.0
+sb3-contrib>=2.3.0
 shimmy>=0.2.1
 pandas>=2.2.2
 wandb==0.17.5

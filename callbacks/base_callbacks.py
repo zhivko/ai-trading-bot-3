@@ -19,7 +19,7 @@ class ProgressBarCallback(BaseCallback):
     """
     A custom progress bar that updates less frequently to prevent console spam.
     """
-    def __init__(self, update_interval=100):
+    def __init__(self, update_interval=3000):
         super().__init__()
         self.pbar = None
         self.update_interval = update_interval
@@ -235,6 +235,7 @@ class TensorboardCallback(BaseCallback):
     def _plot_regime_chart(self):
         if len(self.ep_prices) < 10:
             return
+        self._logger.info("_plot_regime_chart called")
 
         import numpy as np
         import matplotlib.pyplot as plt
@@ -328,6 +329,7 @@ class TensorboardCallback(BaseCallback):
         try:
             if wandb.run is not None:
                 wandb.log({"trade_analysis/thread_0_chart": wandb.Image(fig)})
+                self._logger.info("Logged regime chart to WandB")
         except Exception: pass
         plt.close(fig)
 
@@ -420,7 +422,7 @@ class CustomEvalCallback(EvalCallback):
             ep_bar.update(1)
 
             # Display explicit Valuation
-            ep_bar.set_postfix(Valuation=f"${np.mean(portfolio_values):.2f}")
+            ep_bar.set_postfix(NetWorth=f"${np.mean(portfolio_values):.2f}")
 
             # Reset for next episode
             reset_result = self.eval_env.reset()
@@ -453,7 +455,7 @@ class CustomEvalCallback(EvalCallback):
                     # Fallback: Set on wrapped env
                     self.model.env.phase = new_phase
                 if wandb.run is not None:
-                    wandb.log({'curriculum/phase': new_phase, 'step': self.num_timesteps})
+                    wandb.log({'curriculum/phase': new_phase, 'global_step': self.num_timesteps})
                 self._logger.info(f"Phase switching completed, new_phase={new_phase}")
 
             self._logger.info("Starting evaluation")
@@ -479,38 +481,20 @@ class CustomEvalCallback(EvalCallback):
                     "eval/std_reward": std_reward,
                     "eval/mean_portfolio": mean_portfolio,
                     "eval/std_portfolio": std_portfolio,
-                    "eval/trades_per_episode": mean_trades
-                }, step=self.num_timesteps)
+                    "eval/trades_per_episode": mean_trades,
+                    "global_step": self.num_timesteps
+                })
             if mean_reward > self.best_mean_reward:
                 self.best_mean_reward = mean_reward
                 self.best_std_reward = std_reward
                 self.best_mean_portfolio = mean_portfolio
                 self.best_std_portfolio = std_portfolio
+                self.best_mean_trades = mean_trades
+                self._logger.info(f"New best model found! Mean Reward: {mean_reward}, Mean Portfolio: {mean_portfolio}, Trades per Episode: {mean_trades}")
                 if self.best_model_save_path is not None:
                     self.model.save(os.path.join(self.best_model_save_path, 'best_model'))
+                    self._logger.info(f"Best model saved to {self.best_model_save_path}")
                 self._log_best_to_wandb(mean_reward, std_reward)
-            # Generate metrics after evaluation
-            #print(f"DEBUG: Wandb run is {'available' if wandb.run is not None else 'None'}")
-            #if wandb.run is not None:
-            #    generate_metrics()
-
-            # 2. GENERATE TEST CHART
-            # We manually trigger the render on the first eval environment
-            #print(f"DEBUG: Attempting to generate test chart at step {self.num_timesteps}")
-            #try:
-                # This now returns a list of Numpy Arrays (Images)
-                #images = self.eval_env.env_method("render", title_suffix=" [TEST DATA]")
-                #print(f"DEBUG: env_method returned: {type(images)}, len: {len(images) if images else 'None'}")
-
-                #if images and images[0] is not None:
-                #    print(f"DEBUG: Image obtained, logging to wandb")
-                    # Log the Image Array directly
-                #    wandb.log({"Test/Trade_Analysis": wandb.Image(images[0])}, commit=False)
-                #    print(f"DEBUG: Test chart logged successfully")
-            #except Exception as e:
-            #    print(f"⚠️ Could not log Test Chart: {e}")
-            #    import traceback
-            #    traceback.print_exc()
 
         return True
 
@@ -520,5 +504,7 @@ class CustomEvalCallback(EvalCallback):
                 "best_eval/mean_reward": mean_reward,
                 "best_eval/std_reward": std_reward,
                 "best_eval/mean_portfolio": self.best_mean_portfolio,
-                "best_eval/std_portfolio": self.best_std_portfolio
-            }, step=self.num_timesteps)
+                "best_eval/std_portfolio": self.best_std_portfolio,
+                "best_eval/trades_per_episode": self.best_mean_trades,
+                "global_step": self.num_timesteps
+            })

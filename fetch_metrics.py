@@ -237,6 +237,14 @@ def create_html_report(metrics_df, summary_dict):
             </div>
 
             <div class="section">
+                <h2>📊 Visualization</h2>
+                <div class="img-grid">
+                    <img src="trading_performance.png" alt="Trading Performance">
+                    <img src="average_saliency.png" alt="Average Saliency">
+                </div>
+            </div>
+
+            <div class="section">
                 <h2>⚙️ System Configuration</h2>
                 <table>
                     <tr><th>Parameter</th><th>Value</th></tr>

@@ -32,7 +32,7 @@ def compute_saliency(model, obs_tensor, lstm_states, device='cuda'):
             h = torch.zeros(num_layers, batch_size, hidden_size, device=device)
             c = torch.zeros(num_layers, batch_size, hidden_size, device=device)
         episode_starts = torch.zeros(batch_size, device=device)
-        dist = model.policy.get_distribution(inputs, (h, c), episode_starts)
+        dist, _ = model.policy.get_distribution(inputs, (h, c), episode_starts)
         return dist.distribution.mean.sum(dim=1)
 
     ig = IntegratedGradients(forward_func)
@@ -49,14 +49,15 @@ def plot_trading_chart(df_results, feature_names, attributions_matrix):
     prices = df_results['close'].values
     actions = df_results['action'].values
     ema50 = df_results['ema50'].values
+    net_worths = df_results['net_worth'].values
     dates = df_results.index
     net_worth_final = df_results['net_worth'].iloc[-1]
 
     steps = np.arange(len(prices))
 
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(16, 10), sharex=True,
-        gridspec_kw={'height_ratios': [3, 1]}
+    fig, (ax1, ax2, ax3) = plt.subplots(
+        3, 1, figsize=(16, 12), sharex=True,
+        gridspec_kw={'height_ratios': [3, 1, 1]}
     )
 
     # === Price + EMA + Bull/Bear shading ===
@@ -102,15 +103,21 @@ def plot_trading_chart(df_results, feature_names, attributions_matrix):
     ax2.bar(steps, actions, color=colors, width=0.9, alpha=0.8)
     ax2.axhline(0, color='white', linewidth=1.2)
     ax2.set_ylabel("Exposure", fontsize=12)
-    ax2.set_xlabel("Time")
     ax2.grid(True, axis='y', alpha=0.4)
+
+    # === Net Worth Plot ===
+    ax3.plot(steps, net_worths, label='Net Worth', color='blue', linewidth=1.5)
+    ax3.set_ylabel("Net Worth (USDT)")
+    ax3.set_xlabel("Time")
+    ax3.legend(loc='upper left')
+    ax3.grid(True, alpha=0.3)
 
     # === Smart Date Ticks ===
     n_ticks = 10
     indices = np.linspace(0, len(dates) - 1, n_ticks, dtype=int)
     tick_labels = [dates[i].strftime("%m-%d\n%H:%M") for i in indices]
-    ax2.set_xticks(indices)
-    ax2.set_xticklabels(tick_labels, fontsize=10, ha='center')
+    ax3.set_xticks(indices)
+    ax3.set_xticklabels(tick_labels, fontsize=10, ha='center')
 
     plt.tight_layout()
     os.makedirs("results", exist_ok=True)
@@ -190,14 +197,11 @@ def main():
     for i in tqdm(range(args.steps)):
         # Saliency
         obs_tensor = torch.FloatTensor(obs).to(device).unsqueeze(0).unsqueeze(0)
-        if lstm_states is not None:
-            lstm_states_np = (lstm_states[0].cpu().numpy(), lstm_states[1].cpu().numpy())
-        else:
-            lstm_states_np = None
+        lstm_states_np = lstm_states
         attr = compute_saliency(model, obs_tensor, lstm_states_np, device)
         attributions_list.append(attr)
 
-        # Action, lstm_states = model.predict(obs, state=lstm_states, deterministic=True)
+        action, lstm_states = model.predict(obs, state=lstm_states, deterministic=True)
         obs, _, done, infos = env.step(action)
 
         info = infos[0]
