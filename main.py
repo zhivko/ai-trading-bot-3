@@ -473,22 +473,27 @@ def main():
                 model = AlgoClass.load(load_path, env=train_env, device=args.device, tensorboard_log=tensorboard_log)
                 # Sync VecNormalize stats
                 if os.path.exists(f"{load_path}.pkl"):
-                    train_env = VecNormalize.load(f"{load_path}.pkl", train_env)
+                    # === ADD SAFETY CHECK ===
+                    temp_env = VecNormalize.load(f"{load_path}.pkl", train_env)
+
+                    # Check if observation dimensions match current environment
+                    if temp_env.obs_rms.mean.shape != train_env.observation_space.shape:
+                        raise ValueError("Observation spaces do not match (pkl vs env)")
+
+                    train_env = temp_env
                     train_env.training = True
+                    # ========================
                 # CRITICAL: Do not reset steps when resuming
                 reset_num_timesteps = False
                 logging.info(f"   > Resuming from Global Step: {model.num_timesteps}")
-            except ValueError as e:
-                if "Observation spaces do not match" in str(e):
-                    logging.warning(f"Model incompatible due to env changes: {e}")
-                    logging.info("Starting fresh training.")
-                    model = None
-                    reset_num_timesteps = True
-                    # Clean old logs if incompatible
-                    if os.path.exists(tensorboard_log):
-                        shutil.rmtree(tensorboard_log)
-                else:
-                    raise
+            except (ValueError, EOFError) as e:  # Catch more errors
+                logging.warning(f"Model incompatible due to env changes: {e}")
+                logging.info("Starting fresh training.")
+                model = None
+                reset_num_timesteps = True
+                # Clean old logs if incompatible
+                if os.path.exists(tensorboard_log):
+                    shutil.rmtree(tensorboard_log)
         else:
             logging.info("Resume requested but no model found. Starting FRESH.")
             # Clean logs if we failed to find a model to resume
@@ -500,6 +505,13 @@ def main():
         model_files = glob.glob(model_pattern)
         for f in model_files:
             os.remove(f)
+
+        # === ADD THIS TO DELETE PKL FILES ===
+        pkl_pattern = f"./models/{args.algo}_*.pkl"
+        pkl_files = glob.glob(pkl_pattern)
+        for f in pkl_files:
+            os.remove(f)
+        # ====================================            
 
         # delete checkpoints for algo
         chk_pattern = f"./checkpoints/{args.algo}_*/**/*.zip"
