@@ -269,6 +269,18 @@ class TensorboardCallback(BaseCallback):
         portfolio = np.array([point['net_worth'] for point in self.ep_portfolio], dtype=float)
         dates   = self.ep_dates
 
+        # === 1. INSERT DEBUG COUNTERS HERE ===
+        total_steps = len(self.ep_portfolio)
+        total_plotted_buys = 0
+        total_plotted_sells = 0
+        executed_true_count = sum(1 for p in self.ep_portfolio if p.get('trade_executed', False))
+
+        # Log the raw data status
+        self._logger.info("--- CHART DEBUG ---")
+        self._logger.info(f"Total Steps recorded: {total_steps}")
+        self._logger.info(f"Steps with 'trade_executed'=True: {executed_true_count}")
+        # =====================================
+
         fig, (ax1, ax2, ax3) = plt.subplots(
             3, 1, figsize=(12, 10), sharex=True,
             gridspec_kw={'height_ratios': [3, 1, 1]}
@@ -299,6 +311,7 @@ class TensorboardCallback(BaseCallback):
             if is_executed:
                 action_val = point['action']
                 if action_val > 0:  # Buy
+                    total_plotted_buys += 1  # <--- Count Buy
                     ax1.scatter(
                         steps[i], prices[i],
                         color='green', marker='^', s=50,
@@ -306,6 +319,7 @@ class TensorboardCallback(BaseCallback):
                     )
                     buy_label_used = True
                 elif action_val < 0:  # Sell
+                    total_plotted_sells += 1  # <--- Count Sell
                     ax1.scatter(
                         steps[i], prices[i],
                         color='red', marker='v', s=50,
@@ -348,6 +362,12 @@ class TensorboardCallback(BaseCallback):
         ax3.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
 
         plt.tight_layout()
+
+        # === 3. LOG THE FINAL COUNT ===
+        self._logger.info(f"Chart Markers Plotted -> Buys: {total_plotted_buys}, Sells: {total_plotted_sells}")
+        self._logger.info("-------------------")
+        # ==============================
+
         try:
             if wandb.run is not None:
                 self._logger.info(f"Attempting to log chart to WandB, wandb.run.id: {wandb.run.id}")
