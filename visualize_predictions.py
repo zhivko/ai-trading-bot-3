@@ -149,12 +149,15 @@ def plot_trading_chart(df_results, feature_names, attributions_matrix):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pair", type=str, default="BTCUSDT")
-    parser.add_argument("--model-path", type=str, default="models/recurrentppo_BTCUSDT.zip")
+    parser.add_argument("--model-path", type=str, default="models/best_model")
     parser.add_argument("--data-path", type=str, default="BTCUSDT_data.csv")
     parser.add_argument("--steps", type=int, default=500, help="Number of steps to visualize")
     parser.add_argument("--start-index", type=int, default=5000, help="Start step in dataset")
     args = parser.parse_args()
 
+    print(f"Model path: {args.model_path}")
+    if not os.path.exists(args.model_path + '.zip'):
+        print(f"Model file does not exist at {args.model_path}.zip")
     print("Loading data...")
     df = pd.read_csv(args.data_path)
     df['timestamp'] = pd.to_datetime(df['timestamp'])

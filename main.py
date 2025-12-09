@@ -564,7 +564,7 @@ def main():
             "learning_rate": 1e-4,
             "n_steps": 4096,
             "batch_size": 2048,  # FIX: Correct batch size here
-            "ent_coef": 0.0001,  # FIX: Reduced entropy to stop overtrading
+            "ent_coef": 0.005,   # FIX: Enough to explore, but low enough to converge
             "vf_coef": 0.5,
             "gamma": 0.99,
             "gae_lambda": 0.95,

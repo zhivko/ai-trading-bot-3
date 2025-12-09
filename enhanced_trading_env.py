@@ -35,7 +35,7 @@ class EnhancedTradingEnv(gym.Env):
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
         self.reward_fee_multiplier = 2.0        # Magnify fee 10x in reward calculation to stop churning
-        self.action_penalty = 0.01               # Increased: Stronger penalty for changing actions rapidly
+        self.action_penalty = 0.001              # FIX: Reduced by 50x. Allows switching, but still punishes noise.
         self.last_trade_cost = 0
         self.reward_trade_cost = 0.0
         self.steps_in_trade = 0
