@@ -57,3 +57,7 @@ __pycache__/
 
 
 *.log
+
+recurrentppo_tb/*.*
+recurrentppo_models/*.*
+recurrentppo_logs/*.*
