@@ -170,7 +170,9 @@ class TensorboardCallback(BaseCallback):
 
     def _calculate_financial_metrics(self):
         """Calculates Sharpe, Sortino, Drawdown, Calmar, and Benchmark comparison."""
+        self._logger.info(f"_calculate_financial_metrics called with len(ep_portfolio)={len(self.ep_portfolio)}")
         if len(self.ep_portfolio) < 2:
+            self._logger.info("Skipping financial metrics calculation: insufficient portfolio data")
             return
 
         # Convert lists to arrays
@@ -221,9 +223,12 @@ class TensorboardCallback(BaseCallback):
             annualized_return = 0
             calmar = 0
 
+        self._logger.info(f"Calculated metrics: sharpe={sharpe}, sortino={sortino}, max_drawdown={max_drawdown}, annualized_return={annualized_return}")
+
         # 5. Log to WandB
         try:
             if wandb.run is not None:
+                self._logger.info(f"Logging financial metrics to wandb at global_step={self.num_timesteps}")
                 wandb.log({
                     "financial/sharpe_ratio": sharpe,
                     "financial/sortino_ratio": sortino,
@@ -234,10 +239,14 @@ class TensorboardCallback(BaseCallback):
                     "financial/benchmark_return": bnh_return,
                     "financial/outperformance": strategy_return - bnh_return,
                     "financial/initial_capital": portfolio[0],
-                    "financial/final_networth": portfolio[-1]
+                    "financial/final_networth": portfolio[-1],
+                    "global_step": self.num_timesteps
                 })
-        except Exception:
-            pass
+                self._logger.info("Successfully logged financial metrics to wandb")
+            else:
+                self._logger.warning("wandb.run is None, skipping financial metrics log")
+        except Exception as e:
+            self._logger.error(f"Failed to log financial metrics to wandb: {e}")
 
     def _plot_regime_chart(self):
         if len(self.ep_prices) < 10:
