@@ -347,7 +347,7 @@ class EnhancedTradingEnv(gym.Env):
         cost = abs(shares_to_trade * current_price) * self.transaction_cost_rate
 
         trade_occurred = False
-        if trade_usd > 0:  # Buy
+        if action_val > 0:  # Buy or Cover Short
             if self.balance >= shares_to_trade * current_price + cost:
                 self.shares_held += shares_to_trade
                 self.balance -= shares_to_trade * current_price + cost
@@ -357,14 +357,60 @@ class EnhancedTradingEnv(gym.Env):
                 self.trades_in_episode += 1
             else:
                 _logger.debug(f"Buy blocked by insufficient balance: balance={self.balance:.2f}, required={shares_to_trade * current_price + cost:.2f}, trade_usd={trade_usd:.2f}, action_val={action_val:.4f}")
-        elif trade_usd < 0:  # Sell / Short-cover
-            if self.shares_held >= -shares_to_trade:
-                self.shares_held += shares_to_trade  # shares_to_trade is negative
-                self.balance -= shares_to_trade * current_price - cost  # credit for sell
-                trade_occurred = True
-                self.trades_in_episode += 1
-            else:
-                _logger.debug(f"Sell blocked by insufficient shares: shares_held={self.shares_held:.6f}, required={-shares_to_trade:.6f}, trade_usd={trade_usd:.2f}, action_val={action_val:.4f}")
+        elif action_val < 0:  # Sell or Open Short
+            trade_usd = abs(trade_usd)
+            
+            # === SHORTING LOGIC ===
+            # Instead of checking 'shares_held', we check 'Net Worth' (Collateral).
+            # We allow shorting up to 1x Leverage (Total Position Value <= Net Worth).
+            
+            # 1. Calculate the New Proposed Position
+            current_shares = self.shares_held
+            shares_to_sell = trade_usd / current_price
+            new_shares = current_shares - shares_to_sell
+            
+            # 2. Check Margin/Leverage Limit
+            # Value of new position: abs(-0.5 BTC) * $90k
+            new_position_value = abs(new_shares * current_price)
+            
+            # Max allowed position size is our Net Worth (1x Leverage safe mode)
+            if new_position_value > self.net_worth:
+                # Cap the trade to maximum allowable leverage
+                # Available 'room' for shorting
+                available_usd = self.net_worth - abs(current_shares * current_price)
+                if available_usd <= 0:
+                     _logger.debug(f"Short blocked by margin call: net_worth={self.net_worth:.2f}, current_position_value={abs(current_shares * current_price):.2f}, action_val={action_val:.4f}")
+                     return False
+                
+                trade_usd = available_usd
+                shares_to_sell = trade_usd / current_price
+                new_shares = current_shares - shares_to_sell
+
+            # 3. Handle Entry Price Updates (Crucial for PnL tracking)
+            if current_shares < 0:
+                # Scenario A: Adding to an existing SHORT
+                # Weighted Average Entry Price: (OldCost + NewCost) / TotalShares
+                old_cost = current_shares * self.entry_price
+                new_sell_cost = -(shares_to_sell * current_price) # Negative shares * Price
+                self.entry_price = (old_cost + new_sell_cost) / new_shares
+                
+            elif current_shares > 0 and new_shares < 0:
+                # Scenario B: Flipping from LONG to SHORT
+                # The Long portion is closed (realized). The Short portion starts fresh.
+                # We set entry price to current price for the new short position.
+                self.entry_price = current_price
+                
+            # Note: If simply reducing a Long (shares > 0 -> shares > 0), entry price stays same.
+
+            # 4. Execute Trade
+            # In a simplified model:
+            # - Cash Balance INCREASES by sale amount (proceeds)
+            # - Shares become NEGATIVE (liability)
+            # Net Worth calculation (Balance + Shares*Price) handles the math correctly.
+            self.balance += (shares_to_sell * current_price) - cost
+            self.shares_held -= shares_to_sell
+            trade_occurred = True
+            self.trades_in_episode += 1
 
         if trade_occurred:
             self.steps_since_last_trade = 0
