@@ -284,6 +284,9 @@ def main():
     eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.)
     eval_env.training = False  # Do not update stats during evaluation
     # Link eval stats to train stats (Python passes by reference, so they stay synced)
+    logging.info(f"Before syncing obs_rms: train_env type={type(train_env)}, eval_env type={type(eval_env)}")
+    logging.info(f"train_env has obs_rms: {hasattr(train_env, 'obs_rms')}")
+    logging.info(f"eval_env has obs_rms: {hasattr(eval_env, 'obs_rms')}")
     eval_env.obs_rms = train_env.obs_rms
 
     # Create dummy env for saliency callback (skip for RecurrentPPO due to LSTM compatibility issues)
@@ -473,16 +476,22 @@ def main():
                 model = AlgoClass.load(load_path, env=train_env, device=args.device, tensorboard_log=tensorboard_log)
                 # Sync VecNormalize stats
                 if os.path.exists(f"{load_path}.pkl"):
-                    # === ADD SAFETY CHECK ===
-                    temp_env = VecNormalize.load(f"{load_path}.pkl", train_env)
+                    # === FIX STARTS HERE ===
+                    # 1. Load using the INNER environment (unwrap the empty wrapper we just made)
+                    temp_env = VecNormalize.load(f"{load_path}.pkl", train_env.venv)
 
-                    # Check if observation dimensions match current environment
+                    # 2. Check if observation dimensions match
                     if temp_env.obs_rms.mean.shape != train_env.observation_space.shape:
                         raise ValueError("Observation spaces do not match (pkl vs env)")
 
+                    # 3. Replace the training env
                     train_env = temp_env
                     train_env.training = True
-                    # ========================
+                    
+                    # 4. CRITICAL: Re-sync eval_env to the NEW loaded stats
+                    # (Because train_env is now a different object)
+                    eval_env.obs_rms = train_env.obs_rms
+                    # === FIX ENDS HERE ===
                 # CRITICAL: Do not reset steps when resuming
                 reset_num_timesteps = False
                 logging.info(f"   > Resuming from Global Step: {model.num_timesteps}")
