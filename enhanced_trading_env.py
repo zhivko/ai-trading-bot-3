@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 from volume_profile import get_rolling_vp
 import logging
 
+_logger = logging.getLogger(__name__)
+
 class EnhancedTradingEnv(gym.Env):
     metadata = {
         'render.modes': ['human'],
@@ -323,6 +325,7 @@ class EnhancedTradingEnv(gym.Env):
             new_sign = np.sign(action_val) if abs(action_val) > 1e-6 else 0
             # If trying to flip direction during cooldown, block it
             if current_sign != 0 and new_sign != 0 and current_sign != new_sign:
+                _logger.debug(f"Trade blocked by cooldown direction flip: steps_since_last_trade={self.steps_since_last_trade}, cooldown_steps={self.cooldown_steps}, current_sign={current_sign}, new_sign={new_sign}, action_val={action_val:.4f}")
                 return False
 
         # Target position in USD (leverage scaled)
@@ -336,6 +339,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # Apply minimum trade size filter
         if abs(trade_usd) < self.min_trade_value_usd:
+            _logger.debug(f"Trade blocked by minimum trade value: trade_usd={trade_usd:.2f}, min_trade_value_usd={self.min_trade_value_usd:.2f}, action_val={action_val:.4f}")
             return False
 
         # Execute trade
@@ -351,16 +355,21 @@ class EnhancedTradingEnv(gym.Env):
                     self.entry_price = current_price
                 trade_occurred = True
                 self.trades_in_episode += 1
+            else:
+                _logger.debug(f"Buy blocked by insufficient balance: balance={self.balance:.2f}, required={shares_to_trade * current_price + cost:.2f}, trade_usd={trade_usd:.2f}, action_val={action_val:.4f}")
         elif trade_usd < 0:  # Sell / Short-cover
             if self.shares_held >= -shares_to_trade:
                 self.shares_held += shares_to_trade  # shares_to_trade is negative
                 self.balance -= shares_to_trade * current_price - cost  # credit for sell
                 trade_occurred = True
                 self.trades_in_episode += 1
+            else:
+                _logger.debug(f"Sell blocked by insufficient shares: shares_held={self.shares_held:.6f}, required={-shares_to_trade:.6f}, trade_usd={trade_usd:.2f}, action_val={action_val:.4f}")
 
         if trade_occurred:
             self.steps_since_last_trade = 0
             self.reward_trade_cost = cost
+            _logger.debug(f"Trade executed: shares_to_trade={shares_to_trade:.6f}, trade_usd={trade_usd:.2f}, cost={cost:.2f}, action_val={action_val:.4f}")
         else:
             self.steps_since_last_trade += 1
 
