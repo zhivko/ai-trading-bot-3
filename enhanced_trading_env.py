@@ -214,7 +214,7 @@ class EnhancedTradingEnv(gym.Env):
         market_obs_size = self.lookback_window * len(self.features)
         account_obs_size = 6
         vp_obs_size = len(self.vp_days) * (3 + self.vp_bins)
-        recurrent_obs_size = 10  # 5 recent actions + 5 position deltas
+        recurrent_obs_size = 12  # 5 recent actions + 5 position deltas + 2 extra features
         total_obs_size = (
             market_obs_size
             + account_obs_size
@@ -280,6 +280,7 @@ class EnhancedTradingEnv(gym.Env):
         names += self.div_features
         names += [f"recent_action_{i}" for i in range(5)]
         names += [f"position_delta_{i}" for i in range(5)]
+        names += ["time_held_feature", "current_pnl_pct"]
         return names
 
     def _detect_divergences(self, osc_idx, price_idx, window=40, tolerance=8):
