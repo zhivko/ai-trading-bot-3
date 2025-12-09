@@ -1,4 +1,4 @@
-timport os
+import os
 import argparse
 import glob
 import shutil
