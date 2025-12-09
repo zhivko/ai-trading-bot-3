@@ -5,6 +5,7 @@ from gymnasium import spaces
 from collections import deque
 from scipy.signal import argrelextrema
 import matplotlib.pyplot as plt
+import os
 
 # Delegating heavy lifting to volume_profile.py
 from volume_profile import get_rolling_vp
@@ -19,9 +20,11 @@ class EnhancedTradingEnv(gym.Env):
     }
 
     def __init__(self, df, initial_balance=10000, lookback_window=50, vp_days=None, vp_bins=40,
-                       buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1, total_phases=10, min_trade_value_usd=10.0,
-                       pair='BTCUSDT', timeframe='1h', split_date=None):
-        _logger.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {vp_bins}) ---")
+                        buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1, total_phases=10, min_trade_value_usd=10.0,
+                        pair='BTCUSDT', timeframe='1h', split_date=None):
+        # Create instance-specific logger
+        self._logger = get_thread_logger()
+        self._logger.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {vp_bins}) ---")
         super(EnhancedTradingEnv, self).__init__()
 
         # Update metadata with instance-specific info
@@ -67,7 +70,7 @@ class EnhancedTradingEnv(gym.Env):
         else:
             # Fallback to calculating it (only if not passed)
             self.vp_data = {}
-            _logger.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {self.vp_bins}) ---")
+            self._logger.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {self.vp_bins}) ---")
             
             for days in self.vp_days:
                 # All caching/hashing logic is now in volume_profile.py
@@ -292,7 +295,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # Max lookback for VP + features
         self.max_lookback = max(max(d * 24 for d in self.vp_days), 50) + self.lookback_window
-        _logger.info(f"Max Lookback Set To: {self.max_lookback} steps")
+        self._logger.info(f"Max Lookback Set To: {self.max_lookback} steps")
 
     def get_feature_names(self):
         """Returns list of feature names for saliency analysis."""
@@ -346,7 +349,7 @@ class EnhancedTradingEnv(gym.Env):
             current_sign = np.sign(self.shares_held) if abs(self.shares_held) > 1e-6 else 0
             new_sign = np.sign(action_val) if abs(action_val) > 1e-6 else 0
             if current_sign != 0 and new_sign != 0 and current_sign != new_sign:
-                _logger.debug(f"Trade blocked by cooldown direction flip: steps={self.steps_since_last_trade}")
+                self._logger.debug(f"Trade blocked by cooldown direction flip: steps={self.steps_since_last_trade}")
                 return False
 
         # 2. Calculate Initial Target Size (Always Positive)
@@ -354,7 +357,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # 3. Global Min Check
         if trade_usd < self.min_trade_value_usd:
-            # _logger.debug(...) # Optional: Uncomment if debugging silence
+            # self._logger.debug(...) # Optional: Uncomment if debugging silence
             return False
 
         trade_occurred = False
@@ -452,7 +455,7 @@ class EnhancedTradingEnv(gym.Env):
             self.reward_trade_cost = final_trade_cost
             self.has_traded_once = True
 
-            _logger.debug(f"Trade executed: buy_threshold={self.buy_threshold:.4f}, sell_threshold={self.sell_threshold:.4f}, action={action_val:.4f}, usd={trade_usd:.2f}, shares={shares_to_trade:.6f}, cost={final_trade_cost:.4f}")
+            self._logger.debug(f"Trade executed: buy_threshold={self.buy_threshold:.4f}, sell_threshold={self.sell_threshold:.4f}, action={action_val:.4f}, usd={trade_usd:.2f}, shares={shares_to_trade:.6f}, cost={final_trade_cost:.4f}")
         else:
             self.steps_since_last_trade += 1
 
@@ -613,7 +616,7 @@ class EnhancedTradingEnv(gym.Env):
             and self.shares_held != 0
             and self.unrealized_pnl < 0):
 
-            logging.debug(f"PANIC CLOSE TRIGGERED | pnl={self.unrealized_pnl:.2f} | "
+            self._logger.debug(f"PANIC CLOSE TRIGGERED | pnl={self.unrealized_pnl:.2f} | "
                           f"panic_signal={panic_signal:.3f} | net_worth={self.net_worth:.0f}")
 
             self._flatten_position()
@@ -745,7 +748,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # Log episode end
         if terminated or truncated:
-            _logger.info(f"Episode ended: terminated={terminated}, truncated={truncated}, final_net_worth={self.net_worth:.2f}, trades={self.trades_in_episode}, steps={self.current_step}")
+            self._logger.info(f"Episode ended: terminated={terminated}, truncated={truncated}, final_net_worth={self.net_worth:.2f}, trades={self.trades_in_episode}, steps={self.current_step}")
 
         obs = self._next_observation()
 
@@ -822,6 +825,47 @@ class EnhancedTradingEnv(gym.Env):
     def set_thresholds(self, buy, sell):
         self.buy_threshold = buy
         self.sell_threshold = sell
+
+def get_thread_logger():
+    """Create a logger that writes to a separate file per thread/environment instance."""
+    import threading
+    import logging
+
+    # Get thread identifier (process ID + thread ID for uniqueness)
+    thread_id = f"{os.getpid()}_{threading.current_thread().ident}"
+
+    # Create logger name based on thread
+    logger_name = f"EnhancedTradingEnv_{thread_id}"
+
+    # Get or create logger
+    logger = logging.getLogger(logger_name)
+
+    # Only configure if not already configured
+    if not logger.handlers:
+        logger.setLevel(logging.DEBUG)
+
+        # Create logs directory if it doesn't exist
+        log_dir = "logs"
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Create file handler for this thread's log file
+        log_file = os.path.join(log_dir, f"env_{thread_id}.log")
+
+        # Delete existing log file if it exists to start fresh
+        if os.path.exists(log_file):
+            os.remove(log_file)
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.DEBUG)
+
+        # Create formatter
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(lineno)d - %(message)s')
+        file_handler.setFormatter(formatter)
+
+        # Add handler to logger
+        logger.addHandler(file_handler)
+
+    return logger
+
 
 # Register the environment with Gym
 gym.register(

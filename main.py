@@ -146,13 +146,13 @@ def load_and_process_data(filepath):
 # ---------------------------------------------------------
 def main():
     # Delete old log file to start fresh
-    if os.path.exists('ml.log'):
-        os.remove('ml.log')
+    if os.path.exists('logs/ml.log'):
+        os.remove('logs/ml.log')
     # Delete old callback log files
-    callback_log_files = glob.glob('*callback*_*.log')
+    callback_log_files = glob.glob('logs/*callback*_*.log')
     for f in callback_log_files:
         os.remove(f)
-    logging.basicConfig(filename='ml.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s')
+    logging.basicConfig(filename='logs/ml.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s')
 
     # Add console handler for logging to console
     console_handler = logging.StreamHandler()

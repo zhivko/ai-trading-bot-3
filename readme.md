@@ -122,7 +122,7 @@ sha256:a60aca26f88eb88e5b078dff2be2d0dda3583b28e4c98122ced32556f336c8bd
 ```
 
 ```python
-python main.py --pair BTCUSDT --vp-days 7 30 --algo recurrentppo --test-split 2023-06-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 1024
+python main.py --pair BTCUSDT --vp-days 7 30 --algo recurrentppo --test-split 2023-06-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 1024 --phase 2 --total-phases 10
 ```
 
 
