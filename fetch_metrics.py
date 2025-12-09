@@ -297,6 +297,7 @@ def _generate_metrics_worker():
         create_html_report(history_df, summary_dict)
 
         # 4. Git Push
+        '''
         try:
             logging.info("Pushing to Git...")
             subprocess.run(["git", "add", "results/"], check=True)
@@ -305,6 +306,7 @@ def _generate_metrics_worker():
         except subprocess.CalledProcessError as e:
              if e.returncode == 1: logging.info("Nothing to commit.")
              else: logging.info(f"Git error: {e}")
+        '''
     else:
         logging.info("No runs found.")
 

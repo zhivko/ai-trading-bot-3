@@ -33,7 +33,7 @@ class EnhancedTradingEnv(gym.Env):
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
         self.reward_fee_multiplier = 10.0        # Magnify fee 10x in reward calculation to stop churning
-        self.action_penalty = 0.0005             # tiny L1 penalty to discourage twitching
+        self.action_penalty = 0.05               # Increased: Stronger penalty for changing actions rapidly
         self.last_trade_cost = 0
         
         # --- CONFIGURATION ---
@@ -232,7 +232,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # === FIX: Soften churn/cooldown to not over-punish trading ===
         self.target_hold_duration = 24       # Target 24h hold
-        self.cooldown_steps = 12             # Force minimum 12-step (12h) wait between flipping sides
+        self.cooldown_steps = 0              # REMOVED: Hard constraints confuse the agent. Let fees dictate holding.
 
         # REWARD PENALTIES
         # We switch to a more conservative approach

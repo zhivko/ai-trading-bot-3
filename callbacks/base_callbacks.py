@@ -19,7 +19,7 @@ class ProgressBarCallback(BaseCallback):
     """
     A custom progress bar that updates less frequently to prevent console spam.
     """
-    def __init__(self, update_interval=3000):
+    def __init__(self, update_interval=5000):
         super().__init__()
         self.pbar = None
         self.update_interval = update_interval
@@ -39,10 +39,8 @@ class ProgressBarCallback(BaseCallback):
         self.last_update_step = 0
 
     def _on_step(self) -> bool:
-        # Only update the progress bar every `update_interval` steps
-        if self.n_calls % self.update_interval == 0:
-            # DEBUG: Log update details
-            self._logger.info(f"Progress bar update: n_calls={self.n_calls}, update_interval={self.update_interval}, num_timesteps={self.num_timesteps}, last_update_step={self.last_update_step}")
+        # Only update the progress bar every `update_interval` steps, skipping the initial call at n_calls=0
+        if self.n_calls > 0 and self.n_calls % self.update_interval == 0:
             # Calculate how many steps passed since last update (usually == update_interval)
             step_delta = self.num_timesteps - self.last_update_step
 
@@ -116,6 +114,13 @@ class TensorboardCallback(BaseCallback):
         self.ep_actions = []
         self.ep_portfolio = []
         self.ep_dates = []
+        self._logger = logging.getLogger(self.__class__.__name__)
+        if not self._logger.handlers:
+            thread_name = threading.current_thread().name
+            handler = logging.FileHandler(f"{self.__class__.__name__.lower()}_{thread_name}.log")
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s'))
+            self._logger.addHandler(handler)
+            self._logger.setLevel(logging.INFO)
 
     def _on_step(self) -> bool:
         # 1. Robust Info Extraction
@@ -330,9 +335,13 @@ class TensorboardCallback(BaseCallback):
         plt.tight_layout()
         try:
             if wandb.run is not None:
+                self._logger.info(f"Attempting to log chart to WandB, wandb.run.id: {wandb.run.id}")
                 wandb.log({"trade_analysis/thread_0_chart": wandb.Image(fig)})
-                self._logger.info("Logged regime chart to WandB")
-        except Exception: pass
+                self._logger.info("Successfully logged regime chart to WandB")
+            else:
+                self._logger.warning("wandb.run is None, skipping chart log")
+        except Exception as e:
+            self._logger.error(f"Failed to log regime chart to WandB: {e}")
         plt.close(fig)
 
 

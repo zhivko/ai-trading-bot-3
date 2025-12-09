@@ -544,11 +544,11 @@ def main():
             "MlpLstmPolicy",
             train_env,
             # + NEW: Force float to avoid ConstantSchedule * Tensor error in sb3-contrib
-            ent_coef=float(0.01),
+            ent_coef=float(0.0001),  # FIX: High entropy forces overtrading. Reduced to near-zero.
             vf_coef=float(0.5),
             learning_rate=float(1e-4),
             n_steps=4096,
-            batch_size=128,
+            batch_size=2048,         # FIX: Increased from 128. Larger batches stabilize LSTM training.
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=ConstantSchedule(0.3),
@@ -584,6 +584,11 @@ def main():
             train_env.save(f"{model_path}.pkl")
         logging.info(f"Saved final model to {model_path}")
 
+        # Finish WandB run
+        if args.wandb:
+            wandb.finish()
+            logging.info("WandB run finished.")
+
     except KeyboardInterrupt:
         # --- CTRL+C Save ---
         logging.info("\n\n⚠️ INTERRUPTED! Saving current state before exiting...")
@@ -597,7 +602,12 @@ def main():
         if train_env and hasattr(train_env, 'save'):
             train_env.save(f"{model_path}.pkl")
             logging.info(f"✅ Normalization stats saved: {model_path}.pkl")
-            
+
+        # Finish WandB run
+        if args.wandb:
+            wandb.finish()
+            logging.info("WandB run finished.")
+
         logging.info("Exiting gracefully.")
         try:
             sys.exit(0)
