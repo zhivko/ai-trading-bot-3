@@ -461,7 +461,7 @@ class CustomEvalCallback(EvalCallback):
         return mean_reward, std_reward, mean_portfolio, std_portfolio, mean_trades
 
     def _on_step(self) -> bool:
-        if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+        if self.eval_freq > 0 and self.num_timesteps % self.eval_freq == 0:
             # Diagnostic logs for mangled output
             import shutil
             terminal_width = shutil.get_terminal_size().columns

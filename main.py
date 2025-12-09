@@ -500,18 +500,30 @@ def main():
             if os.path.exists(tensorboard_log):
                 shutil.rmtree(tensorboard_log)
     else:
-        # Delete all models for algo
+        logging.info("Starting FRESH training. Cleaning up old models...")
+        
+        # 1. Delete Model ZIPs
         model_pattern = f"./models/{args.algo}_*.zip"
         model_files = glob.glob(model_pattern)
         for f in model_files:
-            os.remove(f)
+            try:
+                os.remove(f)
+                logging.info(f"Deleted old model: {f}")
+            except OSError as e:
+                logging.error(f"Error deleting {f}: {e}")
 
-        # === ADD THIS TO DELETE PKL FILES ===
-        pkl_pattern = f"./models/{args.algo}_*.pkl"
-        pkl_files = glob.glob(pkl_pattern)
+        # 2. Delete VecNormalize PKLs (Aggressive Pattern)
+        # matches "recurrentppo_BTCUSDT.pkl" and "vec_normalize_recurrentppo.pkl"
+        pkl_files = glob.glob(f"./models/*.pkl") + glob.glob(f"./logs/*.pkl")
         for f in pkl_files:
-            os.remove(f)
-        # ====================================            
+            if args.algo in f: # Only delete files for this algorithm
+                try:
+                    os.remove(f)
+                    logging.info(f"Deleted old normalization stats: {f}")
+                except OSError as e:
+                    logging.error(f"Error deleting {f}: {e}")
+
+        # ... (rest of cleanup)
 
         # delete checkpoints for algo
         chk_pattern = f"./checkpoints/{args.algo}_*/**/*.zip"
