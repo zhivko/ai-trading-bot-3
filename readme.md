@@ -162,14 +162,21 @@ python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2023-01-01 
 or with resume if you break learning
 
 ```bash
-python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2023-01-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 4096 --resume
+python main.py --pair BTCUSDT --vp-days 7 30 --algo sac --test-split 2023-01-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 4096 --total-phases 10 --resume
 ```
 
 
 ### model = recurrentppo
+Start learninig from phase 1
 ```bash
-python main.py --pair BTCUSDT --vp-days 7 30 --algo recurrentppo --test-split 2023-06-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 1024
+python main.py --pair BTCUSDT --vp-days 7 30 --algo recurrentppo --test-split 2023-06-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 1024 --total-phases 10
 ```
+
+Or resume learning in particular phase:
+```bash
+python main.py --pair BTCUSDT --vp-days 7 30 --algo recurrentppo --test-split 2023-06-01 --total-timesteps 5000000 --wandb --device cuda --batch-size 1024 --phase 2 --total-phases 10 --resume
+```
+
 
 
 ## CODE for LLM's to comment on code

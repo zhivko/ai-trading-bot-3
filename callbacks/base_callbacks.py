@@ -401,6 +401,13 @@ class CustomEvalCallback(EvalCallback):
             self._logger.setLevel(logging.INFO)
         self._logger.info(f"CustomEvalCallback eval_env type: {type(self.eval_env)}")
 
+        # For chart plotting
+        self.ep_prices = []
+        self.ep_emas = []
+        self.ep_actions = []
+        self.ep_portfolio = []
+        self.ep_dates = []
+
     def _evaluate_with_portfolio(self):
         """
         Evaluate the agent using the portfolio environment.

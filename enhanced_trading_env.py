@@ -21,7 +21,7 @@ class EnhancedTradingEnv(gym.Env):
     def __init__(self, df, initial_balance=10000, lookback_window=50, vp_days=None, vp_bins=40,
                        buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1, total_phases=10, min_trade_value_usd=10.0,
                        pair='BTCUSDT', timeframe='1h', split_date=None):
-        logging.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {vp_bins}) ---")
+        _logger.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {vp_bins}) ---")
         super(EnhancedTradingEnv, self).__init__()
 
         # Update metadata with instance-specific info
@@ -66,7 +66,7 @@ class EnhancedTradingEnv(gym.Env):
         else:
             # Fallback to calculating it (only if not passed)
             self.vp_data = {}
-            logging.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {self.vp_bins}) ---")
+            _logger.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {self.vp_bins}) ---")
             
             for days in self.vp_days:
                 # All caching/hashing logic is now in volume_profile.py
@@ -285,7 +285,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # Max lookback for VP + features
         self.max_lookback = max(max(d * 24 for d in self.vp_days), 50) + self.lookback_window
-        logging.info(f"Max Lookback Set To: {self.max_lookback} steps")
+        _logger.info(f"Max Lookback Set To: {self.max_lookback} steps")
 
     def get_feature_names(self):
         """Returns list of feature names for saliency analysis."""
@@ -445,7 +445,7 @@ class EnhancedTradingEnv(gym.Env):
             self.reward_trade_cost = final_trade_cost
             self.has_traded_once = True
 
-            _logger.debug(f"Trade executed: action={action_val:.4f}, usd={trade_usd:.2f}, shares={shares_to_trade:.6f}, cost={final_trade_cost:.4f}")
+            _logger.info(f"Trade executed: action={action_val:.4f}, usd={trade_usd:.2f}, shares={shares_to_trade:.6f}, cost={final_trade_cost:.4f}")
         else:
             self.steps_since_last_trade += 1
 

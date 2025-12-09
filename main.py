@@ -13,6 +13,7 @@ import signal
 import sys
 import traceback
 import threading
+logger = logging.getLogger(__name__)
 
 # Matplotlib backend fix for server environments
 import matplotlib
@@ -44,20 +45,20 @@ def debug_signal_handler(signum, frame):
     Catches Ctrl+C (SIGINT) and prints the stack trace of ALL running threads
     before exiting. This helps debug hangs by showing where each thread is stuck.
     """
-    logging.info(f"\n\n!!! CAUGHT CTRL+C (Signal {signum}) !!!")
-    logging.info("Dumping stack traces for all running threads to see where it hangs...\n")
+    logger.info(f"\n\n!!! CAUGHT CTRL+C (Signal {signum}) !!!")
+    logger.info("Dumping stack traces for all running threads to see where it hangs...\n")
 
     # Map thread IDs to their names for cleaner output
     id2name = {t.ident: t.name for t in threading.enumerate()}
 
     for thread_id, stack in sys._current_frames().items():
         name = id2name.get(thread_id, f"Thread ID {thread_id}")
-        logging.info(f"--- Stack trace for Thread: {name} ---")
+        logger.info(f"--- Stack trace for Thread: {name} ---")
         stack_trace = ''.join(traceback.format_stack(stack))
-        logging.info(stack_trace)
-        logging.info("-" * 40 + "\n")
+        logger.info(stack_trace)
+        logger.info("-" * 40 + "\n")
 
-    logging.info("Exiting application...")
+    logger.info("Exiting application...")
     sys.exit(1)
 
 # ---------------------------------------------------------
@@ -122,7 +123,7 @@ def load_and_process_data(filepath):
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Data file not found: {filepath}")
 
-    logging.info(f"Loading data from {filepath}...")
+    logger.info(f"Loading data from {filepath}...")
     df = pd.read_csv(filepath)
     
     # Ensure standard columns
@@ -153,6 +154,12 @@ def main():
         os.remove(f)
     logging.basicConfig(filename='ml.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s')
 
+    # Add console handler for logging to console
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG)
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s'))
+    logging.getLogger().addHandler(console_handler)
+
     # Filter to only log from our own files
     class OurFilter(logging.Filter):
         def __init__(self, allowed_files):
@@ -178,16 +185,15 @@ def main():
     callback_files = glob.glob('callbacks/*.py')
     our_files.extend([os.path.basename(f) for f in callback_files])
 
-    # Apply filter to the root logger's handler
-    logger = logging.getLogger()
-    for handler in logger.handlers:
+    # Apply filter to the root logger's handlers
+    for handler in logging.getLogger().handlers:
         handler.addFilter(OurFilter(our_files))
 
-    logging.info("Starting main function...")
+    logger.info("Starting main function...")
     args = parse_args()
-    logging.info(f"Parsed args: {args}")
+    logger.info(f"Parsed args: {args}")
     set_random_seed(args.seed)
-    logging.info("Random seed set.")
+    logger.info("Random seed set.")
     
     # Paths
     data_file = f"{args.pair}_data.csv"
@@ -202,30 +208,30 @@ def main():
     train_df = df.iloc[:split_idx].reset_index(drop=True)
     test_df = df.iloc[split_idx:].reset_index(drop=True)
     
-    logging.info(f"Split Data: Train ({len(train_df)}) | Test ({len(test_df)})")
+    logger.info(f"Split Data: Train ({len(train_df)}) | Test ({len(test_df)})")
 
     # --- Pre-Calculate Volume Profile (Multiprocessing Fix) ---
-    logging.info(f"Creating {args.n_envs} parallel environments...")
+    logger.info(f"Creating {args.n_envs} parallel environments...")
 
-    logging.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {args.vp_bins}) ---")
+    logger.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {args.vp_bins}) ---")
 
     # 1. Train VP
-    logging.info("Calculating VP for training data...")
+    logger.info("Calculating VP for training data...")
     vp_data_train = {}
     for days in args.vp_days:
-        logging.info(f"Calculating Rolling VP for {days} days (Bins: {args.vp_bins})...")
+        logger.info(f"Calculating Rolling VP for {days} days (Bins: {args.vp_bins})...")
         vp_data_train[days] = get_rolling_vp(train_df, days, bins=args.vp_bins)
-    logging.info("Train VP calculation complete.")
+    logger.info("Train VP calculation complete.")
 
     # 2. Test VP
-    logging.info("Calculating VP for test data...")
+    logger.info("Calculating VP for test data...")
     vp_data_test = {}
     for days in args.vp_days:
         vp_data_test[days] = get_rolling_vp(test_df, days, bins=args.vp_bins)
-    logging.info("Test VP calculation complete.")
+    logger.info("Test VP calculation complete.")
 
     # --- Environment Setup ---
-    logging.info("Setting up environments...")
+    logger.info("Setting up environments...")
     # Force window_size=1 for RecurrentPPO to avoid confusion with LSTM memory
     window_size = 1 if args.algo.lower() == 'recurrentppo' else args.window_size
     env_kwargs = {
@@ -243,10 +249,10 @@ def main():
         'timeframe': args.timeframe,
         'split_date': args.test_split,
     }
-    logging.info(f"Env kwargs: {env_kwargs}")
+    logger.info(f"Env kwargs: {env_kwargs}")
 
     # Training Env
-    logging.info("Creating training environment...")
+    logger.info("Creating training environment...")
     train_env_kwargs = env_kwargs.copy()
     train_env_kwargs['df'] = train_df
     train_env_kwargs['precalculated_vp'] = vp_data_train
@@ -258,27 +264,27 @@ def main():
         vec_env_cls=SubprocVecEnv,
         env_kwargs=train_env_kwargs
     )
-    logging.info("Training environment created.")
+    logger.info("Training environment created.")
 
-    # FIX: Do not apply VecNormalize here if we are going to load it later in Resume block
-    # This prevents "Double Normalization" (z-score of a z-score)
-    if not args.resume:
-        logging.info("Applying VecNormalize to training env...")
-        train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., clip_reward=10.)
-        logging.info("VecNormalize applied.")
-        logging.info(f"Train env type after normalization: {type(train_env)}")
+    # Always wrap the env initially.
+    # If we resume later, we will overwrite 'train_env' with the loaded stats,
+    # but we need this base object to exist right now.
+    logger.info("Applying VecNormalize to training env...")
+    train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., clip_reward=10.)
+    logger.info("VecNormalize applied.")
+    logger.info(f"Train env type after normalization: {type(train_env)}")
 
     # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
 
     # Evaluation Env (Raw for accurate metrics)
-    logging.info("Creating evaluation environment...")
+    logger.info("Creating evaluation environment...")
     eval_env_kwargs = env_kwargs.copy()
     eval_env_kwargs['df'] = test_df
     eval_env_kwargs['precalculated_vp'] = vp_data_test
 
     eval_env = DummyVecEnv([lambda: EnhancedTradingEnv(**eval_env_kwargs)])
-    logging.info("Evaluation environment created.")
-    logging.info(f"Eval env type before normalization: {type(eval_env)}")
+    logger.info("Evaluation environment created.")
+    logger.info(f"Eval env type before normalization: {type(eval_env)}")
 
     # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
 
@@ -286,9 +292,9 @@ def main():
     eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.)
     eval_env.training = False  # Do not update stats during evaluation
     # Link eval stats to train stats (Python passes by reference, so they stay synced)
-    logging.info(f"Before syncing obs_rms: train_env type={type(train_env)}, eval_env type={type(eval_env)}")
-    logging.info(f"train_env has obs_rms: {hasattr(train_env, 'obs_rms')}")
-    logging.info(f"eval_env has obs_rms: {hasattr(eval_env, 'obs_rms')}")
+    logger.info(f"Before syncing obs_rms: train_env type={type(train_env)}, eval_env type={type(eval_env)}")
+    logger.info(f"train_env has obs_rms: {hasattr(train_env, 'obs_rms')}")
+    logger.info(f"eval_env has obs_rms: {hasattr(eval_env, 'obs_rms')}")
     eval_env.obs_rms = train_env.obs_rms
 
     # Create dummy env for saliency callback (skip for RecurrentPPO due to LSTM compatibility issues)
@@ -298,7 +304,7 @@ def main():
     #     saliency_callback = FeatureSaliencyCallback(dummy_env=dummy_env, check_freq=10000)
 
     # --- W&B Setup ---
-    logging.info("Setting up W&B..." if args.wandb else "Skipping W&B setup.")
+    logger.info("Setting up W&B..." if args.wandb else "Skipping W&B setup.")
     if args.wandb:
         # Get git branch name
         try:
@@ -323,7 +329,7 @@ def main():
         if args.resume and os.path.exists(id_file_path):
             with open(id_file_path, "r") as f:
                 run_id = f.read().strip()
-            logging.info(f"🔄 Resuming W&B Run ID: {run_id}")
+            logger.info(f"🔄 Resuming W&B Run ID: {run_id}")
         elif not args.resume:
             # If starting fresh, generate a new ID and save it
             run_id = wandb.util.generate_id()
@@ -341,7 +347,7 @@ def main():
             save_code=True,
             sync_tensorboard=True
         )
-        logging.info(f"W&B initialized (Run: {run_name})")
+        logger.info(f"W&B initialized (Run: {run_name})")
 
     # --- Callbacks ---
     checkpoint_callback = CheckpointCallback(
@@ -396,18 +402,18 @@ def main():
             # Method A: Try calling the function directly (Best for SubprocVecEnv & VecNormalize)
             # This allows us to reach through the wrappers to the actual Env code
             feature_names = train_env.env_method("get_feature_names", indices=0)[0]
-            logging.info(f"✅ Successfully retrieved {len(feature_names)} feature names from environment.")
-            logging.info(f"Feature names: {feature_names}")
+            logger.info(f"✅ Successfully retrieved {len(feature_names)} feature names from environment.")
+            logger.info(f"Feature names: {feature_names}")
         except Exception as e:
-            logging.warning(f"⚠️ env_method failed to get names ({e}). Trying attribute access...")
+            logger.warning(f"⚠️ env_method failed to get names ({e}). Trying attribute access...")
             try:
                 # Method B: Try accessing the attribute (Backup)
                 feature_names = train_env.get_attr("feature_names", indices=0)[0]
-                logging.info(f"✅ Retrieved {len(feature_names)} feature names via attribute.")
+                logger.info(f"✅ Retrieved {len(feature_names)} feature names via attribute.")
             except Exception as e2:
                 # Method C: Fallback to generics
                 obs_dim = train_env.observation_space.shape[0]
-                logging.warning(f"❌ Could not retrieve feature names ({e2}). Generating {obs_dim} generic labels.")
+                logger.warning(f"❌ Could not retrieve feature names ({e2}). Generating {obs_dim} generic labels.")
                 feature_names = [f"F_{i}" for i in range(obs_dim)]
 
         # --- RE-ENABLE SALIENCY ---
@@ -473,46 +479,44 @@ def main():
                 load_path = None
 
         if load_path:
-            logging.info(f"RESUMING training from: {load_path}")
+            logger.info(f"RESUMING training from: {load_path}")
             try:
                 # Load model
                 model = AlgoClass.load(load_path, env=train_env, device=args.device, tensorboard_log=tensorboard_log)
                 # Sync VecNormalize stats
                 if os.path.exists(f"{load_path}.pkl"):
-                    # === FIX STARTS HERE ===
-                    # 1. Load using the INNER environment (unwrap the empty wrapper we just made)
+                    logger.info(f"Loading VecNormalize stats from {load_path}.pkl")
+                    # Load stats into a new wrapper
                     temp_env = VecNormalize.load(f"{load_path}.pkl", train_env.venv)
 
-                    # 2. Check if observation dimensions match
+                    # Check shape compatibility
                     if temp_env.obs_rms.mean.shape != train_env.observation_space.shape:
-                        raise ValueError("Observation spaces do not match (pkl vs env)")
-
-                    # 3. Replace the training env
-                    train_env = temp_env
-                    train_env.training = True
-                    
-                    # 4. CRITICAL: Re-sync eval_env to the NEW loaded stats
-                    # (Because train_env is now a different object)
-                    eval_env.obs_rms = train_env.obs_rms
-                    # === FIX ENDS HERE ===
+                         logger.warning("Saved VecNormalize stats incompatible with new features. Starting fresh norm.")
+                         # We keep the 'train_env' we created in step 1 (Fresh stats)
+                    else:
+                         # Replace with loaded stats
+                         train_env = temp_env
+                         train_env.training = True
+                else:
+                    logger.warning("No .pkl file found. Continuing with fresh VecNormalize stats.")
                 # CRITICAL: Do not reset steps when resuming
                 reset_num_timesteps = False
-                logging.info(f"   > Resuming from Global Step: {model.num_timesteps}")
+                logger.info(f"   > Resuming from Global Step: {model.num_timesteps}")
             except (ValueError, EOFError) as e:  # Catch more errors
-                logging.warning(f"Model incompatible due to env changes: {e}")
-                logging.info("Starting fresh training.")
+                logger.warning(f"Model incompatible due to env changes: {e}")
+                logger.info("Starting fresh training.")
                 model = None
                 reset_num_timesteps = True
                 # Clean old logs if incompatible
                 if os.path.exists(tensorboard_log):
                     shutil.rmtree(tensorboard_log)
         else:
-            logging.info("Resume requested but no model found. Starting FRESH.")
+            logger.info("Resume requested but no model found. Starting FRESH.")
             # Clean logs if we failed to find a model to resume
             if os.path.exists(tensorboard_log):
                 shutil.rmtree(tensorboard_log)
     else:
-        logging.info("Starting FRESH training. Cleaning up old models...")
+        logger.info("Starting FRESH training. Cleaning up old models...")
         
         # 1. Delete Model ZIPs
         model_pattern = f"./models/{args.algo}_*.zip"
@@ -520,9 +524,9 @@ def main():
         for f in model_files:
             try:
                 os.remove(f)
-                logging.info(f"Deleted old model: {f}")
+                logger.info(f"Deleted old model: {f}")
             except OSError as e:
-                logging.error(f"Error deleting {f}: {e}")
+                logger.error(f"Error deleting {f}: {e}")
 
         # 2. Delete VecNormalize PKLs (Aggressive Pattern)
         # matches "recurrentppo_BTCUSDT.pkl" and "vec_normalize_recurrentppo.pkl"
@@ -531,9 +535,9 @@ def main():
             if args.algo in f: # Only delete files for this algorithm
                 try:
                     os.remove(f)
-                    logging.info(f"Deleted old normalization stats: {f}")
+                    logger.info(f"Deleted old normalization stats: {f}")
                 except OSError as e:
-                    logging.error(f"Error deleting {f}: {e}")
+                    logger.error(f"Error deleting {f}: {e}")
 
         # ... (rest of cleanup)
 
@@ -550,7 +554,7 @@ def main():
      
 
     if model is None:
-        logging.info(f"Initializing new {args.algo.upper()} model...")
+        logger.info(f"Initializing new {args.algo.upper()} model...")
 
         # Clean old logs only if starting fresh
         if os.path.exists(tensorboard_log):
@@ -586,8 +590,8 @@ def main():
 
         reset_num_timesteps = True
     # --- Train ---
-    logging.info(f"Training started... Target: {args.total_timesteps} steps")
-    logging.info(f"Model: {args.algo.upper()}, Device: {args.device}")
+    logger.info(f"Training started... Target: {args.total_timesteps} steps")
+    logger.info(f"Model: {args.algo.upper()}, Device: {args.device}")
 
     try:
         model.learn(
@@ -598,37 +602,37 @@ def main():
         )
         
         # --- Normal Finish Save ---
-        logging.info("Training finished normally.")
+        logger.info("Training finished normally.")
         model.save(model_path)
         if hasattr(train_env, 'save'):
             train_env.save(f"{model_path}.pkl")
-        logging.info(f"Saved final model to {model_path}")
+        logger.info(f"Saved final model to {model_path}")
 
         # Finish WandB run
         if args.wandb:
             wandb.finish()
-            logging.info("WandB run finished.")
+            logger.info("WandB run finished.")
 
     except KeyboardInterrupt:
         # --- CTRL+C Save ---
-        logging.info("\n\n⚠️ INTERRUPTED! Saving current state before exiting...")
+        logger.info("\n\n⚠️ INTERRUPTED! Saving current state before exiting...")
         
         # 1. Save Model
         if model:
             model.save(model_path)
-            logging.info(f"✅ Model saved: {model_path}.zip")
+            logger.info(f"✅ Model saved: {model_path}.zip")
         
         # 2. Save Normalization Stats (Critical for Resume)
         if train_env and hasattr(train_env, 'save'):
             train_env.save(f"{model_path}.pkl")
-            logging.info(f"✅ Normalization stats saved: {model_path}.pkl")
+            logger.info(f"✅ Normalization stats saved: {model_path}.pkl")
 
         # Finish WandB run
         if args.wandb:
             wandb.finish()
-            logging.info("WandB run finished.")
+            logger.info("WandB run finished.")
 
-        logging.info("Exiting gracefully.")
+        logger.info("Exiting gracefully.")
         try:
             sys.exit(0)
         except SystemExit:
