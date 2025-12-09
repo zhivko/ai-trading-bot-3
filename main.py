@@ -258,11 +258,13 @@ def main():
     )
     logging.info("Training environment created.")
 
-    # --- Reactivate Normalization for Training ---
-    logging.info("Applying VecNormalize to training env...")
-    train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., clip_reward=10.)
-    logging.info("VecNormalize applied.")
-    logging.info(f"Train env type after normalization: {type(train_env)}")
+    # FIX: Do not apply VecNormalize here if we are going to load it later in Resume block
+    # This prevents "Double Normalization" (z-score of a z-score)
+    if not args.resume:
+        logging.info("Applying VecNormalize to training env...")
+        train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., clip_reward=10.)
+        logging.info("VecNormalize applied.")
+        logging.info(f"Train env type after normalization: {type(train_env)}")
 
     # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
 
@@ -277,8 +279,12 @@ def main():
     logging.info(f"Eval env type before normalization: {type(eval_env)}")
 
     # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
-    # Optional: Load train stats for eval (set training=False)
-    # eval_env = VecNormalize.load(f"{log_dir}/vec_normalize.pkl", eval_env); eval_env.training = False
+
+    # FIX: Eval env MUST be normalized using Training stats, otherwise agent sees garbage
+    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.)
+    eval_env.training = False  # Do not update stats during evaluation
+    # Link eval stats to train stats (Python passes by reference, so they stay synced)
+    eval_env.obs_rms = train_env.obs_rms
 
     # Create dummy env for saliency callback (skip for RecurrentPPO due to LSTM compatibility issues)
     saliency_callback = None
@@ -519,50 +525,27 @@ def main():
             shutil.rmtree(chk_dir)
 
         # Set model hyperparameters
-        model_kwargs = {}
-        if args.algo.lower() == 'recurrentppo':
-            model_kwargs.update(dict(
-                n_steps=4096,  # Increased from 1024 to reduce CPU-GPU bottleneck
-                batch_size=16384,
-                learning_rate=ConstantSchedule(3e-4),
-                gamma=0.99,
-                gae_lambda=0.95,
-                clip_range=ConstantSchedule(0.2),
-                ent_coef=ConstantSchedule(0.02)
-            ))
-        else:
-            model_kwargs.update(dict(
-                batch_size=args.batch_size,
-                learning_rate=ConstantSchedule(args.learning_rate),
-            ))
-
-        if args.algo.lower() == 'sac':
-            model_kwargs['buffer_size'] = 100000
-            model_kwargs['ent_coef'] = 'auto'
+        model_kwargs = {
+            "verbose": 1,
+            "learning_rate": 1e-4,
+            "n_steps": 4096,
+            "batch_size": 2048,  # FIX: Correct batch size here
+            "ent_coef": 0.0001,  # FIX: Reduced entropy to stop overtrading
+            "vf_coef": 0.5,
+            "gamma": 0.99,
+            "gae_lambda": 0.95,
+            "clip_range": ConstantSchedule(0.3),
+            "max_grad_norm": 0.5,
+        }
 
         model = RecurrentPPO(
             "MlpLstmPolicy",
             train_env,
-            # + NEW: Force float to avoid ConstantSchedule * Tensor error in sb3-contrib
-            ent_coef=float(0.0001),  # FIX: High entropy forces overtrading. Reduced to near-zero.
-            vf_coef=float(0.5),
-            learning_rate=float(1e-4),
-            n_steps=4096,
-            batch_size=2048,         # FIX: Increased from 128. Larger batches stabilize LSTM training.
-            gamma=0.99,
-            gae_lambda=0.95,
-            clip_range=ConstantSchedule(0.3),
-            max_grad_norm=0.5,
+            policy_kwargs=policy_kwargs,
             tensorboard_log=f"./logs/{args.algo}_tensorboard",
             device=args.device,
-            policy_kwargs=policy_kwargs
+            **model_kwargs  # FIX: Use the dictionary defined above to avoid inconsistencies
         )
-
-        # + CRITICAL: Fix for RecurrentPPO bug in older sb3-contrib
-        model.ent_coef = float(model.ent_coef)
-        model.vf_coef = float(model.vf_coef)
-        model.learning_rate = float(model.learning_rate)
-        logging.info("Applied RecurrentPPO coefficient fix (ConstantSchedule → float)")
 
         reset_num_timesteps = True
     # --- Train ---

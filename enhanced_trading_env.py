@@ -495,16 +495,17 @@ class EnhancedTradingEnv(gym.Env):
                (self.shares_held < 0 and current_val < entry_val):
                 holding_bonus = 0.0005  # Drip reward for riding a trend
 
-        # NEW: Realized PnL bonus for profitable closes
-        if trade_occurred and self.shares_held < self.prev_shares_held and self.entry_price > 0:
-            realized_pnl = (current_price - self.entry_price) * (self.prev_shares_held - self.shares_held)
+        # Base reward: portfolio return minus costs + bonuses
+        reward = portfolio_return - reward_trade_cost - inertia_penalty + holding_bonus
+
+        # If we just closed a position (and it wasn't a flat-to-flat noise trade)
+        if self.prev_shares_held != 0 and self.shares_held == 0:
+            realized_pnl = (current_price - self.entry_price) * self.prev_shares_held
             if realized_pnl > 0:
-                reward = (realized_pnl / self.initial_balance) * 0.5  # Scaled bonus
+                # FIX: Use += to ADD bonus, do not overwrite costs/penalties
+                reward += (realized_pnl / self.initial_balance) * 0.5
             else:
-                reward = (realized_pnl / self.initial_balance) * 0.2  # Milder loss
-        else:
-            # Base reward: portfolio return minus costs + bonuses
-            reward = portfolio_return - reward_trade_cost - inertia_penalty + holding_bonus
+                reward += (realized_pnl / self.initial_balance) * 1.0
 
         # Hard overtrading cap
         if self.trades_in_episode > 20:  # Increased from 10
