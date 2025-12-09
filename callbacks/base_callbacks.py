@@ -153,7 +153,8 @@ class TensorboardCallback(BaseCallback):
             'price': current_price,
             'action': action,
             'shares': info.get('shares_held', 0),
-            'trade_executed': info.get('trade_executed', False)
+            'trade_executed': info.get('trade_executed', False),
+            'panic_close': info.get('panic_close', False)
         })
         self.ep_dates.append(current_date)
 
@@ -306,8 +307,10 @@ class TensorboardCallback(BaseCallback):
         # We check point.get('trade_executed', False) to use the flag.
         buy_label_used = False
         sell_label_used = False
+        panic_label_used = False
         for i, point in enumerate(self.ep_portfolio):
             is_executed = point.get('trade_executed', False)
+            is_panic = point.get('panic_close', False)
             if is_executed:
                 action_val = point['action']
                 if action_val > 0:  # Buy
@@ -326,6 +329,14 @@ class TensorboardCallback(BaseCallback):
                         label='Sell' if not sell_label_used else ""
                     )
                     sell_label_used = True
+            elif is_panic:
+                # Panic close marker
+                ax1.scatter(
+                    steps[i], prices[i],
+                    color='orange', marker='X', s=100,
+                    label='Panic Close' if not panic_label_used else ""
+                )
+                panic_label_used = True
 
         last_pv = self.ep_portfolio[-1]['net_worth'] if self.ep_portfolio else 0.0
         ax1.set_title(f"Thread 0 | PV: {last_pv:.2f}")
@@ -481,7 +492,8 @@ class CustomEvalCallback(EvalCallback):
                         'price': current_price,
                         'action': action_val,
                         'shares': info.get('shares_held', 0),
-                        'trade_executed': info.get('trade_executed', False)
+                        'trade_executed': info.get('trade_executed', False),
+                        'panic_close': info.get('panic_close', False)
                     })
                     self.ep_dates.append(current_date)
 
@@ -661,8 +673,10 @@ class CustomEvalCallback(EvalCallback):
         # We check point.get('trade_executed', False) to use the flag.
         buy_label_used = False
         sell_label_used = False
+        panic_label_used = False
         for i, point in enumerate(self.ep_portfolio):
             is_executed = point.get('trade_executed', False)
+            is_panic = point.get('panic_close', False)
             if is_executed:
                 action_val = point['action']
                 if action_val > 0:  # Buy
@@ -681,6 +695,14 @@ class CustomEvalCallback(EvalCallback):
                         label='Sell' if not sell_label_used else ""
                     )
                     sell_label_used = True
+            elif is_panic:
+                # Panic close marker
+                ax1.scatter(
+                    steps[i], prices[i],
+                    color='orange', marker='X', s=100,
+                    label='Panic Close' if not panic_label_used else ""
+                )
+                panic_label_used = True
 
         last_pv = self.ep_portfolio[-1]['net_worth'] if self.ep_portfolio else 0.0
         ax1.set_title(f"Evaluation | PV: {last_pv:.2f}")
