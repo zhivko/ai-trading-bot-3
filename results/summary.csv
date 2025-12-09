@@ -1,17 +1,17 @@
 key,value
 Explainability/Feature_Saliency,"{'_type': 'image-file', 'format': 'png', 'height': 600, 'path': 'media/images/Explainability/Feature_Saliency_32_c50f2cc73a93ff6d526a.png', 'sha256': 'c50f2cc73a93ff6d526abbf55e63be1062955cff4c95374eba74b3ede520b0cc', 'size': 73252, 'width': 1000}"
-_runtime,845.59865526
-_step,32
-_timestamp,1765238677.1648662
-_wandb,{'runtime': 0}
-best_eval/mean_portfolio,11395.832341120442
-best_eval/mean_reward,-4458.791476478215
-best_eval/std_portfolio,1197.8174646390917
-best_eval/std_reward,2276.230293012027
-best_eval/trades_per_episode,3703
-eval/mean_portfolio,16947.203018630134
-eval/mean_reward,-6496.303898733311
-eval/std_portfolio,6057.462211340825
-eval/std_reward,2071.644797696694
-eval/trades_per_episode,2482
-global_step,943128
+_runtime,174.927996438
+_step,34
+_timestamp,1765239111.66633
+_wandb,{'runtime': 174}
+best_eval/mean_portfolio,10522.600151328308
+best_eval/mean_reward,-509.70044073738075
+best_eval/std_portfolio,2441.722296883072
+best_eval/std_reward,1008.5283689768224
+best_eval/trades_per_episode,18
+eval/mean_portfolio,10522.600151328308
+eval/mean_reward,-509.70044073738075
+eval/std_portfolio,2441.722296883072
+eval/std_reward,1008.5283689768224
+eval/trades_per_episode,18
+global_step,1043112
