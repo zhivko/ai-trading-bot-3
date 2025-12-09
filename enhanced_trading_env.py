@@ -34,9 +34,10 @@ class EnhancedTradingEnv(gym.Env):
 
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
-        self.reward_fee_multiplier = 2.0        # Magnify fee 10x in reward calculation to stop churning
+        self.reward_fee_multiplier = 3.0       # Increased to 3x to strongly penalize trading
         self.action_penalty = 0.001              # FIX: Reduced by 50x. Allows switching, but still punishes noise.
         self.holding_penalty = 0.0005        # NEW: A tiny "rent" for holding a position
+        self.trade_penalty = 0.1               # NEW: Fixed penalty per trade to discourage overtrading
         self.last_trade_cost = 0
         self.reward_trade_cost = 0.0
         self.steps_in_trade = 0
@@ -222,9 +223,15 @@ class EnhancedTradingEnv(gym.Env):
             + recurrent_obs_size
         )
 
-        # Action now encodes signed target exposure in [-1, 1]
-        # -1 = max short, 0 = flat, 1 = max long (before leverage scaling)
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+        # === NEW 2D ACTION SPACE ===
+        # action[0] → target exposure: -1.0 (max short) ... +1.0 (max long)
+        # action[1] → panic close signal: 0.0 ... 1.0
+        #             if > 0.7 and position is in loss → immediate flatten + big reward bonus
+        self.action_space = spaces.Box(
+            low=np.array([-1.0, 0.0]),
+            high=np.array([1.0, 1.0]),
+            dtype=np.float32
+        )
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
 
         self.entry_price = 0.0  # + NEW: Initialize to fix AttributeError in step
@@ -445,11 +452,27 @@ class EnhancedTradingEnv(gym.Env):
             self.reward_trade_cost = final_trade_cost
             self.has_traded_once = True
 
-            _logger.info(f"Trade executed: action={action_val:.4f}, usd={trade_usd:.2f}, shares={shares_to_trade:.6f}, cost={final_trade_cost:.4f}")
+            _logger.debug(f"Trade executed: buy_threshold={self.buy_threshold:.4f}, sell_threshold={self.sell_threshold:.4f}, action={action_val:.4f}, usd={trade_usd:.2f}, shares={shares_to_trade:.6f}, cost={final_trade_cost:.4f}")
         else:
             self.steps_since_last_trade += 1
 
         return trade_occurred
+
+    def _flatten_position(self, reward_bonus=0.0):
+        """Close everything immediately"""
+        if self.shares_held == 0:
+            return reward_bonus
+
+        # Existing flatten logic...
+        proceeds = self.shares_held * self.current_price
+        fee = abs(proceeds) * self.trading_fee_multiplier
+        self.balance += proceeds - fee if self.shares_held > 0 else proceeds + fee
+        self.shares_held = 0
+        self.entry_price = 0.0
+        self.time_held = 0
+
+        logging.info(f"POSITION FLATTENED | proceeds={proceeds:,.0f} | fee={fee:,.0f}")
+        return reward_bonus
 
     def reset(self, seed=None, options=None):
         """Reset environment state."""
@@ -507,6 +530,8 @@ class EnhancedTradingEnv(gym.Env):
         holdings_norm = (self.shares_held * current_price) / self.initial_balance
         pos_flag = 1.0 if self.shares_held > 0 else -1.0 if self.shares_held < 0 else 0.0
         unrealized_pnl = ((current_price - self.entry_price) * self.shares_held) / self.initial_balance if self.shares_held != 0 else 0.0
+        # Store unrealized_pnl for panic close logic
+        self.unrealized_pnl = unrealized_pnl
         time_held = self.steps_in_trade / 100.0
         last_pnl = self.last_trade_pnl / self.initial_balance
         account = np.array([balance_norm, holdings_norm, pos_flag, unrealized_pnl, time_held, last_pnl], dtype=np.float32)
@@ -558,10 +583,17 @@ class EnhancedTradingEnv(gym.Env):
         return full_obs.astype(np.float32)
 
     def step(self, action):
-        """Execute one time step."""
+        """
+        action: np.array of shape (2,)
+          action[0] → target exposure
+          action[1] → panic close trigger (0–1)
+        """
+        # Extract components
+        target_exposure_action = float(action[0])
+        panic_signal = float(action[1])
+
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
-        action_val = float(action[0])
 
         # NEW: Sync net worth before action
         self._sync_wallet_balance()
@@ -570,24 +602,45 @@ class EnhancedTradingEnv(gym.Env):
         # NEW: Real portfolio return (no look-ahead)
         portfolio_return = (self.net_worth - self.prev_net_worth) / (self.prev_net_worth + 1e-8)
 
-        # === THRESHOLD CHECK ===
-        trade_occurred = False
+        # === PANIC CLOSE LOGIC ===
+        panic_triggered = False
+        if (panic_signal > 0.7
+            and self.shares_held != 0
+            and self.unrealized_pnl < 0):
 
-        # Check against dynamic thresholds
-        if action_val > self.buy_threshold:
-            # BUY SIGNAL
-            trade_occurred = self._take_action(action) # Positive action passed inside
+            logging.debug(f"PANIC CLOSE TRIGGERED | pnl={self.unrealized_pnl:.2f} | "
+                          f"panic_signal={panic_signal:.3f} | net_worth={self.net_worth:.0f}")
 
-        elif action_val < self.sell_threshold:
-            # SELL SIGNAL
-            trade_occurred = self._take_action(action) # Negative action passed inside
-
+            self._flatten_position()
+            total_reward = 1.0  # Big positive reward for correctly using the emergency button
+            info["panic_close"] = True
+            panic_triggered = True
         else:
-            # HOLD (Dead Zone)
-            # Action is between -0.1 and 0.1 (for example)
-            # We explicitly do nothing.
+            total_reward = 0.0
+            info["panic_close"] = False
+
+        # === NORMAL TRADING (only if panic wasn't triggered) ===
+        if not panic_triggered:
+            # === THRESHOLD CHECK ===
             trade_occurred = False
-            self.steps_since_last_trade += 1
+
+            # Check against dynamic thresholds
+            if target_exposure_action > self.buy_threshold:
+                # BUY SIGNAL
+                trade_occurred = self._take_action(np.array([target_exposure_action])) # Positive action passed inside
+
+            elif target_exposure_action < self.sell_threshold:
+                # SELL SIGNAL
+                trade_occurred = self._take_action(np.array([target_exposure_action])) # Negative action passed inside
+
+            else:
+                # HOLD (Dead Zone)
+                # Action is between -0.1 and 0.1 (for example)
+                # We explicitly do nothing.
+                trade_occurred = False
+                self.steps_since_last_trade += 1
+
+        # === Rest of your existing step code (unchanged) ===
 
         # === FIX STARTS HERE ===
         # 1. Calculate the actual size of the trade in dollars
@@ -610,7 +663,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # NEW: Inertia penalty (discourage twitching)
         reward_inertia = 0.0
-        if self.shares_held == self.prev_shares_held and abs(action_val) > 0.5:
+        if self.shares_held == self.prev_shares_held and abs(target_exposure_action) > 0.5:
              reward_inertia = -0.05
 
         # --- UPDATE AGENT STATE ---
@@ -623,18 +676,22 @@ class EnhancedTradingEnv(gym.Env):
 
         # 1. Base Reward: Net Worth Change (Captures Unrealized PnL naturally)
         # If price goes up while holding, this is positive. If price goes down, this is negative.
-        reward = ((self.net_worth - prev_net_worth) / prev_net_worth) * 100.0
+        total_reward += ((self.net_worth - prev_net_worth) / prev_net_worth) * 100.0
 
-        # 2. Subtract costs (Fee is now reduced to 2x multiplier in init)
-        reward -= reward_trade_cost  # Now this variable is definitely defined
-        reward += reward_inertia
+        # 2. Subtract costs (Fee is now increased multiplier in init)
+        total_reward -= reward_trade_cost  # Now this variable is definitely defined
+        total_reward += reward_inertia
+
+        # Fixed penalty per trade to discourage overtrading
+        if trade_occurred:
+            total_reward -= self.trade_penalty
 
         # Calculate "Rent" (Funding Fee) to discourage camping on a position
         current_holding_cost = 0.0
         if self.shares_held != 0:
             current_holding_cost = self.holding_penalty
-            
-        reward -= current_holding_cost  # Apply the rent
+
+        total_reward -= current_holding_cost  # Apply the rent
 
         # 3. "Closer's Bonus" (Realized PnL Stimulus)
         if self.prev_shares_held != 0 and self.shares_held == 0:
@@ -646,30 +703,30 @@ class EnhancedTradingEnv(gym.Env):
 
              if realized_pnl_val > 0:
                  # BONUS: Reward realizing a win 2x more than just holding it
-                 reward += (trade_return_pct * 100.0) * 2.0
+                 total_reward += (trade_return_pct * 100.0) * 2.0
              else:
                  # Standard penalty for realizing a loss
-                 reward += (trade_return_pct * 100.0) * 1.0
-             
+                 total_reward += (trade_return_pct * 100.0) * 1.0
+
              # Reset entry price
              self.entry_price = 0.0
 
         # 4. FIX: Death Spiral Bug
         # Only penalize overtrading IF a trade actually occurred this step
         if trade_occurred and self.trades_in_episode > 20:
-            reward -= 0.5
+            total_reward -= 0.5
 
         if trade_occurred:
             self.has_traded_once = True
 
         # Update trackers
-        self.prev_action = action_val  # NEW: For next inertia
-        self.recent_actions.append(action_val)
-        self.action_history.append(action_val)
+        self.prev_action = target_exposure_action  # NEW: For next inertia
+        self.recent_actions.append(target_exposure_action)
+        self.action_history.append(target_exposure_action)
         delta = self.shares_held - self.prev_shares_held
         self.recent_position_deltas.append(delta)
         self.portfolio_returns.append(portfolio_return)
-        self.returns.append(reward)
+        self.returns.append(total_reward)
         self.history_net_worth.append(self.net_worth)
         self.prev_net_worth = self.net_worth
         self.current_position = np.sign(self.shares_held) if abs(self.shares_held) > 1e-6 else 0.0
@@ -680,7 +737,11 @@ class EnhancedTradingEnv(gym.Env):
         truncated = self.current_step >= len(self.df) - 1
         if self.net_worth < (self.initial_balance * 0.5):
             terminated = True
-            reward -= 5.0  # Episode penalty
+            total_reward -= 5.0  # Episode penalty
+
+        # Log episode end
+        if terminated or truncated:
+            _logger.info(f"Episode ended: terminated={terminated}, truncated={truncated}, final_net_worth={self.net_worth:.2f}, trades={self.trades_in_episode}, steps={self.current_step}")
 
         obs = self._next_observation()
 
@@ -693,8 +754,8 @@ class EnhancedTradingEnv(gym.Env):
             "net_worth": self.net_worth,
             "balance": self.balance,
             "shares_held": self.shares_held,
-            "action": action_val,
-            "reward": reward,
+            "action": target_exposure_action,
+            "reward": total_reward,
             "price": current_price,
             "current_price": current_price,
             "ema50": self.data_matrix[self.current_step, self.ema_50_idx],
@@ -702,9 +763,10 @@ class EnhancedTradingEnv(gym.Env):
             "vp_heatmap": heatmap,
             "trades_per_episode": self.trades_in_episode,
             "trade_executed": trade_occurred,
+            "panic_close": panic_triggered,
         }
 
-        return obs, reward, terminated, truncated, info
+        return obs, total_reward, terminated, truncated, info
 
     def render(self, mode='human', title_suffix=""):
         if len(self.history_net_worth) < 2:

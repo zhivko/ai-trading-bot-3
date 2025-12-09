@@ -239,8 +239,6 @@ def main():
         'vp_days': args.vp_days,
         'vp_bins': args.vp_bins,
         'lookback_window': window_size,
-        'buy_threshold': 0.0,        # ← Allow any signal
-        'sell_threshold': 0.0,
         'trading_fee_multiplier': args.trading_fee,
         'phase': args.phase,
         'total_phases': args.total_phases,
@@ -360,19 +358,8 @@ def main():
 
     progress_callback = ProgressBarCallback(update_interval=1000)
     callbacks = [progress_callback, tensorboard_callback, checkpoint_callback]
-    #callbacks = [tensorboard_callback, checkpoint_callback]
-    
-    #if saliency_callback is not None:
-    #    callbacks.append(saliency_callback)
-    
-    # if args.wandb:
-    #     callbacks.append(WandbCallback(
-    #         gradient_save_freq=0,
-    #         model_save_path=f"models/{args.algo}_{args.pair}_wb",
-    #         verbose=0  # Reduced from 2 to minimize logging overhead
-    #     ))
-
-    eval_freq_adjusted = max(50000 // args.n_envs, 1) # e.g., 50000 // 16 = 3125 calls
+    if args.wandb:
+        eval_freq_adjusted = max(50000 // args.n_envs, 1) # e.g., 50000 // 16 = 3125 calls
 
     # Add after eval_env setup
     eval_callback = CustomEvalCallback(

@@ -110,7 +110,12 @@ source .venv/Scripts/activate
 pip install -r requirements
 ```
 
-after you save it with (run in docker host)
+to get id of container:
+```bash
+grep -m1 "containers" /proc/self/mountinfo | sed -E 's#.*/containers/([^/]+)/.*#\1#'
+```
+
+after you get ID you can save it as image with (run in docker host)
 ```bash
 docker commit 802dad3739eb my-saved-pytorch-image:latest
 sha256:a60aca26f88eb88e5b078dff2be2d0dda3583b28e4c98122ced32556f336c8bd

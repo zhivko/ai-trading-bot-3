@@ -163,7 +163,7 @@ class TensorboardCallback(BaseCallback):
 
         if is_done:
             self._calculate_financial_metrics() # <--- NEW: Calculate Stats
-            self._plot_regime_chart()
+            # self._plot_regime_chart()  # Disabled to avoid mismatch with logs from subprocess training
             
             # Reset
             self.ep_prices = []
@@ -430,11 +430,19 @@ class CustomEvalCallback(EvalCallback):
         # 2. Add Progress Bar (tqdm) to see status during "block"
         ep_bar = tqdm(range(self.n_eval_episodes), desc="Evaluating Portfolio", unit="ep")
 
-        for _ in ep_bar:
+        for episode_idx in ep_bar:
             done = False
             episode_reward = 0.0
             step_count = 0
             step_bar = tqdm(desc="Steps", unit="step", leave=False)
+
+            # Reset episode data
+            if episode_idx == self.n_eval_episodes - 1:  # Collect data for last episode
+                self.ep_prices = []
+                self.ep_emas = []
+                self.ep_actions = []
+                self.ep_portfolio = []
+                self.ep_dates = []
 
             while not done:
                 action, _ = self.model.predict(obs, deterministic=self.deterministic)
@@ -456,6 +464,27 @@ class CustomEvalCallback(EvalCallback):
                 if isinstance(info, list):
                     info = info[0]
 
+                # Collect data for last episode
+                if episode_idx == self.n_eval_episodes - 1:
+                    current_price = info.get('current_price', info.get('price', 0))
+                    ema_50 = info.get('ema50', 0)
+                    portfolio_value = info.get('net_worth', 0)
+                    current_date = info.get('timestamp', f"{step_count}")
+                    action_val = info.get('action', action[0] if hasattr(action, '__len__') else action)
+
+                    self.ep_prices.append(current_price)
+                    self.ep_emas.append(ema_50)
+                    self.ep_actions.append(action_val)
+                    self.ep_portfolio.append({
+                        'step': step_count,
+                        'net_worth': portfolio_value,
+                        'price': current_price,
+                        'action': action_val,
+                        'shares': info.get('shares_held', 0),
+                        'trade_executed': info.get('trade_executed', False)
+                    })
+                    self.ep_dates.append(current_date)
+
                 episode_reward += reward
                 step_count += 1
                 step_bar.update(1)
@@ -468,7 +497,7 @@ class CustomEvalCallback(EvalCallback):
 
             # If we still get 0, fall back to initial balance + reward
             if current_val == 0 and self.initial_balance:
-                 current_val = self.initial_balance + episode_reward
+                  current_val = self.initial_balance + episode_reward
 
             portfolio_values.append(current_val)
             trades_per_episode.append(info.get('trades_per_episode', 0))
@@ -515,6 +544,14 @@ class CustomEvalCallback(EvalCallback):
                     wandb.log({'curriculum/phase': new_phase, 'global_step': self.num_timesteps})
                 self._logger.info(f"Phase switching completed, new_phase={new_phase}")
 
+            # Log thresholds
+            try:
+                buy_thresh = self.eval_env.get_attr('buy_threshold')[0]
+                sell_thresh = self.eval_env.get_attr('sell_threshold')[0]
+                self._logger.info(f"Current thresholds: buy={buy_thresh}, sell={sell_thresh}")
+            except:
+                self._logger.info("Could not retrieve thresholds")
+
             self._logger.info("Starting evaluation")
             try:
                 mean_reward, std_reward, mean_portfolio, std_portfolio, mean_trades = self._evaluate_with_portfolio()
@@ -555,6 +592,10 @@ class CustomEvalCallback(EvalCallback):
                     self._logger.info(f"Best model saved to {self.best_model_save_path}")
                 self._log_best_to_wandb(mean_reward, std_reward)
 
+            # Plot regime chart for evaluation
+            if len(self.ep_prices) > 10:
+                self._plot_regime_chart()
+
         return True
 
     def _log_best_to_wandb(self, mean_reward, std_reward):
@@ -567,3 +608,127 @@ class CustomEvalCallback(EvalCallback):
                 "best_eval/trades_per_episode": self.best_mean_trades,
                 "global_step": self.num_timesteps
             })
+
+    def _plot_regime_chart(self):
+        if len(self.ep_prices) < 10:
+            return
+        self._logger.info("_plot_regime_chart called for evaluation")
+
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        steps   = np.arange(len(self.ep_prices))
+        prices  = np.array(self.ep_prices, dtype=float)
+        emas    = np.array(self.ep_emas,   dtype=float)
+        actions = np.array(self.ep_actions, dtype=float)
+        portfolio = np.array([point['net_worth'] for point in self.ep_portfolio], dtype=float)
+        dates   = self.ep_dates
+
+        # === 1. INSERT DEBUG COUNTERS HERE ===
+        total_steps = len(self.ep_portfolio)
+        total_plotted_buys = 0
+        total_plotted_sells = 0
+        executed_true_count = sum(1 for p in self.ep_portfolio if p.get('trade_executed', False))
+
+        # Log the raw data status
+        self._logger.info("--- EVALUATION CHART DEBUG ---")
+        self._logger.info(f"Total Steps recorded: {total_steps}")
+        self._logger.info(f"Steps with 'trade_executed'=True: {executed_true_count}")
+        # =====================================
+
+        fig, (ax1, ax2, ax3) = plt.subplots(
+            3, 1, figsize=(12, 10), sharex=True,
+            gridspec_kw={'height_ratios': [3, 1, 1]}
+        )
+
+        # Price + EMA + bull/bear shading
+        ax1.plot(steps, prices, label='Price', color='black', linewidth=1.2)
+        if np.any(emas > 0):
+            ax1.plot(steps, emas, label='EMA 50', color='orange', linestyle='--', linewidth=1)
+            min_len = min(len(prices), len(emas))
+            ax1.fill_between(
+                steps[:min_len], prices[:min_len], emas[:min_len],
+                where=(prices[:min_len] > emas[:min_len]),
+                color='green', alpha=0.1, label='Bull'
+            )
+            ax1.fill_between(
+                steps[:min_len], prices[:min_len], emas[:min_len],
+                where=(prices[:min_len] <= emas[:min_len]),
+                color='red', alpha=0.1, label='Bear'
+            )
+
+        # Markers for Buy/Sell (ONLY IF EXECUTED)
+        # We check point.get('trade_executed', False) to use the flag.
+        buy_label_used = False
+        sell_label_used = False
+        for i, point in enumerate(self.ep_portfolio):
+            is_executed = point.get('trade_executed', False)
+            if is_executed:
+                action_val = point['action']
+                if action_val > 0:  # Buy
+                    total_plotted_buys += 1  # <--- Count Buy
+                    ax1.scatter(
+                        steps[i], prices[i],
+                        color='green', marker='^', s=50,
+                        label='Buy' if not buy_label_used else ""
+                    )
+                    buy_label_used = True
+                elif action_val < 0:  # Sell
+                    total_plotted_sells += 1  # <--- Count Sell
+                    ax1.scatter(
+                        steps[i], prices[i],
+                        color='red', marker='v', s=50,
+                        label='Sell' if not sell_label_used else ""
+                    )
+                    sell_label_used = True
+
+        last_pv = self.ep_portfolio[-1]['net_worth'] if self.ep_portfolio else 0.0
+        ax1.set_title(f"Evaluation | PV: {last_pv:.2f}")
+        ax1.legend(loc='upper left')
+        ax1.grid(True, alpha=0.3)
+
+        # --- Action bar plot: color = long/short, height = exposure ---
+        # If actions are in [-max_leverage, +max_leverage], this shows exposure directly.
+        colors = ['green' if a >= 0 else 'red' for a in actions]
+        ax2.bar(steps, actions, color=colors, width=1.0)
+        ax2.axhline(0, color='black', linewidth=0.8)
+        ax2.set_ylabel("Exposure")
+        ax2.grid(True, axis='y', alpha=0.3)
+
+        # Networth subplot
+        ax3.plot(steps, portfolio, label='Networth', color='blue', linewidth=1.5)
+        ax3.set_ylabel("Networth")
+        ax3.grid(True, alpha=0.3)
+        ax3.legend(loc='upper left')
+
+        # Date labels
+        num_ticks = min(8, len(steps))
+        tick_indices = np.linspace(0, len(steps) - 1, num_ticks, dtype=int)
+        tick_labels = []
+        for idx in tick_indices:
+            raw_date = dates[idx]
+            if hasattr(raw_date, 'strftime'):
+                d_str = raw_date.strftime('%Y-%m-%d\n%H:%M')
+            else:
+                d_str = str(raw_date)[:16]
+            tick_labels.append(d_str)
+
+        ax3.set_xticks(tick_indices)
+        ax3.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
+
+        plt.tight_layout()
+
+        # === 3. LOG THE FINAL COUNT ===
+        self._logger.info(f"Evaluation Chart Markers Plotted -> Buys: {total_plotted_buys}, Sells: {total_plotted_sells}")
+        self._logger.info("-------------------")
+
+        try:
+            if wandb.run is not None:
+                self._logger.info(f"Attempting to log evaluation chart to WandB, wandb.run.id: {wandb.run.id}")
+                wandb.log({"eval/trade_analysis": wandb.Image(fig)})
+                self._logger.info("Successfully logged evaluation regime chart to WandB")
+            else:
+                self._logger.warning("wandb.run is None, skipping evaluation chart log")
+        except Exception as e:
+            self._logger.error(f"Failed to log evaluation regime chart to WandB: {e}")
+        plt.close(fig)
