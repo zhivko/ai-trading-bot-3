@@ -147,7 +147,14 @@ class TensorboardCallback(BaseCallback):
         self.ep_prices.append(current_price)
         self.ep_emas.append(ema_50)
         self.ep_actions.append(action)
-        self.ep_portfolio.append(portfolio_value)
+        self.ep_portfolio.append({
+            'step': self.n_calls,
+            'net_worth': portfolio_value,
+            'price': current_price,
+            'action': action,
+            'shares': info.get('shares_held', 0),
+            'trade_executed': info.get('trade_executed', False)
+        })
         self.ep_dates.append(current_date)
 
         # 4. Episode End Logic
@@ -175,7 +182,7 @@ class TensorboardCallback(BaseCallback):
             return
 
         # Convert lists to arrays
-        portfolio = np.array(self.ep_portfolio)
+        portfolio = np.array([point['net_worth'] for point in self.ep_portfolio])
         prices = np.array(self.ep_prices)
 
         # 1. Calculate Returns
@@ -259,7 +266,7 @@ class TensorboardCallback(BaseCallback):
         prices  = np.array(self.ep_prices, dtype=float)
         emas    = np.array(self.ep_emas,   dtype=float)
         actions = np.array(self.ep_actions, dtype=float)
-        portfolio = np.array(self.ep_portfolio, dtype=float)
+        portfolio = np.array([point['net_worth'] for point in self.ep_portfolio], dtype=float)
         dates   = self.ep_dates
 
         fig, (ax1, ax2, ax3) = plt.subplots(
@@ -283,37 +290,30 @@ class TensorboardCallback(BaseCallback):
                 color='red', alpha=0.1, label='Bear'
             )
 
-        # --- Trade markers based on exposure changes ---
-        # We look at the sign and magnitude delta between consecutive actions.
-        # Positive delta ⇒ increasing long / closing short → mark as "Buy".
-        # Negative delta ⇒ increasing short / closing long → mark as "Sell".
+        # Markers for Buy/Sell (ONLY IF EXECUTED)
+        # We check point.get('trade_executed', False) to use the flag.
         buy_label_used = False
         sell_label_used = False
-        for i in range(1, len(actions)):
-            prev_a = actions[i - 1]
-            a      = actions[i]
-            delta  = a - prev_a
+        for i, point in enumerate(self.ep_portfolio):
+            is_executed = point.get('trade_executed', False)
+            if is_executed:
+                action_val = point['action']
+                if action_val > 0:  # Buy
+                    ax1.scatter(
+                        steps[i], prices[i],
+                        color='green', marker='^', s=50,
+                        label='Buy' if not buy_label_used else ""
+                    )
+                    buy_label_used = True
+                elif action_val < 0:  # Sell
+                    ax1.scatter(
+                        steps[i], prices[i],
+                        color='red', marker='v', s=50,
+                        label='Sell' if not sell_label_used else ""
+                    )
+                    sell_label_used = True
 
-            # Small jitter for zero‑noise
-            if abs(delta) < 1e-3:
-                continue
-
-            if delta > 0:
-                ax1.scatter(
-                    steps[i], prices[i],
-                    color='green', marker='^', s=50,
-                    label='Buy' if not buy_label_used else ""
-                )
-                buy_label_used = True
-            elif delta < 0:
-                ax1.scatter(
-                    steps[i], prices[i],
-                    color='red', marker='v', s=50,
-                    label='Sell' if not sell_label_used else ""
-                )
-                sell_label_used = True
-
-        last_pv = self.ep_portfolio[-1] if self.ep_portfolio else 0.0
+        last_pv = self.ep_portfolio[-1]['net_worth'] if self.ep_portfolio else 0.0
         ax1.set_title(f"Thread 0 | PV: {last_pv:.2f}")
         ax1.legend(loc='upper left')
         ax1.grid(True, alpha=0.3)

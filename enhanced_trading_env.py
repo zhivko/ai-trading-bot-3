@@ -344,39 +344,27 @@ class EnhancedTradingEnv(gym.Env):
                 _logger.debug(f"Trade blocked by cooldown direction flip: steps_since_last_trade={self.steps_since_last_trade}, cooldown_steps={self.cooldown_steps}, current_sign={current_sign}, new_sign={new_sign}, action_val={action_val:.4f}")
                 return False
 
-        # Target position in USD (leverage scaled)
-        target_usd = action_val * self.net_worth * self.max_leverage * self.leverage_buffer
+        # Calculate the Target Magnitude (Always Positive)
+        trade_usd = abs(action_val) * self.net_worth * self.max_leverage * self.leverage_buffer
 
-        # Current position value
-        current_usd = self.shares_held * current_price
-
-        # Required trade size
-        trade_usd = target_usd - current_usd
-
-        # Apply minimum trade size filter
-        if abs(trade_usd) < self.min_trade_value_usd:
+        # Check Minimum Trade Size (Global Check)
+        if trade_usd < self.min_trade_value_usd:
             _logger.debug(f"Trade blocked by minimum trade value: trade_usd={trade_usd:.2f}, min_trade_value_usd={self.min_trade_value_usd:.2f}, action_val={action_val:.4f}")
             return False
 
         # Execute trade
         shares_to_trade = trade_usd / current_price
-        cost = abs(shares_to_trade * current_price) * self.transaction_cost_rate
+        cost = shares_to_trade * current_price * self.transaction_cost_rate
 
         trade_occurred = False
         if action_val > 0:  # Buy (or Cover Short)
 
-            # === SMART BUY CLAMPING ===
-            # We can only spend cash we actually have.
-            max_allowed_buy_usd = self.balance
+            # Clamp to available Balance
+            if trade_usd > self.balance:
+                trade_usd = self.balance
 
-            # CLAMP the trade to available cash
-            if trade_usd > max_allowed_buy_usd:
-                _logger.debug(f"Buy clamped: original trade_usd={trade_usd:.2f}, clamped to max_allowed_buy_usd={max_allowed_buy_usd:.2f}")
-                trade_usd = max_allowed_buy_usd
-
-            # Check Minimum Trade Size
+            # Double check min size after clamping
             if trade_usd < self.min_trade_value_usd:
-                _logger.debug(f"Buy blocked by minimum trade value: trade_usd={trade_usd:.2f}, min_trade_value_usd={self.min_trade_value_usd:.2f}")
                 return False
 
             # Calculate shares
@@ -423,37 +411,23 @@ class EnhancedTradingEnv(gym.Env):
 
             return True
         elif action_val < 0:  # Sell (or Open Short)
-            trade_usd = abs(trade_usd)
+            # Calculate Max Allowed Sell (Longs + Margin)
             current_shares = self.shares_held
-            
-            # === SMART MARGIN CALCULATION ===
-            # We need to determine exactly how much we are ALLOWED to sell.
-            # 1. We can always sell existing Long shares (reduce position to 0).
-            # 2. Once at 0, we can Short up to 1x Net Worth.
-            
-            value_of_long_holdings = (current_shares * current_price) if current_shares > 0 else 0.0
-            
-            # Calculate how much "Short Room" we have left
-            # If we are already short, deduct current exposure from Net Worth
-            current_short_exposure = abs(current_shares * current_price) if current_shares < 0 else 0.0
-            available_margin_for_short = self.net_worth - current_short_exposure
-            
-            if available_margin_for_short < 0:
-                available_margin_for_short = 0.0
-                
-            # Total allowed Sell volume = (Existing Long Assets) + (Remaining Short Margin)
-            max_allowed_sell_usd = value_of_long_holdings + available_margin_for_short
-            
-            # CLAMP the trade
-            if trade_usd > max_allowed_sell_usd:
-                trade_usd = max_allowed_sell_usd
-                
-            # Check Minimum Trade Size
+            value_of_longs = (current_shares * current_price) if current_shares > 0 else 0.0
+            short_exposure = abs(current_shares * current_price) if current_shares < 0 else 0.0
+            available_margin = self.net_worth - short_exposure
+            if available_margin < 0: available_margin = 0.0
+            max_sell = value_of_longs + available_margin
+
+            # Clamp
+            if trade_usd > max_sell:
+                trade_usd = max_sell
+
+            # Double check min size after clamping
             if trade_usd < self.min_trade_value_usd:
-                # Silently return False to stop log spamming
                 return False
 
-            # Recalculate shares based on the clamped USD amount
+            # Calculate shares
             shares_to_sell = trade_usd / current_price
             new_shares = current_shares - shares_to_sell
 
@@ -739,6 +713,7 @@ class EnhancedTradingEnv(gym.Env):
             "timestamp": str(self.raw_df.index[self.current_step]),
             "vp_heatmap": heatmap,
             "trades_per_episode": self.trades_in_episode,
+            "trade_executed": trade_occurred,
         }
 
         return obs, reward, terminated, truncated, info
