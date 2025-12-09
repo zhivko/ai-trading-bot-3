@@ -236,7 +236,7 @@ def main():
         'sell_threshold': 0.0,
         'trading_fee_multiplier': args.trading_fee,
         'phase': args.phase,
-        'min_trade_value_usd': 1.0,  # ← Critical: allow $1 trades
+        'min_trade_value_usd': 5.0,  # ← Critical: increased to reduce dust noise
         'pair': args.pair,
         'timeframe': args.timeframe,
         'split_date': args.test_split,

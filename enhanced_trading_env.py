@@ -32,6 +32,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
+        self.reward_fee_multiplier = 10.0        # Magnify fee 10x in reward calculation to stop churning
         self.action_penalty = 0.0005             # tiny L1 penalty to discourage twitching
         self.last_trade_cost = 0
         
@@ -230,8 +231,8 @@ class EnhancedTradingEnv(gym.Env):
         self.reward_scaling = 1.0
 
         # === FIX: Soften churn/cooldown to not over-punish trading ===
-        self.target_hold_duration = 0
-        self.cooldown_steps = 1              # Allow frequent trading for learning
+        self.target_hold_duration = 24       # Target 24h hold
+        self.cooldown_steps = 12             # Force minimum 12-step (12h) wait between flipping sides
 
         # REWARD PENALTIES
         # We switch to a more conservative approach
@@ -313,6 +314,15 @@ class EnhancedTradingEnv(gym.Env):
         """Execute trade based on a signed target exposure."""
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
+
+        # --- NEW: Hard Cooldown Enforcer ---
+        # If we traded recently, force the agent to stick to its previous side (Long or Short)
+        if self.steps_since_last_trade < self.cooldown_steps and self.trades_in_episode > 0:
+            current_sign = np.sign(self.shares_held) if abs(self.shares_held) > 1e-6 else 0
+            new_sign = np.sign(action_val) if abs(action_val) > 1e-6 else 0
+            # If trying to flip direction during cooldown, block it
+            if current_sign != 0 and new_sign != 0 and current_sign != new_sign:
+                return False
 
         # Target position in USD (leverage scaled)
         target_usd = action_val * self.net_worth * self.max_leverage * self.leverage_buffer
@@ -469,12 +479,21 @@ class EnhancedTradingEnv(gym.Env):
 
         # NEW: Real transaction cost penalty
         trade_cost = self.transaction_cost_rate if trade_occurred else 0.0
+        # We magnify this in the reward to force high conviction
+        reward_trade_cost = trade_cost * self.reward_fee_multiplier
 
         # NEW: Inertia penalty (discourage twitching)
         inertia_penalty = self.action_penalty * abs(action_val - self.prev_action)
 
         # NEW: Holding bonus (reward stability)
-        holding_bonus = 0.0001 if abs(action_val - self.current_position) < 0.05 else 0.0
+        # Give extra bonus if we are holding a PROFITABLE position
+        holding_bonus = 0.0
+        if self.shares_held != 0:
+            current_val = self.shares_held * current_price
+            entry_val = self.shares_held * self.entry_price
+            if (self.shares_held > 0 and current_val > entry_val) or \
+               (self.shares_held < 0 and current_val < entry_val):
+                holding_bonus = 0.0005  # Drip reward for riding a trend
 
         # NEW: Realized PnL bonus for profitable closes
         if trade_occurred and self.shares_held < self.prev_shares_held and self.entry_price > 0:
@@ -485,7 +504,7 @@ class EnhancedTradingEnv(gym.Env):
                 reward = (realized_pnl / self.initial_balance) * 0.2  # Milder loss
         else:
             # Base reward: portfolio return minus costs + bonuses
-            reward = portfolio_return - trade_cost - inertia_penalty + holding_bonus
+            reward = portfolio_return - reward_trade_cost - inertia_penalty + holding_bonus
 
         # Hard overtrading cap
         if self.trades_in_episode > 20:  # Increased from 10
