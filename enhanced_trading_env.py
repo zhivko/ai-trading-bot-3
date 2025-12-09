@@ -347,70 +347,122 @@ class EnhancedTradingEnv(gym.Env):
         cost = abs(shares_to_trade * current_price) * self.transaction_cost_rate
 
         trade_occurred = False
-        if action_val > 0:  # Buy or Cover Short
-            if self.balance >= shares_to_trade * current_price + cost:
-                self.shares_held += shares_to_trade
-                self.balance -= shares_to_trade * current_price + cost
-                if self.shares_held > 0 and self.entry_price == 0.0:  # NEW: Set entry on first buy
-                    self.entry_price = current_price
-                trade_occurred = True
-                self.trades_in_episode += 1
-            else:
-                _logger.debug(f"Buy blocked by insufficient balance: balance={self.balance:.2f}, required={shares_to_trade * current_price + cost:.2f}, trade_usd={trade_usd:.2f}, action_val={action_val:.4f}")
-        elif action_val < 0:  # Sell or Open Short
-            trade_usd = abs(trade_usd)
-            
-            # === SHORTING LOGIC ===
-            # Instead of checking 'shares_held', we check 'Net Worth' (Collateral).
-            # We allow shorting up to 1x Leverage (Total Position Value <= Net Worth).
-            
-            # 1. Calculate the New Proposed Position
-            current_shares = self.shares_held
-            shares_to_sell = trade_usd / current_price
-            new_shares = current_shares - shares_to_sell
-            
-            # 2. Check Margin/Leverage Limit
-            # Value of new position: abs(-0.5 BTC) * $90k
-            new_position_value = abs(new_shares * current_price)
-            
-            # Max allowed position size is our Net Worth (1x Leverage safe mode)
-            if new_position_value > self.net_worth:
-                # Cap the trade to maximum allowable leverage
-                # Available 'room' for shorting
-                available_usd = self.net_worth - abs(current_shares * current_price)
-                if available_usd <= 0:
-                     _logger.debug(f"Short blocked by margin call: net_worth={self.net_worth:.2f}, current_position_value={abs(current_shares * current_price):.2f}, action_val={action_val:.4f}")
-                     return False
-                
-                trade_usd = available_usd
-                shares_to_sell = trade_usd / current_price
-                new_shares = current_shares - shares_to_sell
+        if action_val > 0:  # Buy (or Cover Short)
 
-            # 3. Handle Entry Price Updates (Crucial for PnL tracking)
-            if current_shares < 0:
-                # Scenario A: Adding to an existing SHORT
+            # === SMART BUY CLAMPING ===
+            # We can only spend cash we actually have.
+            max_allowed_buy_usd = self.balance
+
+            # CLAMP the trade to available cash
+            if trade_usd > max_allowed_buy_usd:
+                _logger.debug(f"Buy clamped: original trade_usd={trade_usd:.2f}, clamped to max_allowed_buy_usd={max_allowed_buy_usd:.2f}")
+                trade_usd = max_allowed_buy_usd
+
+            # Check Minimum Trade Size
+            if trade_usd < self.min_trade_value_usd:
+                _logger.debug(f"Buy blocked by minimum trade value: trade_usd={trade_usd:.2f}, min_trade_value_usd={self.min_trade_value_usd:.2f}")
+                return False
+
+            # Calculate shares
+            if current_price == 0:
+                _logger.error(f"Buy blocked: current_price is 0, cannot divide")
+                return False
+            shares_to_buy = trade_usd / current_price
+            current_shares = self.shares_held
+            new_shares = current_shares + shares_to_buy
+
+            # === ENTRY PRICE UPDATE ===
+            old_entry_price = self.entry_price
+            if current_shares > 0:
+                # Scenario A: Adding to an existing LONG
                 # Weighted Average Entry Price: (OldCost + NewCost) / TotalShares
                 old_cost = current_shares * self.entry_price
-                new_sell_cost = -(shares_to_sell * current_price) # Negative shares * Price
+                new_buy_cost = shares_to_buy * current_price
+                self.entry_price = (old_cost + new_buy_cost) / new_shares
+                _logger.debug(f"Entry price updated - Scenario A: old_entry={old_entry_price:.2f}, new_entry={self.entry_price:.2f}, current_shares={current_shares:.6f}, shares_to_buy={shares_to_buy:.6f}")
+
+            elif current_shares < 0 and new_shares > 0:
+                # Scenario B: Flipping from SHORT to LONG
+                # The Short portion is closed. The Long portion starts fresh.
+                # New Entry Price is the current price for the net long position.
+                self.entry_price = current_price
+                _logger.debug(f"Entry price updated - Scenario B: flipped from short to long, old_entry={old_entry_price:.2f}, new_entry={self.entry_price:.2f}, current_shares={current_shares:.6f}, new_shares={new_shares:.6f}")
+
+            elif current_shares == 0:
+                # Scenario C: Opening fresh LONG
+                self.entry_price = current_price
+                _logger.debug(f"Entry price updated - Scenario C: opening fresh long, entry={self.entry_price:.2f}")
+
+            # Scenario D: Covering Short (Negative -> Less Negative)
+            # Entry price (average) typically stays the same when reducing position.
+            else:
+                _logger.debug(f"Entry price unchanged - Scenario D: covering short, entry remains {self.entry_price:.2f}, current_shares={current_shares:.6f}, new_shares={new_shares:.6f}")
+
+            # === EXECUTE ===
+            self.balance -= trade_usd
+            self.shares_held += shares_to_buy
+            trade_occurred = True
+            self.trades_in_episode += 1
+            _logger.debug(f"Buy executed: trade_usd={trade_usd:.2f}, shares_to_buy={shares_to_buy:.6f}, new_balance={self.balance:.2f}, new_shares_held={self.shares_held:.6f}")
+
+            return True
+        elif action_val < 0:  # Sell (or Open Short)
+            trade_usd = abs(trade_usd)
+            current_shares = self.shares_held
+            
+            # === SMART MARGIN CALCULATION ===
+            # We need to determine exactly how much we are ALLOWED to sell.
+            # 1. We can always sell existing Long shares (reduce position to 0).
+            # 2. Once at 0, we can Short up to 1x Net Worth.
+            
+            value_of_long_holdings = (current_shares * current_price) if current_shares > 0 else 0.0
+            
+            # Calculate how much "Short Room" we have left
+            # If we are already short, deduct current exposure from Net Worth
+            current_short_exposure = abs(current_shares * current_price) if current_shares < 0 else 0.0
+            available_margin_for_short = self.net_worth - current_short_exposure
+            
+            if available_margin_for_short < 0:
+                available_margin_for_short = 0.0
+                
+            # Total allowed Sell volume = (Existing Long Assets) + (Remaining Short Margin)
+            max_allowed_sell_usd = value_of_long_holdings + available_margin_for_short
+            
+            # CLAMP the trade
+            if trade_usd > max_allowed_sell_usd:
+                trade_usd = max_allowed_sell_usd
+                
+            # Check Minimum Trade Size
+            if trade_usd < self.min_trade_value_usd:
+                # Silently return False to stop log spamming
+                return False
+
+            # Recalculate shares based on the clamped USD amount
+            shares_to_sell = trade_usd / current_price
+            new_shares = current_shares - shares_to_sell
+
+            # === ENTRY PRICE UPDATE ===
+            if current_shares < 0:
+                # Scenario A: Adding to an existing SHORT
+                # Weighted Average Entry Price
+                old_cost = current_shares * self.entry_price
+                new_sell_cost = -(shares_to_sell * current_price)
                 self.entry_price = (old_cost + new_sell_cost) / new_shares
                 
             elif current_shares > 0 and new_shares < 0:
                 # Scenario B: Flipping from LONG to SHORT
-                # The Long portion is closed (realized). The Short portion starts fresh.
-                # We set entry price to current price for the new short position.
+                # The Long portion is closed. The Short portion starts fresh.
                 self.entry_price = current_price
-                
-            # Note: If simply reducing a Long (shares > 0 -> shares > 0), entry price stays same.
+            
+            # Scenario C: Reducing Long (entry price stays same)
 
-            # 4. Execute Trade
-            # In a simplified model:
-            # - Cash Balance INCREASES by sale amount (proceeds)
-            # - Shares become NEGATIVE (liability)
-            # Net Worth calculation (Balance + Shares*Price) handles the math correctly.
+            # === EXECUTE ===
             self.balance += (shares_to_sell * current_price) - cost
             self.shares_held -= shares_to_sell
             trade_occurred = True
             self.trades_in_episode += 1
+            
+            return True
 
         if trade_occurred:
             self.steps_since_last_trade = 0
