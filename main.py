@@ -13,7 +13,12 @@ import signal
 import sys
 import traceback
 import threading
+import warnings
 logger = logging.getLogger(__name__)
+
+# Suppress stable_baselines3 deprecation warnings
+warnings.filterwarnings("ignore", message="get_schedule_fn.*deprecated", category=UserWarning)
+warnings.filterwarnings("ignore", message="constant_fn.*deprecated", category=UserWarning)
 
 # Matplotlib backend fix for server environments
 import matplotlib
@@ -35,6 +40,7 @@ wandb.require("core")
 
 # Custom Modules
 from enhanced_trading_env import EnhancedTradingEnv
+from phase_manager import PhaseManager
 from callbacks.base_callbacks import TensorboardCallback, CustomEvalCallback, ProgressBarCallback
 from callbacks.recurrent_saliency import RecurrentFeatureSaliencyCallback
 from volume_profile import get_rolling_vp
@@ -104,17 +110,84 @@ ALGO_MAP = {
     "recurrentppo": RecurrentPPO
 }
 
-class PhaseSwitchCallback(BaseCallback):
-    def __init__(self, switch_at=300_000, verbose=1):
-        super().__init__(verbose)
-        self.switch_at = switch_at
 
-    def _on_step(self) -> bool:
-        if self.num_timesteps >= self.switch_at:
-            self.training_env.env_method("set_min_trade_value", 50.0)
-            self.training_env.env_method("set_thresholds", 0.01, -0.01)
-            print(f"\nSWITCHED TO PHASE 1 @ {self.num_timesteps:,} steps — real trading mode!")
-        return True
+def phased_training_loop(model, train_env, phase_manager, total_timesteps, callbacks, algo, pair, reset_num_timesteps=True):
+    """
+    Implement phased training with entropy coefficient annealing and threshold adjustments.
+    """
+    steps_per_phase = phase_manager.get_steps_per_phase(total_timesteps)
+    total_phases = phase_manager.total_phases
+    
+    logger.info(f"Starting phased training with {total_phases} phases")
+    logger.info(f"Steps per phase: {steps_per_phase:,}")
+    logger.info(f"Total target steps: {total_timesteps:,}")
+    
+    # Calculate checkpoint frequency (every 2 phases)
+    checkpoint_freq = steps_per_phase * 2
+    
+    for phase in range(1, total_phases + 1):
+        # Get phase parameters
+        phase_params = phase_manager.get_phase_params(phase)
+        
+        # Log phase start
+        phase_manager.log_phase_start(phase, steps_per_phase)
+        
+        # Update environment thresholds
+        train_env.env_method("set_thresholds", phase_params['buy_threshold'], phase_params['sell_threshold'])
+
+        # Update model entropy coefficient
+        model.ent_coef = phase_params['entropy_coef']
+
+        logger.info(f"Phase {phase}: Updated entropy_coef to {phase_params['entropy_coef']:.6f}")
+        logger.info(f"Phase {phase}: Updated buy_threshold to {phase_params['buy_threshold']:.3f}, sell_threshold to {phase_params['sell_threshold']:.3f}")
+        
+        # Set up callbacks for this phase
+        phase_callbacks = callbacks.copy()
+        
+        # Add checkpoint callback for this phase (save every 2 phases)
+        if phase % 2 == 0:
+            checkpoint_callback = CheckpointCallback(
+                save_freq=checkpoint_freq,
+                save_path=f"./checkpoints/{algo}_{pair}_phase{phase}",
+                name_prefix=f"{algo}_phase{phase}"
+            )
+            phase_callbacks.append(checkpoint_callback)
+            logger.info(f"Phase {phase}: Checkpoint callback added (saving every {checkpoint_freq:,} steps)")
+        
+        # Create callback list for this phase
+        phase_callback_list = CallbackList(phase_callbacks)
+        
+        # Calculate steps for this phase
+        if phase == total_phases:
+            # Last phase: use remaining steps
+            phase_steps = total_timesteps - ((phase - 1) * steps_per_phase)
+        else:
+            phase_steps = steps_per_phase
+        
+        logger.info(f"Phase {phase}: Training for {phase_steps:,} steps")
+        
+        # Train for this phase
+        model.learn(
+            total_timesteps=phase_steps,
+            callback=phase_callback_list,
+            progress_bar=False,
+            reset_num_timesteps=reset_num_timesteps and phase == 1
+        )
+        
+        # Save intermediate model after each phase
+        phase_model_path = f"./models/{algo}_{pair}_phase{phase}"
+        model.save(phase_model_path)
+        if hasattr(train_env, 'save'):
+            train_env.save(f"{phase_model_path}.pkl")
+        logger.info(f"Phase {phase}: Saved model to {phase_model_path}")
+        
+        # Update for next phase
+        reset_num_timesteps = False
+        
+        logger.info(f"Phase {phase} completed successfully!\n")
+    
+    logger.info("All phases completed successfully!")
+    return model
 
 # ---------------------------------------------------------
 # 2. Data Preprocessing
@@ -157,6 +230,10 @@ def main():
     callback_log_files = glob.glob('logs/*callback*_*.log')
     for f in callback_log_files:
         os.remove(f)
+
+    # Use local time in loggers
+    logging.Formatter.converter = time.localtime
+
     logging.basicConfig(filename='logs/ml.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
 
     # Add console handler for logging to console
@@ -369,10 +446,10 @@ def main():
     progress_callback = ProgressBarCallback(update_interval=1000)
     callbacks = [progress_callback, tensorboard_callback, checkpoint_callback]
     #callbacks = [tensorboard_callback, checkpoint_callback]
-    
+
     #if saliency_callback is not None:
     #    callbacks.append(saliency_callback)
-    
+
     # if args.wandb:
     #     callbacks.append(WandbCallback(
     #         gradient_save_freq=0,
@@ -395,10 +472,8 @@ def main():
     )
     callbacks.append(eval_callback)
 
-    # Optional: Auto-Switch Phases for Curriculum Learning
-    if args.phase == 0:
-        switch_interval = args.total_timesteps // args.total_phases
-        callbacks.append(PhaseSwitchCallback(total_phases=args.total_phases, switch_interval=switch_interval))
+    # Note: Phase switching is now handled in the phased_training_loop
+    # No need for old PhaseSwitchCallback in the callback list
 
     # Add Recurrent Saliency Callback for RecurrentPPO
     if args.algo.lower() == 'recurrentppo':
@@ -586,26 +661,54 @@ def main():
             "clip_range": 0.2,
             "gae_lambda": 0.95,
         }
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        model = RecurrentPPO(
-            "MlpLstmPolicy",
-            train_env,
-            policy_kwargs=policy_kwargs,
-            tensorboard_log=f"./logs/{args.algo}_tensorboard",
-            device=args.device,
-            **model_kwargs  # FIX: Use the dictionary defined above to avoid inconsistencies
-        )
+    # --- Initialize Phase Manager ---
+    phase_manager = PhaseManager(
+        total_phases=args.total_phases,
+        initial_entropy=0.08,    # Start high for exploration
+        final_entropy=0.0001,    # End low for exploitation
+        initial_buy_threshold=0.15,  # Start with tighter buy thresholds
+        final_buy_threshold=0.35,    # End with more selective buy thresholds
+        initial_sell_threshold=-0.15, # Start with tighter sell thresholds
+        final_sell_threshold=-0.35    # End with more selective sell thresholds
+    )
 
-        reset_num_timesteps = True
-    # --- Train ---
-    logger.info(f"Training started... Target: {args.total_timesteps} steps")
+    # Pass phase_manager to environment kwargs
+    env_kwargs['phase_manager'] = phase_manager
+    
+    # Set initial environment thresholds
+    initial_params = phase_manager.get_phase_params(1)
+    train_env.env_method("set_thresholds", initial_params['buy_threshold'], initial_params['sell_threshold'])
+    logger.info(f"Set initial buy_threshold to {initial_params['buy_threshold']:.3f}, sell_threshold to {initial_params['sell_threshold']:.3f}")
+
+    # --- Initialize Model ---
+    model = RecurrentPPO(
+        "MlpLstmPolicy",
+        train_env,
+        policy_kwargs=policy_kwargs,
+        tensorboard_log=f"./logs/{args.algo}_tensorboard",
+        device=args.device,
+        **model_kwargs  # Use the dictionary defined above to avoid inconsistencies
+    )
+
+    reset_num_timesteps = True
+
+    # --- Phased Training ---
+    logger.info(f"Starting phased training... Target: {args.total_timesteps} steps")
     logger.info(f"Model: {args.algo.upper()}, Device: {args.device}")
+    logger.info(f"Total phases: {args.total_phases}")
 
     try:
-        model.learn(
+        # Use phased training instead of single training loop
+        model = phased_training_loop(
+            model=model,
+            train_env=train_env,
+            phase_manager=phase_manager,
             total_timesteps=args.total_timesteps,
-            callback=callback_list,
-            progress_bar=False,
+            callbacks=callbacks,
+            algo=args.algo,
+            pair=args.pair,
             reset_num_timesteps=reset_num_timesteps
         )
         

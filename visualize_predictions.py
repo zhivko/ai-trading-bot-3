@@ -201,7 +201,10 @@ def main():
 
     for i in tqdm(range(args.steps)):
         # Saliency
-        obs_tensor = torch.FloatTensor(obs).to(device).unsqueeze(0).unsqueeze(0)
+        # FIX: obs is (Batch, Features). We need (Batch, Seq_Len, Features).
+        # We insert the sequence dimension at index 1.
+        obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(1)
+
         lstm_states_np = lstm_states
         attr = compute_saliency(model, obs_tensor, lstm_states_np, device)
         attributions_list.append(attr)

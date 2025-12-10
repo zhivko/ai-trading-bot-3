@@ -10,6 +10,7 @@ import os
 
 # Delegating heavy lifting to volume_profile.py
 from volume_profile import get_rolling_vp
+from phase_manager import PhaseManager
 import logging
 
 
@@ -63,8 +64,8 @@ class EnhancedTradingEnv(gym.Env):
     }
 
     def __init__(self, df, initial_balance=10000, lookback_window=50, vp_days=None, vp_bins=40,
-                        buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1, total_phases=10, min_trade_value_usd=10.0,
-                        pair='BTCUSDT', timeframe='1h', split_date=None):
+                         buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1, total_phases=10, min_trade_value_usd=10.0,
+                         pair='BTCUSDT', timeframe='1h', split_date=None, phase_manager=None):
         try:
             # Create instance-specific logger
             self._logger = get_thread_logger()
@@ -324,26 +325,13 @@ class EnhancedTradingEnv(gym.Env):
         # Phase
         self.phase = phase
         self.total_phases = max(1, total_phases)  # Safety: ensure at least 1
+        self.phase_manager = phase_manager if phase_manager else PhaseManager(total_phases=total_phases)
 
         # === DYNAMIC THRESHOLD LOGIC ===
-        self._logger.info(f"DEBUG: Before threshold calc - phase={self.phase}, total_phases={self.total_phases}")
-        if self.total_phases > 1:
-            # Calculate increment size
-            # If phases=10, we want range 0.0 to 0.5 over 9 steps
-            increment = 0.5 / (self.total_phases - 1)
-            self._logger.info(f"DEBUG: increment calculated as {increment:.6f}")
-
-            # Phase 1: (0)*inc = 0.0  (Trade on everything)
-            # Phase 10: (9)*inc = 0.5 (Only trade on strong signals)
-            self.buy_threshold = (self.phase - 1) * increment
-            self.sell_threshold = -((self.phase - 1) * increment)
-            self._logger.info(f"DEBUG: buy_threshold = ({self.phase} - 1) * {increment:.6f} = {self.buy_threshold:.6f}")
-            self._logger.info(f"DEBUG: sell_threshold = -(({self.phase} - 1) * {increment:.6f}) = {self.sell_threshold:.6f}")
-        else:
-            # Fallback for single phase training
-            self.buy_threshold = 0.0
-            self.sell_threshold = 0.0
-            self._logger.info("DEBUG: Single phase, setting thresholds to 0.0")
+        phase_params = self.phase_manager.get_phase_params(self.phase)
+        self.buy_threshold = phase_params['buy_threshold']
+        self.sell_threshold = phase_params['sell_threshold']
+        self._logger.info(f"Phase {self.phase}/{self.total_phases} :: thresholds: {self.sell_threshold:.4f} / {self.buy_threshold:.4f}")
 
         # Log it so you can verify it's working
         self._logger.info(f"Phase {self.phase}/{self.total_phases} :: thresholds: {self.sell_threshold:.4f} / {self.buy_threshold:.4f}")
@@ -579,7 +567,9 @@ class EnhancedTradingEnv(gym.Env):
         # Market features (lookback window)
         # Get the data for the current window
         # Shape: (window_size, n_features)
-        raw_obs = self.df.iloc[self.current_step - self.lookback_window + 1: self.current_step + 1, self.features].values
+                
+        # FIX: .iloc requires numeric indexers. We select columns by name first, then slice rows by position.
+        raw_obs = self.df[self.features].iloc[self.current_step - self.lookback_window + 1: self.current_step + 1].values
         
         # IMPLEMENTATION: Windowed Z-Score Normalization
         # This ensures all inputs (Price, RSI, Volume) are on the same scale (-2 to +2 range)
@@ -713,6 +703,12 @@ class EnhancedTradingEnv(gym.Env):
         if self.shares_held == self.prev_shares_held and abs(action_val) > 0.5:
              reward_inertia = -0.05
 
+        # NEW: Penalty for changing action direction (prevent oscillation)
+        action_change_penalty = 0.0
+        if self.prev_action is not None and self.prev_action != 0.0:
+            if np.sign(action_val) != np.sign(self.prev_action) and abs(action_val) > 0.05:
+                action_change_penalty = -0.1  # Discourage direction changes
+
         # --- UPDATE AGENT STATE ---
         if abs(self.shares_held) > 0:
             self.steps_in_trade += 1
@@ -728,6 +724,7 @@ class EnhancedTradingEnv(gym.Env):
         # 2. Subtract costs (Fee is now reduced to 2x multiplier in init)
         reward -= reward_trade_cost  # Now this variable is definitely defined
         reward += reward_inertia
+        reward -= action_change_penalty
 
         # Calculate "Rent" (Funding Fee) to discourage camping on a position
         current_holding_cost = 0.0
@@ -849,6 +846,11 @@ class EnhancedTradingEnv(gym.Env):
     # Phase setters (for curriculum)
     def set_phase(self, new_phase):
         self.phase = new_phase
+        # Update thresholds when phase changes
+        phase_params = self.phase_manager.get_phase_params(self.phase)
+        self.buy_threshold = phase_params['buy_threshold']
+        self.sell_threshold = phase_params['sell_threshold']
+        self._logger.info(f"Phase updated to {self.phase}: buy_threshold={self.buy_threshold:.3f}, sell_threshold={self.sell_threshold:.3f}")
 
     def set_min_trade_value(self, value):
         self.min_trade_value_usd = float(value)
