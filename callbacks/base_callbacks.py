@@ -153,6 +153,7 @@ class TensorboardCallback(BaseCallback):
             'price': current_price,
             'action': action,
             'shares': info.get('shares_held', 0),
+            'exposure': (info.get('shares_held', 0) * current_price) / portfolio_value if portfolio_value != 0 else 0.0,
             'trade_executed': info.get('trade_executed', False),
             'panic_close': info.get('panic_close', False)
         })
@@ -275,6 +276,17 @@ class TensorboardCallback(BaseCallback):
         total_plotted_buys = 0
         total_plotted_sells = 0
         executed_true_count = sum(1 for p in self.ep_portfolio if p.get('trade_executed', False))
+        
+        # DEBUG: Analyze action distribution
+        actions_array = np.array(self.ep_actions, dtype=float)
+        positive_actions = np.sum(actions_array > 0)
+        negative_actions = np.sum(actions_array < 0)
+        zero_actions = np.sum(actions_array == 0)
+        
+        # Show sample of actions for debugging
+        sample_actions = actions_array[:min(20, len(actions_array))]
+        self._logger.info(f"Action distribution - Positive: {positive_actions}, Negative: {negative_actions}, Zero: {zero_actions}")
+        self._logger.info(f"Sample actions: {sample_actions}")
 
         # Log the raw data status
         self._logger.info("--- CHART DEBUG ---")
@@ -348,7 +360,7 @@ class TensorboardCallback(BaseCallback):
         colors = ['green' if a >= 0 else 'red' for a in actions]
         ax2.bar(steps, actions, color=colors, width=1.0)
         ax2.axhline(0, color='black', linewidth=0.8)
-        ax2.set_ylabel("Exposure")
+        ax2.set_ylabel("Action")
         ax2.grid(True, axis='y', alpha=0.3)
 
         # Networth subplot
@@ -424,7 +436,7 @@ class CustomEvalCallback(EvalCallback):
         Evaluate the agent using the portfolio environment.
         FIXED: Handles VecEnv vs Gym API and adds Progress Bar.
         """
-        print("DEBUG: Starting _evaluate_with_portfolio")
+        self._logger.info("Starting _evaluate_with_portfolio")
 
         # 1. Reset Environment (Handle SB3 VecEnv returning only obs)
         reset_result = self.eval_env.reset()
@@ -481,7 +493,10 @@ class CustomEvalCallback(EvalCallback):
                     ema_50 = info.get('ema50', 0)
                     portfolio_value = info.get('net_worth', 0)
                     current_date = info.get('timestamp', f"{step_count}")
-                    action_val = info.get('action', action[0] if hasattr(action, '__len__') else action)
+                    
+                    # FIX: Use consistent action extraction like TensorboardCallback
+                    # Always use the processed action from environment info, no fallback needed
+                    action_val = info.get('action', 0)
 
                     self.ep_prices.append(current_price)
                     self.ep_emas.append(ema_50)
@@ -641,6 +656,17 @@ class CustomEvalCallback(EvalCallback):
         total_plotted_buys = 0
         total_plotted_sells = 0
         executed_true_count = sum(1 for p in self.ep_portfolio if p.get('trade_executed', False))
+        
+        # DEBUG: Analyze action distribution in evaluation
+        actions_array = np.array(self.ep_actions, dtype=float)
+        positive_actions = np.sum(actions_array > 0)
+        negative_actions = np.sum(actions_array < 0)
+        zero_actions = np.sum(actions_array == 0)
+        
+        # Show sample of actions for debugging
+        sample_actions = actions_array[:min(20, len(actions_array))]
+        self._logger.info(f"EVAL Action distribution - Positive: {positive_actions}, Negative: {negative_actions}, Zero: {zero_actions}")
+        self._logger.info(f"EVAL Sample actions: {sample_actions}")
 
         # Log the raw data status
         self._logger.info("--- EVALUATION CHART DEBUG ---")
@@ -676,7 +702,6 @@ class CustomEvalCallback(EvalCallback):
         panic_label_used = False
         for i, point in enumerate(self.ep_portfolio):
             is_executed = point.get('trade_executed', False)
-            is_panic = point.get('panic_close', False)
             if is_executed:
                 action_val = point['action']
                 if action_val > 0:  # Buy
@@ -695,14 +720,7 @@ class CustomEvalCallback(EvalCallback):
                         label='Sell' if not sell_label_used else ""
                     )
                     sell_label_used = True
-            elif is_panic:
-                # Panic close marker
-                ax1.scatter(
-                    steps[i], prices[i],
-                    color='orange', marker='X', s=100,
-                    label='Panic Close' if not panic_label_used else ""
-                )
-                panic_label_used = True
+
 
         last_pv = self.ep_portfolio[-1]['net_worth'] if self.ep_portfolio else 0.0
         ax1.set_title(f"Evaluation | PV: {last_pv:.2f}")
@@ -714,7 +732,7 @@ class CustomEvalCallback(EvalCallback):
         colors = ['green' if a >= 0 else 'red' for a in actions]
         ax2.bar(steps, actions, color=colors, width=1.0)
         ax2.axhline(0, color='black', linewidth=0.8)
-        ax2.set_ylabel("Exposure")
+        ax2.set_ylabel("Actions")
         ax2.grid(True, axis='y', alpha=0.3)
 
         # Networth subplot

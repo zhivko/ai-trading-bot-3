@@ -123,7 +123,7 @@ def load_and_process_data(filepath):
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Data file not found: {filepath}")
 
-    logger.info(f"Loading data from {filepath}...")
+    logging.info(f"Loading data from {filepath}...")
     df = pd.read_csv(filepath)
     
     # Ensure standard columns
@@ -148,16 +148,21 @@ def main():
     # Delete old log file to start fresh
     if os.path.exists('logs/ml.log'):
         os.remove('logs/ml.log')
+
+    env_log_files = glob.glob('logs/env_*.log')
+    for f in env_log_files:
+        os.remove(f)
+
     # Delete old callback log files
     callback_log_files = glob.glob('logs/*callback*_*.log')
     for f in callback_log_files:
         os.remove(f)
-    logging.basicConfig(filename='logs/ml.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s')
+    logging.basicConfig(filename='logs/ml.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
 
     # Add console handler for logging to console
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.DEBUG)
-    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(threadName)s - %(filename)s:%(lineno)d - %(message)s'))
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'))
     logging.getLogger().addHandler(console_handler)
 
     # Filter to only log from our own files
@@ -208,30 +213,30 @@ def main():
     train_df = df.iloc[:split_idx].reset_index(drop=True)
     test_df = df.iloc[split_idx:].reset_index(drop=True)
     
-    logger.info(f"Split Data: Train ({len(train_df)}) | Test ({len(test_df)})")
+    logging.info(f"Split Data: Train ({len(train_df)}) | Test ({len(test_df)})")
 
     # --- Pre-Calculate Volume Profile (Multiprocessing Fix) ---
-    logger.info(f"Creating {args.n_envs} parallel environments...")
+    logging.info(f"Creating {args.n_envs} parallel environments...")
 
-    logger.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {args.vp_bins}) ---")
+    logging.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {args.vp_bins}) ---")
 
     # 1. Train VP
-    logger.info("Calculating VP for training data...")
+    logging.info("Calculating VP for training data...")
     vp_data_train = {}
     for days in args.vp_days:
-        logger.info(f"Calculating Rolling VP for {days} days (Bins: {args.vp_bins})...")
+        logging.info(f"Calculating Rolling VP for {days} days (Bins: {args.vp_bins})...")
         vp_data_train[days] = get_rolling_vp(train_df, days, bins=args.vp_bins)
-    logger.info("Train VP calculation complete.")
+    logging.info("Train VP calculation complete.")
 
     # 2. Test VP
-    logger.info("Calculating VP for test data...")
+    logging.info("Calculating VP for test data...")
     vp_data_test = {}
     for days in args.vp_days:
         vp_data_test[days] = get_rolling_vp(test_df, days, bins=args.vp_bins)
-    logger.info("Test VP calculation complete.")
+    logging.info("Test VP calculation complete.")
 
     # --- Environment Setup ---
-    logger.info("Setting up environments...")
+    logging.info("Setting up environments...")
     # Force window_size=1 for RecurrentPPO to avoid confusion with LSTM memory
     window_size = 1 if args.algo.lower() == 'recurrentppo' else args.window_size
     env_kwargs = {
@@ -239,6 +244,8 @@ def main():
         'vp_days': args.vp_days,
         'vp_bins': args.vp_bins,
         'lookback_window': window_size,
+        'buy_threshold': 0.0,        # ← Allow any signal
+        'sell_threshold': 0.0,
         'trading_fee_multiplier': args.trading_fee,
         'phase': args.phase,
         'total_phases': args.total_phases,
@@ -247,10 +254,10 @@ def main():
         'timeframe': args.timeframe,
         'split_date': args.test_split,
     }
-    logger.info(f"Env kwargs: {env_kwargs}")
+    logging.info(f"Env kwargs: {env_kwargs}")
 
     # Training Env
-    logger.info("Creating training environment...")
+    logging.info("Creating training environment...")
     train_env_kwargs = env_kwargs.copy()
     train_env_kwargs['df'] = train_df
     train_env_kwargs['precalculated_vp'] = vp_data_train
@@ -264,13 +271,13 @@ def main():
     )
     logger.info("Training environment created.")
 
-    # Always wrap the env initially.
-    # If we resume later, we will overwrite 'train_env' with the loaded stats,
-    # but we need this base object to exist right now.
-    logger.info("Applying VecNormalize to training env...")
-    train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., clip_reward=10.)
-    logger.info("VecNormalize applied.")
-    logger.info(f"Train env type after normalization: {type(train_env)}")
+    # FIX: Do not apply VecNormalize here if we are going to load it later in Resume block
+    # This prevents "Double Normalization" (z-score of a z-score)
+    if not args.resume:
+        logger.info("Applying VecNormalize to training env...")
+        train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., clip_reward=10.)
+        logger.info("VecNormalize applied.")
+        logger.info(f"Train env type after normalization: {type(train_env)}")
 
     # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
 
@@ -358,8 +365,19 @@ def main():
 
     progress_callback = ProgressBarCallback(update_interval=1000)
     callbacks = [progress_callback, tensorboard_callback, checkpoint_callback]
-    if args.wandb:
-        eval_freq_adjusted = max(50000 // args.n_envs, 1) # e.g., 50000 // 16 = 3125 calls
+    #callbacks = [tensorboard_callback, checkpoint_callback]
+    
+    #if saliency_callback is not None:
+    #    callbacks.append(saliency_callback)
+    
+    # if args.wandb:
+    #     callbacks.append(WandbCallback(
+    #         gradient_save_freq=0,
+    #         model_save_path=f"models/{args.algo}_{args.pair}_wb",
+    #         verbose=0  # Reduced from 2 to minimize logging overhead
+    #     ))
+
+    eval_freq_adjusted = max(50000 // args.n_envs, 1) # e.g., 50000 // 16 = 3125 calls
 
     # Add after eval_env setup
     eval_callback = CustomEvalCallback(
@@ -466,26 +484,28 @@ def main():
                 load_path = None
 
         if load_path:
-            logger.info(f"RESUMING training from: {load_path}")
+            logging.info(f"RESUMING training from: {load_path}")
             try:
                 # Load model
                 model = AlgoClass.load(load_path, env=train_env, device=args.device, tensorboard_log=tensorboard_log)
                 # Sync VecNormalize stats
                 if os.path.exists(f"{load_path}.pkl"):
-                    logger.info(f"Loading VecNormalize stats from {load_path}.pkl")
-                    # Load stats into a new wrapper
+                    # === FIX STARTS HERE ===
+                    # 1. Load using the INNER environment (unwrap the empty wrapper we just made)
                     temp_env = VecNormalize.load(f"{load_path}.pkl", train_env.venv)
 
-                    # Check shape compatibility
+                    # 2. Check if observation dimensions match
                     if temp_env.obs_rms.mean.shape != train_env.observation_space.shape:
-                         logger.warning("Saved VecNormalize stats incompatible with new features. Starting fresh norm.")
-                         # We keep the 'train_env' we created in step 1 (Fresh stats)
-                    else:
-                         # Replace with loaded stats
-                         train_env = temp_env
-                         train_env.training = True
-                else:
-                    logger.warning("No .pkl file found. Continuing with fresh VecNormalize stats.")
+                        raise ValueError("Observation spaces do not match (pkl vs env)")
+
+                    # 3. Replace the training env
+                    train_env = temp_env
+                    train_env.training = True
+                    
+                    # 4. CRITICAL: Re-sync eval_env to the NEW loaded stats
+                    # (Because train_env is now a different object)
+                    eval_env.obs_rms = train_env.obs_rms
+                    # === FIX ENDS HERE ===
                 # CRITICAL: Do not reset steps when resuming
                 reset_num_timesteps = False
                 logger.info(f"   > Resuming from Global Step: {model.num_timesteps}")

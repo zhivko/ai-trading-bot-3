@@ -1,3 +1,4 @@
+import glob
 import gymnasium as gym
 import numpy as np
 import pandas as pd
@@ -11,7 +12,49 @@ import os
 from volume_profile import get_rolling_vp
 import logging
 
-_logger = logging.getLogger(__name__)
+
+
+def get_thread_logger():
+    """Create a logger that writes to a separate file per thread/environment instance."""
+    import threading
+    import logging
+
+    # Get thread identifier (process ID + thread ID for uniqueness)
+    thread_id = f"{os.getpid()}_{threading.current_thread().ident}"
+
+    # Create logger name based on thread
+    logger_name = f"EnhancedTradingEnv_{thread_id}"
+
+    # Get or create logger
+    logger = logging.getLogger(logger_name)
+
+    # Only configure if not already configured
+    if not logger.handlers:
+        logger.setLevel(logging.INFO)
+
+        # Create logs directory if it doesn't exist
+        log_dir = "logs"
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Create file handler for this thread's log file
+        log_file = os.path.join(log_dir, f"env_{thread_id}.log")
+
+        # Delete existing log file if it exists to start fresh
+        if os.path.exists(log_file):
+            os.remove(log_file)
+
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.DEBUG)
+
+        # Create formatter
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
+        file_handler.setFormatter(formatter)
+
+        # Add handler to logger
+        logger.addHandler(file_handler)
+
+    return logger
+
 
 class EnhancedTradingEnv(gym.Env):
     metadata = {
@@ -22,10 +65,16 @@ class EnhancedTradingEnv(gym.Env):
     def __init__(self, df, initial_balance=10000, lookback_window=50, vp_days=None, vp_bins=40,
                         buy_threshold=0.5, sell_threshold=-0.5, precalculated_vp=None, trading_fee_multiplier=0.00075, phase=1, total_phases=10, min_trade_value_usd=10.0,
                         pair='BTCUSDT', timeframe='1h', split_date=None):
-        # Create instance-specific logger
-        self._logger = get_thread_logger()
-        self._logger.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {vp_bins}) ---")
-        super(EnhancedTradingEnv, self).__init__()
+        try:
+            # Create instance-specific logger
+            self._logger = get_thread_logger()
+            self._logger.info("EnhancedTradingEnv instance created")
+            self._logger.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {vp_bins}) ---")
+            super(EnhancedTradingEnv, self).__init__()
+            self._logger.info("Super init completed")
+        except Exception as e:
+            print(f"Error during super init: {e}")
+            raise
 
         # Update metadata with instance-specific info
         self.metadata.update({
@@ -34,10 +83,11 @@ class EnhancedTradingEnv(gym.Env):
             'data_range': f"{df.index[0]} to {df.index[-1]}" if not df.empty else None,
             'split_date': split_date,
         })
+        self._logger.info("Metadata updated")
 
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
-        self.reward_fee_multiplier = 3.0       # Increased to 3x to strongly penalize trading
+        self.reward_fee_multiplier = 2.0        # Magnify fee 2x in reward calculation to stop churning
         self.action_penalty = 0.001              # FIX: Reduced by 50x. Allows switching, but still punishes noise.
         self.holding_penalty = 0.0005        # NEW: A tiny "rent" for holding a position
         self.trade_penalty = 0.1               # NEW: Fixed penalty per trade to discourage overtrading
@@ -76,6 +126,7 @@ class EnhancedTradingEnv(gym.Env):
                 # All caching/hashing logic is now in volume_profile.py
                 self.vp_data[days] = get_rolling_vp(self.raw_df, days, bins=self.vp_bins)
         
+        self._logger.info("Standard features...")
         # Standard Features
         self.df['close_pct'] = self.df['close'].pct_change().fillna(0)
 
@@ -83,7 +134,7 @@ class EnhancedTradingEnv(gym.Env):
         # Instead of Z-score or simple Log, we scale volume relative to the last 100 steps.
         # This ensures the value is almost always between 0.0 and 1.0
 
-        # 1. Get Rolling Max Volume (Window = 100 or similar to your observation window)
+        self._logger.info("Calculating rolling max volume for normalization...")
         vol_rolling_max = self.df['volume'].rolling(window=100, min_periods=1).max()
 
         # 2. Divide current volume by rolling max (Safe division)
@@ -93,6 +144,7 @@ class EnhancedTradingEnv(gym.Env):
         self.df['volume_norm'] = self.df['volume_norm'].fillna(0)
 
         # Indicators
+        self._logger.info("Indicators...")
         delta = self.df['close'].diff()
         gain = (delta.where(delta > 0, 0)).ewm(span=14, adjust=False).mean()
         loss = (-delta.where(delta < 0, 0)).ewm(span=14, adjust=False).mean()
@@ -193,6 +245,7 @@ class EnhancedTradingEnv(gym.Env):
         self.data_matrix = self.df.values.astype(np.float32)
 
         # Column indices for fast access
+        self._logger.info("Column indices...")
         self.atr_norm_idx = self.df.columns.get_loc('atr_norm')
         self.close_pct_idx = self.df.columns.get_loc('close_pct')
         self.ema_50_idx = self.df.columns.get_loc('ema_50')
@@ -206,6 +259,7 @@ class EnhancedTradingEnv(gym.Env):
         self.stoch_14_idx = self.df.columns.get_loc('stoch_14')
 
         # Use data_matrix for market_features to optimize
+        self._logger.info("Market features...")
         feature_indices = [self.df.columns.get_loc(f) for f in self.features]
         self.market_features = self.data_matrix[:, feature_indices]
         self.raw_prices = self.data_matrix[:, self.df.columns.get_loc('close')]
@@ -214,6 +268,7 @@ class EnhancedTradingEnv(gym.Env):
         self.feature_names = self.get_feature_names()
 
         # --- 3. SPACE DEFINITION (Updated for new features) ---
+        self._logger.info("Space definition...")
         market_obs_size = self.lookback_window * len(self.features)
         account_obs_size = 6
         vp_obs_size = len(self.vp_days) * (3 + self.vp_bins)
@@ -226,15 +281,10 @@ class EnhancedTradingEnv(gym.Env):
             + recurrent_obs_size
         )
 
-        # === NEW 2D ACTION SPACE ===
-        # action[0] → target exposure: -1.0 (max short) ... +1.0 (max long)
-        # action[1] → panic close signal: 0.0 ... 1.0
-        #             if > 0.7 and position is in loss → immediate flatten + big reward bonus
-        self.action_space = spaces.Box(
-            low=np.array([-1.0, 0.0]),
-            high=np.array([1.0, 1.0]),
-            dtype=np.float32
-        )
+        # Action now encodes signed target exposure in [-1, 1]
+        # -1 = max short, 0 = flat, 1 = max long (before leverage scaling)
+        self._logger.info("Defining action and observation spaces...")
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_size,), dtype=np.float32)
 
         self.entry_price = 0.0  # + NEW: Initialize to fix AttributeError in step
@@ -276,26 +326,32 @@ class EnhancedTradingEnv(gym.Env):
         self.total_phases = max(1, total_phases)  # Safety: ensure at least 1
 
         # === DYNAMIC THRESHOLD LOGIC ===
+        self._logger.info(f"DEBUG: Before threshold calc - phase={self.phase}, total_phases={self.total_phases}")
         if self.total_phases > 1:
             # Calculate increment size
             # If phases=10, we want range 0.0 to 0.5 over 9 steps
             increment = 0.5 / (self.total_phases - 1)
+            self._logger.info(f"DEBUG: increment calculated as {increment:.6f}")
 
             # Phase 1: (0)*inc = 0.0  (Trade on everything)
             # Phase 10: (9)*inc = 0.5 (Only trade on strong signals)
             self.buy_threshold = (self.phase - 1) * increment
             self.sell_threshold = -((self.phase - 1) * increment)
+            self._logger.info(f"DEBUG: buy_threshold = ({self.phase} - 1) * {increment:.6f} = {self.buy_threshold:.6f}")
+            self._logger.info(f"DEBUG: sell_threshold = -(({self.phase} - 1) * {increment:.6f}) = {self.sell_threshold:.6f}")
         else:
             # Fallback for single phase training
             self.buy_threshold = 0.0
             self.sell_threshold = 0.0
+            self._logger.info("DEBUG: Single phase, setting thresholds to 0.0")
 
         # Log it so you can verify it's working
-        # print(f"Phase {self.phase}/{self.total_phases} :: thresholds: {self.sell_threshold:.4f} / {self.buy_threshold:.4f}")
+        self._logger.info(f"Phase {self.phase}/{self.total_phases} :: thresholds: {self.sell_threshold:.4f} / {self.buy_threshold:.4f}")
 
         # Max lookback for VP + features
         self.max_lookback = max(max(d * 24 for d in self.vp_days), 50) + self.lookback_window
         self._logger.info(f"Max Lookback Set To: {self.max_lookback} steps")
+        self._logger.info("EnhancedTradingEnv initialization completed successfully")
 
     def get_feature_names(self):
         """Returns list of feature names for saliency analysis."""
@@ -344,141 +400,135 @@ class EnhancedTradingEnv(gym.Env):
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
 
-        # 1. Hard Cooldown Enforcer
+        # --- NEW: Hard Cooldown Enforcer ---
+        # If we traded recently, force the agent to stick to its previous side (Long or Short)
         if self.steps_since_last_trade < self.cooldown_steps and self.trades_in_episode > 0:
             current_sign = np.sign(self.shares_held) if abs(self.shares_held) > 1e-6 else 0
             new_sign = np.sign(action_val) if abs(action_val) > 1e-6 else 0
+            # If trying to flip direction during cooldown, block it
             if current_sign != 0 and new_sign != 0 and current_sign != new_sign:
-                self._logger.debug(f"Trade blocked by cooldown direction flip: steps={self.steps_since_last_trade}")
+                self._logger.debug(f"Trade blocked by cooldown direction flip: steps_since_last_trade={self.steps_since_last_trade}, cooldown_steps={self.cooldown_steps}, current_sign={current_sign}, new_sign={new_sign}, action_val={action_val:.4f}")
                 return False
 
-        # 2. Calculate Initial Target Size (Always Positive)
+        # Calculate the Target Magnitude (Always Positive)
         trade_usd = abs(action_val) * self.net_worth * self.max_leverage * self.leverage_buffer
 
-        # 3. Global Min Check
+        # Check Minimum Trade Size (Global Check)
         if trade_usd < self.min_trade_value_usd:
-            # self._logger.debug(...) # Optional: Uncomment if debugging silence
+            self._logger.debug(f"Trade blocked by minimum trade value: trade_usd={trade_usd:.2f}, min_trade_value_usd={self.min_trade_value_usd:.2f}, action_val={action_val:.4f}")
             return False
 
-        trade_occurred = False
-        shares_to_trade = 0.0
-        final_trade_cost = 0.0
+        # Execute trade
+        shares_to_trade = trade_usd / current_price
+        cost = shares_to_trade * current_price * self.transaction_cost_rate
 
-        # --- BRANCH: BUY OR SELL ---
-        if action_val > 0:  # BUY (Long)
-            
-            # A. Clamp to available Balance (Cannot buy with money we don't have)
+        trade_occurred = False
+        if action_val > 0:  # Buy (or Cover Short)
+
+            # Clamp to available Balance
             if trade_usd > self.balance:
                 trade_usd = self.balance
 
-            # B. Re-Check Min Size
+            # Double check min size after clamping
             if trade_usd < self.min_trade_value_usd:
                 return False
 
+            # Calculate shares
             if current_price == 0:
+                self._logger.error(f"Buy blocked: current_price is 0, cannot divide")
                 return False
-
-            # C. Calculate Shares & Update State
             shares_to_buy = trade_usd / current_price
             current_shares = self.shares_held
             new_shares = current_shares + shares_to_buy
 
-            # Entry Price Update Logic
+            # === ENTRY PRICE UPDATE ===
+            old_entry_price = self.entry_price
             if current_shares > 0:
+                # Scenario A: Adding to an existing LONG
+                # Weighted Average Entry Price: (OldCost + NewCost) / TotalShares
                 old_cost = current_shares * self.entry_price
                 new_buy_cost = shares_to_buy * current_price
                 self.entry_price = (old_cost + new_buy_cost) / new_shares
+                self._logger.debug(f"Entry price updated - Scenario A: old_entry={old_entry_price:.2f}, new_entry={self.entry_price:.2f}, current_shares={current_shares:.6f}, shares_to_buy={shares_to_buy:.6f}")
+
             elif current_shares < 0 and new_shares > 0:
+                # Scenario B: Flipping from SHORT to LONG
+                # The Short portion is closed. The Long portion starts fresh.
+                # New Entry Price is the current price for the net long position.
                 self.entry_price = current_price
+                self._logger.debug(f"Entry price updated - Scenario B: flipped from short to long, old_entry={old_entry_price:.2f}, new_entry={self.entry_price:.2f}, current_shares={current_shares:.6f}, new_shares={new_shares:.6f}")
+
             elif current_shares == 0:
+                # Scenario C: Opening fresh LONG
                 self.entry_price = current_price
-            
-            # Execute
+                self._logger.debug(f"Entry price updated - Scenario C: opening fresh long, entry={self.entry_price:.2f}")
+
+            # Scenario D: Covering Short (Negative -> Less Negative)
+            # Entry price (average) typically stays the same when reducing position.
+            else:
+                self._logger.debug(f"Entry price unchanged - Scenario D: covering short, entry remains {self.entry_price:.2f}, current_shares={current_shares:.6f}, new_shares={new_shares:.6f}")
+
+            # === EXECUTE ===
             self.balance -= trade_usd
             self.shares_held += shares_to_buy
-            
-            # Set Flags
-            shares_to_trade = shares_to_buy
             trade_occurred = True
+            self.trades_in_episode += 1
+            self._logger.debug(f"Action: {action_val:.4f}, Buy executed: trade_usd={trade_usd:.2f}, shares_to_buy={shares_to_buy:.6f}, new_balance={self.balance:.2f}, new_shares_held={self.shares_held:.6f}")
 
-        elif action_val < 0:  # SELL (Short)
-            
-            # A. Calculate Max Allowed Sell (Longs + Margin)
+            return True
+        elif action_val < 0:  # Sell (or Open Short)
+            # Calculate Max Allowed Sell (Longs + Margin)
             current_shares = self.shares_held
             value_of_longs = (current_shares * current_price) if current_shares > 0 else 0.0
             short_exposure = abs(current_shares * current_price) if current_shares < 0 else 0.0
-            
             available_margin = self.net_worth - short_exposure
             if available_margin < 0: available_margin = 0.0
-            
             max_sell = value_of_longs + available_margin
 
-            # B. Clamp
+            # Clamp
             if trade_usd > max_sell:
                 trade_usd = max_sell
 
-            # C. Re-Check Min Size
+            # Double check min size after clamping
             if trade_usd < self.min_trade_value_usd:
                 return False
 
-            # D. Calculate Shares & Update State
+            # Calculate shares
             shares_to_sell = trade_usd / current_price
             new_shares = current_shares - shares_to_sell
 
-            # Entry Price Update Logic
+            # === ENTRY PRICE UPDATE ===
             if current_shares < 0:
+                # Scenario A: Adding to an existing SHORT
+                # Weighted Average Entry Price
                 old_cost = current_shares * self.entry_price
                 new_sell_cost = -(shares_to_sell * current_price)
                 self.entry_price = (old_cost + new_sell_cost) / new_shares
+                
             elif current_shares > 0 and new_shares < 0:
+                # Scenario B: Flipping from LONG to SHORT
+                # The Long portion is closed. The Short portion starts fresh.
                 self.entry_price = current_price
             
-            # Execute (Subtract cost later in common block)
-            self.balance += (shares_to_sell * current_price)
+            # Scenario C: Reducing Long (entry price stays same)
+
+            # === EXECUTE ===
+            self.balance += (shares_to_sell * current_price) - cost
             self.shares_held -= shares_to_sell
-            
-            # Set Flags
-            shares_to_trade = shares_to_sell
             trade_occurred = True
-
-        # --- COMMON LOGGING & CLEANUP ---
-        if trade_occurred:
-            # Calculate cost on the FINAL clamped trade_usd
-            final_trade_cost = trade_usd * self.transaction_cost_rate
-            
-            # Apply cost to balance (Slippage/Fee)
-            self.balance -= final_trade_cost
-            
-            # Update Trackers
-            self.steps_since_last_trade = 0
             self.trades_in_episode += 1
-            self.reward_trade_cost = final_trade_cost
-            self.has_traded_once = True
+            
+            self._logger.debug(f"Action: {action_val:.4f},Sell executed: trade_usd={trade_usd:.2f}, shares_to_sell={shares_to_sell:.6f}, new_balance={self.balance:.2f}, new_shares_held={self.shares_held:.6f}")
+            return True
 
-            self._logger.debug(f"Trade executed: buy_threshold={self.buy_threshold:.4f}, sell_threshold={self.sell_threshold:.4f}, action={action_val:.4f}, usd={trade_usd:.2f}, shares={shares_to_trade:.6f}, cost={final_trade_cost:.4f}")
+        if trade_occurred:
+            self.steps_since_last_trade = 0
+            self.reward_trade_cost = cost
+            self._logger.debug(f"Trade executed: shares_to_trade={shares_to_trade:.6f}, trade_usd={trade_usd:.2f}, cost={cost:.2f}, action_val={action_val:.4f}")
         else:
             self.steps_since_last_trade += 1
 
         return trade_occurred
-
-    def _flatten_position(self, reward_bonus=0.0):
-        """Close everything immediately"""
-        if self.shares_held == 0:
-            return reward_bonus
-
-        # Get current price from raw_prices array
-        current_price = self.raw_prices[self.current_step]
-
-        # Existing flatten logic...
-        proceeds = self.shares_held * current_price
-        fee = abs(proceeds) * self.trading_fee_multiplier
-        self.balance += proceeds - fee if self.shares_held > 0 else proceeds + fee
-        self.shares_held = 0
-        self.entry_price = 0.0
-        self.time_held = 0
-
-        logging.info(f"POSITION FLATTENED | proceeds={proceeds:,.0f} | fee={fee:,.0f}")
-        return reward_bonus
 
     def reset(self, seed=None, options=None):
         """Reset environment state."""
@@ -536,8 +586,6 @@ class EnhancedTradingEnv(gym.Env):
         holdings_norm = (self.shares_held * current_price) / self.initial_balance
         pos_flag = 1.0 if self.shares_held > 0 else -1.0 if self.shares_held < 0 else 0.0
         unrealized_pnl = ((current_price - self.entry_price) * self.shares_held) / self.initial_balance if self.shares_held != 0 else 0.0
-        # Store unrealized_pnl for panic close logic
-        self.unrealized_pnl = unrealized_pnl
         time_held = self.steps_in_trade / 100.0
         last_pnl = self.last_trade_pnl / self.initial_balance
         account = np.array([balance_norm, holdings_norm, pos_flag, unrealized_pnl, time_held, last_pnl], dtype=np.float32)
@@ -589,65 +637,40 @@ class EnhancedTradingEnv(gym.Env):
         return full_obs.astype(np.float32)
 
     def step(self, action):
-        """
-        action: np.array of shape (2,)
-          action[0] → target exposure
-          action[1] → panic close trigger (0–1)
-        """
-        # Extract components
-        target_exposure_action = float(action[0])
-        panic_signal = float(action[1])
-
+        """Execute one time step."""
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
+        action_val = float(action[0])
 
         # NEW: Sync net worth before action
         self._sync_wallet_balance()
         prev_net_worth = self.net_worth
 
-        info = {}                     # ← ADD THIS LINE
-
         # NEW: Real portfolio return (no look-ahead)
         portfolio_return = (self.net_worth - self.prev_net_worth) / (self.prev_net_worth + 1e-8)
 
-        # === PANIC CLOSE LOGIC ===
-        panic_triggered = False
-        if (panic_signal > 0.7
-            and self.shares_held != 0
-            and self.unrealized_pnl < 0):
+        # === THRESHOLD CHECK ===
+        trade_occurred = False
+        self._logger.info(f"Raw action: {action_val}, buy_threshold: {self.buy_threshold}, sell_threshold: {self.sell_threshold}")
 
-            self._logger.debug(f"PANIC CLOSE TRIGGERED | pnl={self.unrealized_pnl:.2f} | "
-                          f"panic_signal={panic_signal:.3f} | net_worth={self.net_worth:.0f}")
+        # Check against dynamic thresholds
+        if action_val > self.buy_threshold:
+            # BUY SIGNAL
+            self._logger.info(f"BUY SIGNAL: action_val={action_val} > buy_threshold={self.buy_threshold}")
+            trade_occurred = self._take_action(action) # Positive action passed inside
 
-            self._flatten_position()
-            total_reward = 1.0  # Big positive reward for correctly using the emergency button
-            info["panic_close"] = True
-            panic_triggered = True
+        elif action_val < self.sell_threshold:
+            # SELL SIGNAL
+            self._logger.info(f"SELL SIGNAL: action_val={action_val} < sell_threshold={self.sell_threshold}")
+            trade_occurred = self._take_action(action) # Negative action passed inside
+
         else:
-            total_reward = 0.0
-            info["panic_close"] = False
-
-        # === NORMAL TRADING (only if panic wasn't triggered) ===
-        trade_occurred = False  # Initialize to avoid UnboundLocalError
-        if not panic_triggered:
-            # === THRESHOLD CHECK ===
-
-            # Check against dynamic thresholds
-            if target_exposure_action > self.buy_threshold:
-                # BUY SIGNAL
-                trade_occurred = self._take_action(np.array([target_exposure_action])) # Positive action passed inside
-
-            elif target_exposure_action < self.sell_threshold:
-                # SELL SIGNAL
-                trade_occurred = self._take_action(np.array([target_exposure_action])) # Negative action passed inside
-
-            else:
-                # HOLD (Dead Zone)
-                # Action is between -0.1 and 0.1 (for example)
-                # We explicitly do nothing.
-                self.steps_since_last_trade += 1
-
-        # === Rest of your existing step code (unchanged) ===
+            # HOLD (Dead Zone)
+            # Action is between -0.1 and 0.1 (for example)
+            # We explicitly do nothing.
+            self._logger.info(f"HOLD: action_val={action_val} between sell_threshold={self.sell_threshold} and buy_threshold={self.buy_threshold}")
+            trade_occurred = False
+            self.steps_since_last_trade += 1
 
         # === FIX STARTS HERE ===
         # 1. Calculate the actual size of the trade in dollars
@@ -670,7 +693,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # NEW: Inertia penalty (discourage twitching)
         reward_inertia = 0.0
-        if self.shares_held == self.prev_shares_held and abs(target_exposure_action) > 0.5:
+        if self.shares_held == self.prev_shares_held and abs(action_val) > 0.5:
              reward_inertia = -0.05
 
         # --- UPDATE AGENT STATE ---
@@ -683,22 +706,18 @@ class EnhancedTradingEnv(gym.Env):
 
         # 1. Base Reward: Net Worth Change (Captures Unrealized PnL naturally)
         # If price goes up while holding, this is positive. If price goes down, this is negative.
-        total_reward += ((self.net_worth - prev_net_worth) / prev_net_worth) * 100.0
+        reward = ((self.net_worth - prev_net_worth) / prev_net_worth) * 100.0
 
-        # 2. Subtract costs (Fee is now increased multiplier in init)
-        total_reward -= reward_trade_cost  # Now this variable is definitely defined
-        total_reward += reward_inertia
-
-        # Fixed penalty per trade to discourage overtrading
-        if trade_occurred:
-            total_reward -= self.trade_penalty
+        # 2. Subtract costs (Fee is now reduced to 2x multiplier in init)
+        reward -= reward_trade_cost  # Now this variable is definitely defined
+        reward += reward_inertia
 
         # Calculate "Rent" (Funding Fee) to discourage camping on a position
         current_holding_cost = 0.0
         if self.shares_held != 0:
             current_holding_cost = self.holding_penalty
-
-        total_reward -= current_holding_cost  # Apply the rent
+            
+        reward -= current_holding_cost  # Apply the rent
 
         # 3. "Closer's Bonus" (Realized PnL Stimulus)
         if self.prev_shares_held != 0 and self.shares_held == 0:
@@ -710,30 +729,30 @@ class EnhancedTradingEnv(gym.Env):
 
              if realized_pnl_val > 0:
                  # BONUS: Reward realizing a win 2x more than just holding it
-                 total_reward += (trade_return_pct * 100.0) * 2.0
+                 reward += (trade_return_pct * 100.0) * 2.0
              else:
                  # Standard penalty for realizing a loss
-                 total_reward += (trade_return_pct * 100.0) * 1.0
-
+                 reward += (trade_return_pct * 100.0) * 1.0
+             
              # Reset entry price
              self.entry_price = 0.0
 
         # 4. FIX: Death Spiral Bug
         # Only penalize overtrading IF a trade actually occurred this step
         if trade_occurred and self.trades_in_episode > 20:
-            total_reward -= 0.5
+            reward -= 0.5
 
         if trade_occurred:
             self.has_traded_once = True
 
         # Update trackers
-        self.prev_action = target_exposure_action  # NEW: For next inertia
-        self.recent_actions.append(target_exposure_action)
-        self.action_history.append(target_exposure_action)
+        self.prev_action = action_val  # NEW: For next inertia
+        self.recent_actions.append(action_val)
+        self.action_history.append(action_val)
         delta = self.shares_held - self.prev_shares_held
         self.recent_position_deltas.append(delta)
         self.portfolio_returns.append(portfolio_return)
-        self.returns.append(total_reward)
+        self.returns.append(reward)
         self.history_net_worth.append(self.net_worth)
         self.prev_net_worth = self.net_worth
         self.current_position = np.sign(self.shares_held) if abs(self.shares_held) > 1e-6 else 0.0
@@ -744,11 +763,7 @@ class EnhancedTradingEnv(gym.Env):
         truncated = self.current_step >= len(self.df) - 1
         if self.net_worth < (self.initial_balance * 0.5):
             terminated = True
-            total_reward -= 5.0  # Episode penalty
-
-        # Log episode end
-        if terminated or truncated:
-            self._logger.info(f"Episode ended: terminated={terminated}, truncated={truncated}, final_net_worth={self.net_worth:.2f}, trades={self.trades_in_episode}, steps={self.current_step}")
+            reward -= 5.0  # Episode penalty
 
         obs = self._next_observation()
 
@@ -761,8 +776,8 @@ class EnhancedTradingEnv(gym.Env):
             "net_worth": self.net_worth,
             "balance": self.balance,
             "shares_held": self.shares_held,
-            "action": target_exposure_action,
-            "reward": total_reward,
+            "action": action_val,
+            "reward": reward,
             "price": current_price,
             "current_price": current_price,
             "ema50": self.data_matrix[self.current_step, self.ema_50_idx],
@@ -770,10 +785,9 @@ class EnhancedTradingEnv(gym.Env):
             "vp_heatmap": heatmap,
             "trades_per_episode": self.trades_in_episode,
             "trade_executed": trade_occurred,
-            "panic_close": panic_triggered,
         }
 
-        return obs, total_reward, terminated, truncated, info
+        return obs, reward, terminated, truncated, info
 
     def render(self, mode='human', title_suffix=""):
         if len(self.history_net_worth) < 2:
@@ -825,47 +839,6 @@ class EnhancedTradingEnv(gym.Env):
     def set_thresholds(self, buy, sell):
         self.buy_threshold = buy
         self.sell_threshold = sell
-
-def get_thread_logger():
-    """Create a logger that writes to a separate file per thread/environment instance."""
-    import threading
-    import logging
-
-    # Get thread identifier (process ID + thread ID for uniqueness)
-    thread_id = f"{os.getpid()}_{threading.current_thread().ident}"
-
-    # Create logger name based on thread
-    logger_name = f"EnhancedTradingEnv_{thread_id}"
-
-    # Get or create logger
-    logger = logging.getLogger(logger_name)
-
-    # Only configure if not already configured
-    if not logger.handlers:
-        logger.setLevel(logging.DEBUG)
-
-        # Create logs directory if it doesn't exist
-        log_dir = "logs"
-        os.makedirs(log_dir, exist_ok=True)
-
-        # Create file handler for this thread's log file
-        log_file = os.path.join(log_dir, f"env_{thread_id}.log")
-
-        # Delete existing log file if it exists to start fresh
-        if os.path.exists(log_file):
-            os.remove(log_file)
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.DEBUG)
-
-        # Create formatter
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(lineno)d - %(message)s')
-        file_handler.setFormatter(formatter)
-
-        # Add handler to logger
-        logger.addHandler(file_handler)
-
-    return logger
-
 
 # Register the environment with Gym
 gym.register(
