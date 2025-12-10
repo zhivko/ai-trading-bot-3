@@ -165,14 +165,18 @@ def phased_training_loop(model, train_env, phase_manager, total_timesteps, callb
             phase_steps = steps_per_phase
         
         logger.info(f"Phase {phase}: Training for {phase_steps:,} steps")
-        
+
         # Train for this phase
-        model.learn(
-            total_timesteps=phase_steps,
-            callback=phase_callback_list,
-            progress_bar=False,
-            reset_num_timesteps=reset_num_timesteps and phase == 1
-        )
+        try:
+            model.learn(
+                total_timesteps=phase_steps,
+                callback=phase_callback_list,
+                progress_bar=False,
+                reset_num_timesteps=reset_num_timesteps and phase == 1
+            )
+        except Exception as e:
+            logger.error(f"Error during learning in phase {phase}: {e}", exc_info=True)
+            raise
         
         # Save intermediate model after each phase
         phase_model_path = f"./models/{algo}_{pair}_phase{phase}"

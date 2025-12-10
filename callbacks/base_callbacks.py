@@ -113,6 +113,7 @@ class TensorboardCallback(BaseCallback):
         self.ep_actions = []
         self.ep_portfolio = []
         self.ep_dates = []
+        self.ep_rewards = []
         self._logger = logging.getLogger(self.__class__.__name__)
         if not self._logger.handlers:
             thread_name = threading.current_thread().name
@@ -143,10 +144,15 @@ class TensorboardCallback(BaseCallback):
         portfolio_value = info.get('net_worth', 0)
         current_date = info.get('timestamp', f"{self.n_calls}")
 
+        # Get reward
+        rewards = self.locals['rewards']
+        reward = rewards[0] if isinstance(rewards, (list, np.ndarray)) else rewards
+
         # 3. Store
         self.ep_prices.append(current_price)
         self.ep_emas.append(ema_50)
         self.ep_actions.append(action)
+        self.ep_rewards.append(reward)
         self.ep_portfolio.append({
             'step': self.n_calls,
             'net_worth': portfolio_value,
@@ -173,6 +179,7 @@ class TensorboardCallback(BaseCallback):
             self.ep_actions = []
             self.ep_portfolio = []
             self.ep_dates = []
+            self.ep_rewards = []
 
         return True
 
@@ -268,6 +275,7 @@ class TensorboardCallback(BaseCallback):
         prices  = np.array(self.ep_prices, dtype=float)
         emas    = np.array(self.ep_emas,   dtype=float)
         actions = np.array(self.ep_actions, dtype=float)
+        rewards = np.array(self.ep_rewards, dtype=float)
         portfolio = np.array([point['net_worth'] for point in self.ep_portfolio], dtype=float)
         dates   = self.ep_dates
 
@@ -294,9 +302,9 @@ class TensorboardCallback(BaseCallback):
         self._logger.info(f"Steps with 'trade_executed'=True: {executed_true_count}")
         # =====================================
 
-        fig, (ax1, ax2, ax3) = plt.subplots(
-            3, 1, figsize=(12, 10), sharex=True,
-            gridspec_kw={'height_ratios': [3, 1, 1]}
+        fig, (ax1, ax2, ax3, ax4) = plt.subplots(
+            4, 1, figsize=(12, 12), sharex=True,
+            gridspec_kw={'height_ratios': [3, 1, 1, 1]}
         )
 
         # Price + EMA + bull/bear shading
@@ -369,6 +377,24 @@ class TensorboardCallback(BaseCallback):
         ax3.grid(True, alpha=0.3)
         ax3.legend(loc='upper left')
 
+        # Rewards subplot
+        ax4.plot(steps, rewards, label='Rewards', color='purple', linewidth=1.5)
+        ax4.set_ylabel("Rewards")
+        ax4.grid(True, alpha=0.3)
+        ax4.legend(loc='upper left')
+
+        # Rewards subplot
+        ax4.plot(steps, rewards, label='Rewards', color='purple', linewidth=1.5)
+        ax4.set_ylabel("Rewards")
+        ax4.grid(True, alpha=0.3)
+        ax4.legend(loc='upper left')
+
+        # Rewards subplot
+        ax4.plot(steps, rewards, label='Rewards', color='purple', linewidth=1.5)
+        ax4.set_ylabel("Rewards")
+        ax4.grid(True, alpha=0.3)
+        ax4.legend(loc='upper left')
+
         # Date labels
         num_ticks = min(8, len(steps))
         tick_indices = np.linspace(0, len(steps) - 1, num_ticks, dtype=int)
@@ -381,8 +407,8 @@ class TensorboardCallback(BaseCallback):
                 d_str = str(raw_date)[:16]
             tick_labels.append(d_str)
 
-        ax3.set_xticks(tick_indices)
-        ax3.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
+        ax4.set_xticks(tick_indices)
+        ax4.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
 
         plt.tight_layout()
 
@@ -430,6 +456,7 @@ class CustomEvalCallback(EvalCallback):
         self.ep_actions = []
         self.ep_portfolio = []
         self.ep_dates = []
+        self.ep_rewards = []
 
     def _evaluate_with_portfolio(self):
         """
@@ -466,6 +493,7 @@ class CustomEvalCallback(EvalCallback):
                 self.ep_actions = []
                 self.ep_portfolio = []
                 self.ep_dates = []
+                self.ep_rewards = []
 
             while not done:
                 action, _ = self.model.predict(obs, deterministic=self.deterministic)
@@ -501,6 +529,7 @@ class CustomEvalCallback(EvalCallback):
                     self.ep_prices.append(current_price)
                     self.ep_emas.append(ema_50)
                     self.ep_actions.append(action_val)
+                    self.ep_rewards.append(reward)
                     self.ep_portfolio.append({
                         'step': step_count,
                         'net_worth': portfolio_value,
@@ -648,6 +677,7 @@ class CustomEvalCallback(EvalCallback):
         prices  = np.array(self.ep_prices, dtype=float)
         emas    = np.array(self.ep_emas,   dtype=float)
         actions = np.array(self.ep_actions, dtype=float)
+        rewards = np.array(self.ep_rewards, dtype=float)
         portfolio = np.array([point['net_worth'] for point in self.ep_portfolio], dtype=float)
         dates   = self.ep_dates
 
@@ -723,7 +753,10 @@ class CustomEvalCallback(EvalCallback):
 
 
         last_pv = self.ep_portfolio[-1]['net_worth'] if self.ep_portfolio else 0.0
-        ax1.set_title(f"Evaluation | PV: {last_pv:.2f}")
+        episode = self.n_eval_episodes
+        step = len(self.ep_portfolio)
+        global_step = self.num_timesteps
+        ax1.set_title(f"Evaluation | Episode: {episode} | Step: {step} | Global Step: {global_step} | PV: {last_pv:.2f}")
         ax1.legend(loc='upper left')
         ax1.grid(True, alpha=0.3)
 

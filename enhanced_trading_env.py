@@ -5,7 +5,6 @@ import pandas as pd
 from gymnasium import spaces
 from collections import deque
 from scipy.signal import argrelextrema
-import matplotlib.pyplot as plt
 import os
 
 # Delegating heavy lifting to volume_profile.py
@@ -40,9 +39,16 @@ def get_thread_logger():
         # Create file handler for this thread's log file
         log_file = os.path.join(log_dir, f"env_{thread_id}.log")
 
-        # Delete existing log file if it exists to start fresh
-        if os.path.exists(log_file):
-            os.remove(log_file)
+        # Use a lock to prevent race conditions when deleting/creating files
+        import threading
+        lock = threading.Lock()
+        with lock:
+            # Delete existing log file if it exists to start fresh
+            if os.path.exists(log_file):
+                try:
+                    os.remove(log_file)
+                except OSError:
+                    pass  # Ignore if deletion fails
 
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(logging.DEBUG)
@@ -188,6 +194,12 @@ class EnhancedTradingEnv(gym.Env):
         # EMA 50 for trend
         self.df['ema_50'] = self.df['close'].ewm(span=50, adjust=False).mean()
 
+        # NEW: Fast vs Slow Trend Alignment
+        ema_20 = self.df['close'].ewm(span=20, adjust=False).mean()
+        # Normalized difference between Fast and Slow EMA
+        # When this turns negative, it's an early warning that the trend is breaking
+        self.df['trend_fast_diff'] = (ema_20 - self.df['ema_50']) / (self.df['ema_50'] + 1e-8)
+
         # --- NEW: ATR & Regime Features ---
         high_low = self.df['high'] - self.df['low']
         high_close = np.abs(self.df['high'] - self.df['close'].shift())
@@ -229,7 +241,7 @@ class EnhancedTradingEnv(gym.Env):
         self.df['stoch_14'] = self.df['stoch_14'].fillna(0.5)
         self.df['stoch_14'] = np.clip(self.df['stoch_14'], 0.0, 1.0)
 
-        self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema_norm', 'atr_norm', 'regime']
+        self.features = ['close_pct', 'volume_norm', 'rsi_norm', 'stoch_rsi_norm', 'macd_norm', 'macd_sig_norm', 'trend_ema_norm', 'atr_norm', 'regime', 'trend_fast_diff']
         self.divergence_window = 40
         self.div_features = [
             'bull_div_stoch9',
@@ -399,10 +411,11 @@ class EnhancedTradingEnv(gym.Env):
         # If target is ~0 (Close Signal), we ignore min_trade_value to ensure clean exit.
         # Otherwise, we enforce min_trade_value to prevent noise trading.
         is_close_signal = np.isclose(target_equity, 0, atol=1.0) # Treat <$1 target as 0
-        
+
         if abs(deviation) > self.min_trade_value_usd or (is_close_signal and abs(self.shares_held) > 0):
              # If deviation is negative, we Sell. If positive, we Buy.
-             return self._execute_trade(deviation)
+             # PASS force_close=True if it is a close signal to bypass min_trade_value inside execute
+             return self._execute_trade(deviation, force_close=is_close_signal)
 
         return False
 
@@ -523,6 +536,9 @@ class EnhancedTradingEnv(gym.Env):
         else:
             self.current_step = self.max_lookback
 
+        # Ensure we don't start beyond the data
+        self.current_step = min(self.current_step, len(self.df) - 1)
+
         obs = self._next_observation()
         return obs, {}  # Gymnasium tuple
 
@@ -531,9 +547,28 @@ class EnhancedTradingEnv(gym.Env):
         # Market features (lookback window)
         # Get the data for the current window
         # Shape: (window_size, n_features)
-                
+
         # FIX: .iloc requires numeric indexers. We select columns by name first, then slice rows by position.
-        raw_obs = self.df[self.features].iloc[self.current_step - self.lookback_window + 1: self.current_step + 1].values
+        start_idx = self.current_step - self.lookback_window + 1
+        end_idx = self.current_step + 1
+        if start_idx < 0 or end_idx > len(self.df):
+            # Handle edge case where we don't have enough history
+            # Pad with zeros or repeat first/last values
+            window_size = self.lookback_window
+            if start_idx < 0:
+                # Pad beginning with first available data
+                available_start = max(0, start_idx)
+                pad_size = abs(start_idx)
+                available_data = self.df[self.features].iloc[available_start:end_idx].values
+                if len(available_data) > 0:
+                    pad_data = np.tile(available_data[0], (pad_size, 1))
+                    raw_obs = np.vstack([pad_data, available_data])
+                else:
+                    raw_obs = np.zeros((window_size, len(self.features)))
+            else:
+                raw_obs = self.df[self.features].iloc[start_idx:end_idx].values
+        else:
+            raw_obs = self.df[self.features].iloc[start_idx:end_idx].values
         
         # IMPLEMENTATION: Windowed Z-Score Normalization
         # This ensures all inputs (Price, RSI, Volume) are on the same scale (-2 to +2 range)
@@ -609,6 +644,11 @@ class EnhancedTradingEnv(gym.Env):
 
     def step(self, action):
         """Execute one time step."""
+        # Check if episode should end before incrementing
+        if self.current_step >= len(self.df) - 1:
+            obs = self._next_observation()
+            return obs, 0.0, False, True, {}
+
         self.current_step += 1
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
@@ -680,11 +720,21 @@ class EnhancedTradingEnv(gym.Env):
         reward -= reward_trade_cost  # Now this variable is definitely defined
         reward -= action_change_penalty
 
+        # --- FIX: TREND ALIGNMENT PENALTY ---
+        # Punish holding Long in Bear market or Short in Bull market
+        # This fixes "Saturation" where agent ignores crashes
+        ema_50 = self.data_matrix[self.current_step, self.ema_50_idx]
+        # 1 = Bull, -1 = Bear
+        trend_direction = 1.0 if current_price > ema_50 else -1.0
+        # If position direction opposes trend direction (and not cash)
+        if self.shares_held != 0 and np.sign(self.shares_held) != trend_direction:
+            reward -= 0.05  # Constant penalty per step for fighting the trend
+
         # Calculate "Rent" (Funding Fee) to discourage camping on a position
         current_holding_cost = 0.0
         if self.shares_held != 0:
             current_holding_cost = self.holding_penalty
-            
+
         reward -= current_holding_cost  # Apply the rent
 
         # 3. "Closer's Bonus" (Realized PnL Stimulus)
@@ -790,12 +840,16 @@ class EnhancedTradingEnv(gym.Env):
         plt.tight_layout()
 
         # FIX FOR MULTIPROCESSING: Convert Figure to RGB Array
-        fig.canvas.draw()
-        data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-        plt.close(fig)
-
-        return data  # Return the Numpy Array (Safe for SubprocVecEnv)
+        try:
+            fig.canvas.draw()
+            data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+            data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+            plt.close(fig)
+            return data  # Return the Numpy Array (Safe for SubprocVecEnv)
+        except Exception as e:
+            self._logger.warning(f"Render failed: {e}")
+            plt.close(fig)
+            return None
 
     # Phase setters (for curriculum)
     def set_phase(self, new_phase):
