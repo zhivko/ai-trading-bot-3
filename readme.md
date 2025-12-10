@@ -219,6 +219,6 @@ https://raw.githubusercontent.com/zhivko/ai-trading-bot-3/refs/heads/RecurrentPP
 
 
 ## to kILL python processes
-```cmd
+```bash
 taskkill /F /IM python.exe
 ```

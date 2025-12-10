@@ -395,11 +395,14 @@ class EnhancedTradingEnv(gym.Env):
         current_equity = self.shares_held * current_price
         deviation = target_equity - current_equity
 
-        # Execute trade based on deviation
-        if abs(deviation) > self.min_trade_value_usd:
-            # If deviation is negative, we Sell. If positive, we Buy.
-            # This automatically handles Opening, Closing, and Flipping.
-            return self._execute_trade(deviation)
+        # === FIX: Close Dust Positions ===
+        # If target is ~0 (Close Signal), we ignore min_trade_value to ensure clean exit.
+        # Otherwise, we enforce min_trade_value to prevent noise trading.
+        is_close_signal = np.isclose(target_equity, 0, atol=1.0) # Treat <$1 target as 0
+        
+        if abs(deviation) > self.min_trade_value_usd or (is_close_signal and abs(self.shares_held) > 0):
+             # If deviation is negative, we Sell. If positive, we Buy.
+             return self._execute_trade(deviation)
 
         return False
 
@@ -647,10 +650,19 @@ class EnhancedTradingEnv(gym.Env):
              reward_inertia = -0.05
 
         # NEW: Penalty for changing action direction (prevent oscillation)
+        # REPLACED: Instead of punishing sign flips (which kills agility),
+        # we punish the MAGNITUDE of the change.
+        # If agent moves from 1.0 to 0.9, penalty is small.
+        # If agent moves from 1.0 to -1.0, penalty is larger (but valid if market crashed).
         action_change_penalty = 0.0
-        if self.prev_action is not None and self.prev_action != 0.0:
-            if np.sign(action_val) != np.sign(self.prev_action) and abs(action_val) > 0.05:
-                action_change_penalty = -0.1  # Discourage direction changes
+        if self.prev_action is not None:
+            # Calculate raw change in action (0.0 to 2.0 range)
+            action_delta = abs(action_val - self.prev_action)
+
+            # Coefficient 0.05 means:
+            # - Small adjustment (0.1) -> -0.005 penalty (negligible)
+            # - Total Flip (2.0)       -> -0.100 penalty (significant, equal to old fixed penalty)
+            action_change_penalty = -(action_delta * 0.05)
 
         # --- UPDATE AGENT STATE ---
         if abs(self.shares_held) > 0:
@@ -666,7 +678,6 @@ class EnhancedTradingEnv(gym.Env):
 
         # 2. Subtract costs (Fee is now reduced to 2x multiplier in init)
         reward -= reward_trade_cost  # Now this variable is definitely defined
-        reward += reward_inertia
         reward -= action_change_penalty
 
         # Calculate "Rent" (Funding Fee) to discourage camping on a position
