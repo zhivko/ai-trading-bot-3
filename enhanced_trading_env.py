@@ -618,27 +618,9 @@ class EnhancedTradingEnv(gym.Env):
         portfolio_return = (self.net_worth - self.prev_net_worth) / (self.prev_net_worth + 1e-8)
 
         # === THRESHOLD CHECK ===
-        trade_occurred = False
-        # self._logger.info(f"Raw action: {action_val}, buy_threshold: {self.buy_threshold}, sell_threshold: {self.sell_threshold}")
-
-        # Check against dynamic thresholds
-        if action_val > self.buy_threshold:
-            # BUY SIGNAL
-            self._logger.info(f"BUY SIGNAL: action_val={action_val} > buy_threshold={self.buy_threshold}")
-            trade_occurred = self._take_action(action) # Positive action passed inside
-
-        elif action_val < self.sell_threshold:
-            # SELL SIGNAL
-            self._logger.info(f"SELL SIGNAL: action_val={action_val} < sell_threshold={self.sell_threshold}")
-            trade_occurred = self._take_action(action) # Negative action passed inside
-
-        else:
-            # HOLD (Dead Zone)
-            # Action is between -0.1 and 0.1 (for example)
-            # We explicitly do nothing.
-            self._logger.info(f"HOLD: action_val={action_val} between sell_threshold={self.sell_threshold} and buy_threshold={self.buy_threshold}")
-            trade_occurred = False
-            self.steps_since_last_trade += 1
+        # Always attempt to adjust position to the target.
+        # The _take_action method already checks 'min_trade_value_usd' to prevent dust trades.
+        trade_occurred = self._take_action(action)
 
         # === FIX STARTS HERE ===
         # 1. Calculate the actual size of the trade in dollars
