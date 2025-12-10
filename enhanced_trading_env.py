@@ -577,8 +577,25 @@ class EnhancedTradingEnv(gym.Env):
     def _next_observation(self):
         """Build observation vector."""
         # Market features (lookback window)
-        start = max(0, self.current_step - self.lookback_window)
-        market = self.market_features[start:self.current_step].flatten()
+        # Get the data for the current window
+        # Shape: (window_size, n_features)
+        raw_obs = self.df.iloc[self.current_step - self.lookback_window + 1: self.current_step + 1, self.features].values
+        
+        # IMPLEMENTATION: Windowed Z-Score Normalization
+        # This ensures all inputs (Price, RSI, Volume) are on the same scale (-2 to +2 range)
+        # centered around 0 for the specific window the agent is looking at.
+        
+        # Calculate mean and std for each column in this window
+        means = np.mean(raw_obs, axis=0)
+        stds = np.std(raw_obs, axis=0)
+        
+        # Add a small epsilon to prevent division by zero (if a column is constant)
+        stds[stds == 0] = 1e-8
+        
+        # Normalize: (Value - Mean) / StdDev
+        normalized_obs = (raw_obs - means) / stds
+        
+        market = normalized_obs.flatten()
 
         # Account state
         current_price = self.raw_prices[self.current_step]
@@ -651,7 +668,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # === THRESHOLD CHECK ===
         trade_occurred = False
-        self._logger.info(f"Raw action: {action_val}, buy_threshold: {self.buy_threshold}, sell_threshold: {self.sell_threshold}")
+        # self._logger.info(f"Raw action: {action_val}, buy_threshold: {self.buy_threshold}, sell_threshold: {self.sell_threshold}")
 
         # Check against dynamic thresholds
         if action_val > self.buy_threshold:

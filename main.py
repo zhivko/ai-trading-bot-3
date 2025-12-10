@@ -275,7 +275,8 @@ def main():
     # This prevents "Double Normalization" (z-score of a z-score)
     if not args.resume:
         logger.info("Applying VecNormalize to training env...")
-        train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., clip_reward=10.)
+        # CHANGE: norm_obs=False. We scale manually in the Env now.
+        train_env = VecNormalize(train_env, norm_obs=False, norm_reward=True, clip_obs=10., clip_reward=10.)
         logger.info("VecNormalize applied.")
         logger.info(f"Train env type after normalization: {type(train_env)}")
 
@@ -294,13 +295,15 @@ def main():
     # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
 
     # FIX: Eval env MUST be normalized using Training stats, otherwise agent sees garbage
-    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.)
+    eval_env = VecNormalize(eval_env, norm_obs=False, norm_reward=False, clip_obs=10.)
     eval_env.training = False  # Do not update stats during evaluation
-    # Link eval stats to train stats (Python passes by reference, so they stay synced)
-    logger.info(f"Before syncing obs_rms: train_env type={type(train_env)}, eval_env type={type(eval_env)}")
-    logger.info(f"train_env has obs_rms: {hasattr(train_env, 'obs_rms')}")
-    logger.info(f"eval_env has obs_rms: {hasattr(eval_env, 'obs_rms')}")
-    eval_env.obs_rms = train_env.obs_rms
+    # REMOVED: We do not need to sync obs_rms because we are using norm_obs=False
+    # and doing manual scaling inside the environment.
+    # # Link eval stats to train stats (Python passes by reference, so they stay synced)
+    # logger.info(f"Before syncing obs_rms: train_env type={type(train_env)}, eval_env type={type(eval_env)}")
+    # logger.info(f"train_env has obs_rms: {hasattr(train_env, 'obs_rms')}")
+    # logger.info(f"eval_env has obs_rms: {hasattr(eval_env, 'obs_rms')}")
+    # eval_env.obs_rms = train_env.obs_rms
 
     # Create dummy env for saliency callback (skip for RecurrentPPO due to LSTM compatibility issues)
     saliency_callback = None
@@ -502,9 +505,10 @@ def main():
                     train_env = temp_env
                     train_env.training = True
                     
-                    # 4. CRITICAL: Re-sync eval_env to the NEW loaded stats
-                    # (Because train_env is now a different object)
-                    eval_env.obs_rms = train_env.obs_rms
+                    # 4. REMOVED: We do not need to sync obs_rms because we are using norm_obs=False
+                    # and doing manual scaling inside the environment.
+                    # # (Because train_env is now a different object)
+                    # eval_env.obs_rms = train_env.obs_rms
                     # === FIX ENDS HERE ===
                 # CRITICAL: Do not reset steps when resuming
                 reset_num_timesteps = False
@@ -575,15 +579,12 @@ def main():
         # Set model hyperparameters
         model_kwargs = {
             "verbose": 1,
-            "learning_rate": 1e-4,
-            "n_steps": 4096,
-            "batch_size": 2048,  # FIX: Correct batch size here
-            "ent_coef": 0.005,   # FIX: Enough to explore, but low enough to converge
-            "vf_coef": 0.5,
-            "gamma": 0.99,
+            "ent_coef": 0.01,
+            "learning_rate": 3e-4,
+            "n_steps": 2048,
+            "batch_size": 128,
+            "clip_range": 0.2,
             "gae_lambda": 0.95,
-            "clip_range": ConstantSchedule(0.3),
-            "max_grad_norm": 0.5,
         }
 
         model = RecurrentPPO(
