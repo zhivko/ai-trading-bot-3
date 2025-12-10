@@ -388,32 +388,29 @@ class EnhancedTradingEnv(gym.Env):
         current_price = self.raw_prices[self.current_step]
         action_val = float(action[0])
 
-        # --- NEW: Hard Cooldown Enforcer ---
-        # If we traded recently, force the agent to stick to its previous side (Long or Short)
-        if self.steps_since_last_trade < self.cooldown_steps and self.trades_in_episode > 0:
-            current_sign = np.sign(self.shares_held) if abs(self.shares_held) > 1e-6 else 0
-            new_sign = np.sign(action_val) if abs(action_val) > 1e-6 else 0
-            # If trying to flip direction during cooldown, block it
-            if current_sign != 0 and new_sign != 0 and current_sign != new_sign:
-                self._logger.debug(f"Trade blocked by cooldown direction flip: steps_since_last_trade={self.steps_since_last_trade}, cooldown_steps={self.cooldown_steps}, current_sign={current_sign}, new_sign={new_sign}, action_val={action_val:.4f}")
-                return False
+        # Calculate target equity based on action
+        target_equity = action_val * self.net_worth * self.max_leverage
 
-        # Calculate the Target Magnitude (Always Positive)
-        trade_usd = abs(action_val) * self.net_worth * self.max_leverage * self.leverage_buffer
+        # Calculate deviation from current holding
+        current_equity = self.shares_held * current_price
+        deviation = target_equity - current_equity
 
-        # Check Minimum Trade Size (Global Check)
-        if trade_usd < self.min_trade_value_usd:
-            self._logger.debug(f"Trade blocked by minimum trade value: trade_usd={trade_usd:.2f}, min_trade_value_usd={self.min_trade_value_usd:.2f}, action_val={action_val:.4f}")
-            return False
+        # Execute trade based on deviation
+        if abs(deviation) > self.min_trade_value_usd:
+            # If deviation is negative, we Sell. If positive, we Buy.
+            # This automatically handles Opening, Closing, and Flipping.
+            return self._execute_trade(deviation)
 
-        # Execute trade
-        shares_to_trade = trade_usd / current_price
-        cost = shares_to_trade * current_price * self.transaction_cost_rate
+        return False
 
-        trade_occurred = False
-        if action_val > 0:  # Buy (or Cover Short)
+    def _execute_trade(self, deviation):
+        """Execute a trade based on the deviation amount."""
+        current_price = self.raw_prices[self.current_step]
 
-            # Clamp to available Balance
+        if deviation > 0:  # Buy
+            trade_usd = deviation
+
+            # Clamp to available balance
             if trade_usd > self.balance:
                 trade_usd = self.balance
 
@@ -421,56 +418,37 @@ class EnhancedTradingEnv(gym.Env):
             if trade_usd < self.min_trade_value_usd:
                 return False
 
-            # Calculate shares
-            if current_price == 0:
-                self._logger.error(f"Buy blocked: current_price is 0, cannot divide")
-                return False
             shares_to_buy = trade_usd / current_price
             current_shares = self.shares_held
             new_shares = current_shares + shares_to_buy
 
-            # === ENTRY PRICE UPDATE ===
-            old_entry_price = self.entry_price
+            # Entry price update
             if current_shares > 0:
-                # Scenario A: Adding to an existing LONG
-                # Weighted Average Entry Price: (OldCost + NewCost) / TotalShares
                 old_cost = current_shares * self.entry_price
                 new_buy_cost = shares_to_buy * current_price
                 self.entry_price = (old_cost + new_buy_cost) / new_shares
-                self._logger.debug(f"Entry price updated - Scenario A: old_entry={old_entry_price:.2f}, new_entry={self.entry_price:.2f}, current_shares={current_shares:.6f}, shares_to_buy={shares_to_buy:.6f}")
-
             elif current_shares < 0 and new_shares > 0:
-                # Scenario B: Flipping from SHORT to LONG
-                # The Short portion is closed. The Long portion starts fresh.
-                # New Entry Price is the current price for the net long position.
                 self.entry_price = current_price
-                self._logger.debug(f"Entry price updated - Scenario B: flipped from short to long, old_entry={old_entry_price:.2f}, new_entry={self.entry_price:.2f}, current_shares={current_shares:.6f}, new_shares={new_shares:.6f}")
-
             elif current_shares == 0:
-                # Scenario C: Opening fresh LONG
                 self.entry_price = current_price
-                self._logger.debug(f"Entry price updated - Scenario C: opening fresh long, entry={self.entry_price:.2f}")
 
-            # Scenario D: Covering Short (Negative -> Less Negative)
-            # Entry price (average) typically stays the same when reducing position.
-            else:
-                self._logger.debug(f"Entry price unchanged - Scenario D: covering short, entry remains {self.entry_price:.2f}, current_shares={current_shares:.6f}, new_shares={new_shares:.6f}")
-
-            # === EXECUTE ===
+            # Execute
             self.balance -= trade_usd
             self.shares_held += shares_to_buy
-            trade_occurred = True
             self.trades_in_episode += 1
-            self._logger.debug(f"Action: {action_val:.4f}, Buy executed: trade_usd={trade_usd:.2f}, shares_to_buy={shares_to_buy:.6f}, new_balance={self.balance:.2f}, new_shares_held={self.shares_held:.6f}")
-
+            self.steps_since_last_trade = 0
             return True
-        elif action_val < 0:  # Sell (or Open Short)
-            # Calculate Max Allowed Sell (Longs + Margin)
+
+        elif deviation < 0:  # Sell
+            trade_usd = -deviation
+
+            # Calculate max allowed sell
             current_shares = self.shares_held
             value_of_longs = (current_shares * current_price) if current_shares > 0 else 0.0
             short_exposure = abs(current_shares * current_price) if current_shares < 0 else 0.0
             available_margin = self.net_worth - short_exposure
-            if available_margin < 0: available_margin = 0.0
+            if available_margin < 0:
+                available_margin = 0.0
             max_sell = value_of_longs + available_margin
 
             # Clamp
@@ -481,42 +459,25 @@ class EnhancedTradingEnv(gym.Env):
             if trade_usd < self.min_trade_value_usd:
                 return False
 
-            # Calculate shares
             shares_to_sell = trade_usd / current_price
             new_shares = current_shares - shares_to_sell
 
-            # === ENTRY PRICE UPDATE ===
+            # Entry price update
             if current_shares < 0:
-                # Scenario A: Adding to an existing SHORT
-                # Weighted Average Entry Price
                 old_cost = current_shares * self.entry_price
                 new_sell_cost = -(shares_to_sell * current_price)
                 self.entry_price = (old_cost + new_sell_cost) / new_shares
-                
             elif current_shares > 0 and new_shares < 0:
-                # Scenario B: Flipping from LONG to SHORT
-                # The Long portion is closed. The Short portion starts fresh.
                 self.entry_price = current_price
-            
-            # Scenario C: Reducing Long (entry price stays same)
 
-            # === EXECUTE ===
-            self.balance += (shares_to_sell * current_price) - cost
+            # Execute
+            self.balance += trade_usd
             self.shares_held -= shares_to_sell
-            trade_occurred = True
             self.trades_in_episode += 1
-            
-            self._logger.debug(f"Action: {action_val:.4f},Sell executed: trade_usd={trade_usd:.2f}, shares_to_sell={shares_to_sell:.6f}, new_balance={self.balance:.2f}, new_shares_held={self.shares_held:.6f}")
+            self.steps_since_last_trade = 0
             return True
 
-        if trade_occurred:
-            self.steps_since_last_trade = 0
-            self.reward_trade_cost = cost
-            self._logger.debug(f"Trade executed: shares_to_trade={shares_to_trade:.6f}, trade_usd={trade_usd:.2f}, cost={cost:.2f}, action_val={action_val:.4f}")
-        else:
-            self.steps_since_last_trade += 1
-
-        return trade_occurred
+        return False
 
     def reset(self, seed=None, options=None):
         """Reset environment state."""

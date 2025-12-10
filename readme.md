@@ -57,7 +57,23 @@ The bot receives a flattened vector containing:
 5.  **Trend:** MACD Line + Signal Line.
 6.  **State:** Current Portfolio Balance and Holdings.
 
-### 🎓 The Education (Smart Reward Function - Anti-Churn)
+### 🎯 Action Space (Target Position Logic)
+The agent outputs a continuous action value between -1.0 and 1.0, representing the fraction of the portfolio to invest in a position:
+
+- **0.0**: 0% (close/cash) - Exit all positions
+- **1.0**: 100% long - Fully invested in the asset (with leverage)
+- **-1.0**: 100% short - Fully short the asset (with leverage)
+
+#### Revised Trading Logic
+The `_take_action` method implements sophisticated position management:
+
+1. **Target Equity Calculation**: The target equity is computed as `action_val * net_worth * max_leverage`
+2. **Deviation Computation**: The deviation from current holdings is calculated as `target_equity - current_equity`
+3. **Trade Execution**: If the absolute deviation exceeds the minimum trade value, a trade is executed to close the gap
+
+This approach automatically handles opening new positions, closing existing ones, and flipping from long to short positions without requiring separate logic for each scenario.
+
+###  The Education (Smart Reward Function - Anti-Churn)
 To prevent the AI from "churning" (rapidly flipping Buy/Sell to farm tiny fluctuations), we implemented a **Dynamic Churn Penalty**:
 *   **Concept:** "Healthy" trades should last a minimum duration (e.g., 24 hours).
 *   **Mechanism:**
@@ -188,6 +204,7 @@ python main.py --pair BTCUSDT --vp-days 7 30 --algo recurrentppo --test-split 20
 Sources of project are available in:
 https://raw.githubusercontent.com/zhivko/ai-trading-bot-3/refs/heads/RecurrentPPO/main.py
 https://raw.githubusercontent.com/zhivko/ai-trading-bot-3/refs/heads/RecurrentPPO/enhanced_trading_env.py
+https://raw.githubusercontent.com/zhivko/ai-trading-bot-3/refs/heads/RecurrentPPO/phase_manager.py
 https://raw.githubusercontent.com/zhivko/ai-trading-bot-3/refs/heads/RecurrentPPO/callbacks/base_callbacks.py
 https://raw.githubusercontent.com/zhivko/ai-trading-bot-3/refs/heads/RecurrentPPO/feature_saliency.py
 
