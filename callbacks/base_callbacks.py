@@ -355,9 +355,9 @@ class TensorboardCallback(BaseCallback):
         self._logger.info(f"Steps with 'trade_executed'=True: {executed_true_count}")
         # =====================================
 
-        fig, (ax1, ax2, ax3, ax4) = plt.subplots(
-            4, 1, figsize=(27, 9), sharex=True,
-            gridspec_kw={'height_ratios': [3, 1, 1, 1]}
+        fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(
+            5, 1, figsize=(27, 12), sharex=True,
+            gridspec_kw={'height_ratios': [3, 1, 1, 1, 1]}
         )
 
         # Price + EMA + bull/bear shading
@@ -460,40 +460,43 @@ class TensorboardCallback(BaseCallback):
         for i, (component_array, label, color) in enumerate(zip(component_arrays, component_labels, colors)):
             ax4.plot(steps, component_array, label=label, color=color, linewidth=1, alpha=0.8)
         
-        # Calculate and plot total cumulative reward as a line (no markers)
-        total_reward = np.sum(component_arrays, axis=0)
-        ax4.plot(steps, total_reward, color='black', linewidth=2, alpha=0.9, label='Total Reward', zorder=5)
-        
-        # Add total networth as a separate trace (scaled for visibility)
-        # Scale networth to be visible alongside rewards (divide by 1000 to bring to similar scale)
-        scaled_networth = portfolio / 1000.0
-        ax4.plot(steps, scaled_networth, color='red', linewidth=2, alpha=0.8, linestyle='--', label='Networth (÷1000)', zorder=4)
-        
         # Add horizontal line at zero for reference
         ax4.axhline(y=0, color='gray', linestyle='--', linewidth=0.8, alpha=0.7)
-        
-        # Add annotations for total reward at key points (every 10th step)
-        if len(steps) > 10:
-            # Annotate every 10th step to avoid clutter
-            for i in range(0, len(steps), max(1, len(steps)//8)):
-                step_idx = min(i, len(steps)-1)
-                ax4.annotate(f'{total_reward[step_idx]:.2f}',
-                           (steps[step_idx], total_reward[step_idx]),
-                           xytext=(5, 5), textcoords='offset points',
-                           fontsize=6, alpha=0.7, ha='left')
-        else:
-            # Annotate all steps if not too many
-            for i, (step, reward) in enumerate(zip(steps, total_reward)):
-                ax4.annotate(f'{reward:.2f}', (step, reward),
-                           xytext=(5, 5), textcoords='offset points',
-                           fontsize=6, alpha=0.7, ha='left')
         
         ax4.set_ylabel("Reward Components")
         ax4.grid(True, alpha=0.3)
         # Legend with small font, placed below
         ax4.legend(bbox_to_anchor=(0, -0.25, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=6, framealpha=0.7)
 
-        # Date labels
+        # Calculate and plot total cumulative reward in separate subplot
+        total_reward = np.sum(component_arrays, axis=0)
+        ax5.plot(steps, total_reward, color='black', linewidth=2, alpha=0.9, label='Total Reward', zorder=5)
+        
+        # Add horizontal line at zero for reference
+        ax5.axhline(y=0, color='gray', linestyle='--', linewidth=0.8, alpha=0.7)
+        
+        # Add annotations for total reward at key points (every 10th step)
+        if len(steps) > 10:
+            # Annotate every 10th step to avoid clutter
+            for i in range(0, len(steps), max(1, len(steps)//8)):
+                step_idx = min(i, len(steps)-1)
+                ax5.annotate(f'{total_reward[step_idx]:.2f}',
+                           (steps[step_idx], total_reward[step_idx]),
+                           xytext=(5, 5), textcoords='offset points',
+                           fontsize=8, alpha=0.8, ha='left')
+        else:
+            # Annotate all steps if not too many
+            for i, (step, reward) in enumerate(zip(steps, total_reward)):
+                ax5.annotate(f'{reward:.2f}', (step, reward),
+                           xytext=(5, 5), textcoords='offset points',
+                           fontsize=8, alpha=0.8, ha='left')
+        
+        ax5.set_ylabel("Total Reward")
+        ax5.grid(True, alpha=0.3)
+        # Legend for total reward
+        ax5.legend(loc='upper right', fontsize='small')
+
+        # Date labels (move to bottom subplot)
         num_ticks = min(8, len(steps))
         tick_indices = np.linspace(0, len(steps) - 1, num_ticks, dtype=int)
         tick_labels = []
@@ -505,8 +508,9 @@ class TensorboardCallback(BaseCallback):
                 d_str = str(raw_date)[:16]
             tick_labels.append(d_str)
 
-        ax4.set_xticks(tick_indices)
-        ax4.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
+        ax5.set_xticks(tick_indices)
+        ax5.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
+        ax5.set_xlabel("Time Steps")
 
         plt.tight_layout()
         plt.subplots_adjust(hspace=0.4)
@@ -857,9 +861,9 @@ class CustomEvalCallback(EvalCallback):
         self._logger.info(f"Steps with 'trade_executed'=True: {executed_true_count}")
         # =====================================
 
-        fig, (ax1, ax2, ax3, ax4) = plt.subplots(
-            4, 1, figsize=(27, 9), sharex=True,
-            gridspec_kw={'height_ratios': [3, 1, 1, 1]}
+        fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(
+            5, 1, figsize=(27, 12), sharex=True,
+            gridspec_kw={'height_ratios': [3, 1, 1, 1, 1]}
         )
 
         # Price + EMA + bull/bear shading
@@ -957,40 +961,43 @@ class CustomEvalCallback(EvalCallback):
         for i, (component_array, label, color) in enumerate(zip(component_arrays, component_labels, colors)):
             ax4.plot(steps, component_array, label=label, color=color, linewidth=1, alpha=0.8)
         
-        # Calculate and plot total cumulative reward as a line (no markers)
-        total_reward = np.sum(component_arrays, axis=0)
-        ax4.plot(steps, total_reward, color='black', linewidth=2, alpha=0.9, label='Total Reward', zorder=5)
-        
-        # Add total networth as a separate trace (scaled for visibility)
-        # Scale networth to be visible alongside rewards (divide by 1000 to bring to similar scale)
-        scaled_networth = portfolio / 1000.0
-        ax4.plot(steps, scaled_networth, color='red', linewidth=2, alpha=0.8, linestyle='--', label='Networth (÷1000)', zorder=4)
-        
         # Add horizontal line at zero for reference
         ax4.axhline(y=0, color='gray', linestyle='--', linewidth=0.8, alpha=0.7)
-        
-        # Add annotations for total reward at key points (every 10th step)
-        if len(steps) > 10:
-            # Annotate every 10th step to avoid clutter
-            for i in range(0, len(steps), max(1, len(steps)//8)):
-                step_idx = min(i, len(steps)-1)
-                ax4.annotate(f'{total_reward[step_idx]:.2f}',
-                           (steps[step_idx], total_reward[step_idx]),
-                           xytext=(5, 5), textcoords='offset points',
-                           fontsize=6, alpha=0.7, ha='left')
-        else:
-            # Annotate all steps if not too many
-            for i, (step, reward) in enumerate(zip(steps, total_reward)):
-                ax4.annotate(f'{reward:.2f}', (step, reward),
-                           xytext=(5, 5), textcoords='offset points',
-                           fontsize=6, alpha=0.7, ha='left')
         
         ax4.set_ylabel("Reward Components")
         ax4.grid(True, alpha=0.3)
         # Legend with small font, placed below
         ax4.legend(bbox_to_anchor=(0, -0.25, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=6, framealpha=0.7)
 
-        # Date labels
+        # Calculate and plot total cumulative reward in separate subplot
+        total_reward = np.sum(component_arrays, axis=0)
+        ax5.plot(steps, total_reward, color='black', linewidth=2, alpha=0.9, label='Total Reward', zorder=5)
+        
+        # Add horizontal line at zero for reference
+        ax5.axhline(y=0, color='gray', linestyle='--', linewidth=0.8, alpha=0.7)
+        
+        # Add annotations for total reward at key points (every 10th step)
+        if len(steps) > 10:
+            # Annotate every 10th step to avoid clutter
+            for i in range(0, len(steps), max(1, len(steps)//8)):
+                step_idx = min(i, len(steps)-1)
+                ax5.annotate(f'{total_reward[step_idx]:.2f}',
+                           (steps[step_idx], total_reward[step_idx]),
+                           xytext=(5, 5), textcoords='offset points',
+                           fontsize=8, alpha=0.8, ha='left')
+        else:
+            # Annotate all steps if not too many
+            for i, (step, reward) in enumerate(zip(steps, total_reward)):
+                ax5.annotate(f'{reward:.2f}', (step, reward),
+                           xytext=(5, 5), textcoords='offset points',
+                           fontsize=8, alpha=0.8, ha='left')
+        
+        ax5.set_ylabel("Total Reward")
+        ax5.grid(True, alpha=0.3)
+        # Legend for total reward
+        ax5.legend(loc='upper right', fontsize='small')
+
+        # Date labels (move to bottom subplot)
         num_ticks = min(8, len(steps))
         tick_indices = np.linspace(0, len(steps) - 1, num_ticks, dtype=int)
         tick_labels = []
@@ -1002,8 +1009,9 @@ class CustomEvalCallback(EvalCallback):
                 d_str = str(raw_date)[:16]
             tick_labels.append(d_str)
 
-        ax4.set_xticks(tick_indices)
-        ax4.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
+        ax5.set_xticks(tick_indices)
+        ax5.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
+        ax5.set_xlabel("Time Steps")
 
         plt.tight_layout()
 

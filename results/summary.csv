@@ -1,17 +1,27 @@
 key,value
-Explainability/Feature_Saliency,"{'_type': 'image-file', 'format': 'png', 'height': 600, 'path': 'media/images/Explainability/Feature_Saliency_32_c50f2cc73a93ff6d526a.png', 'sha256': 'c50f2cc73a93ff6d526abbf55e63be1062955cff4c95374eba74b3ede520b0cc', 'size': 73252, 'width': 1000}"
-_runtime,1245.886406821
-_step,40
-_timestamp,1765240182.6247504
-_wandb,{'runtime': 1245}
-best_eval/mean_portfolio,10531.957079302618
-best_eval/mean_reward,-9.5966304247094
-best_eval/std_portfolio,1143.8157530865028
-best_eval/std_reward,3.463839400285638
-best_eval/trades_per_episode,13.8
-eval/mean_portfolio,19711.522036673356
-eval/mean_reward,-497.3595528565812
-eval/std_portfolio,9653.58712498652
-eval/std_reward,965.9342018556476
-eval/trades_per_episode,16
-global_step,1293072
+_runtime,880.911348518
+_step,9
+_timestamp,1765657592.6966722
+_wandb,{'runtime': 1155}
+best_eval/mean_portfolio,14472.415893682904
+best_eval/mean_reward,-1943.5892939940095
+best_eval/std_portfolio,10128.68317968028
+best_eval/std_reward,1654.3599862605136
+best_eval/trades_per_episode,6.6
+eval/mean_portfolio,14472.415893682904
+eval/mean_reward,-1943.5892939940095
+eval/std_portfolio,10128.68317968028
+eval/std_reward,1654.3599862605136
+eval/trade_analysis,"{'_type': 'image-file', 'format': 'png', 'height': 900, 'path': 'media/images/eval/trade_analysis_9_6fc29158790a644f0dbb.png', 'sha256': '6fc29158790a644f0dbb5b798b5b93dd15ba1d8a01839e24e696e9606e4e2b30', 'size': 194725, 'width': 2700}"
+eval/trades_per_episode,6.6
+financial/annualized_return,-0.5822703010422642
+financial/benchmark_return,0.6064420938491821
+financial/calmar_ratio,-1.3717953257312434
+financial/final_networth,7073.859746306693
+financial/initial_capital,10000
+financial/max_drawdown,-0.4244585836679984
+financial/outperformance,-0.8990561192185129
+financial/sharpe_ratio,-1.7477742280529582
+financial/sortino_ratio,-1.876947821357067
+financial/strategy_return,-0.29261402536933073
+global_step,62490

@@ -22,8 +22,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 import torch
+from sb3_contrib import RecurrentPPO
 from stable_baselines3 import PPO
-from stable_baselines3.ppo import MlpLstmPolicy
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 import warnings
 
 # Add current directory to path to import our modules
@@ -37,19 +38,56 @@ from enhanced_trading_env import EnhancedTradingEnv
 def load_model_and_data():
     """
     Load the trained model and sample data for visualization
+    Following the same pattern as visualize_predictions.py
     
     Returns:
         tuple: (model, observations, feature_names)
     """
     
-    # Try to load the trained model
-    model_path = "models/recurrent_ppo_trading_model.zip"  # Adjust path as needed
+    # Model path pattern matching main.py and visualize_predictions.py
+    model_path = "models/recurrentppo_BTCUSDT"
     
-    if os.path.exists(model_path):
+    # Set up device
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    if os.path.exists(model_path + ".zip"):
         print(f"Loading model from {model_path}")
         try:
-            model = PPO.load(model_path)
+            # Load data for environment
+            df = pd.read_csv('BTCUSDT_data.csv')
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df.set_index('timestamp', inplace=True)
+            
+            # Set up environment like visualize_predictions.py
+            env = EnhancedTradingEnv(
+                df=df,
+                lookback_window=1,  # Critical for RecurrentPPO
+                initial_balance=10000,
+                vp_days=[7, 30],
+                vp_bins=40,
+                buy_threshold=0.0,
+                sell_threshold=0.0,
+                trading_fee_multiplier=0.0015,
+                phase=1,
+                total_phases=10,
+                min_trade_value_usd=5.0,
+                pair='BTCUSDT',
+                timeframe='1h',
+                split_date='2023-01-01',
+            )
+            env = DummyVecEnv([lambda: env])
+            
+            # Load normalization stats if exist
+            norm_path = model_path + ".pkl"
+            if os.path.exists(norm_path):
+                env = VecNormalize.load(norm_path, env)
+                env.training = False
+                env.norm_reward = False
+            
+            # Load model with environment and device
+            model = RecurrentPPO.load(model_path, env=env, device=device)
             print("✓ Model loaded successfully")
+            
         except Exception as e:
             print(f"Error loading model: {e}")
             print("Creating a new model for demonstration...")
@@ -67,12 +105,84 @@ def load_model_and_data():
 def create_demo_model():
     """Create a demo RecurrentPPO model"""
     
-    # Create a simple environment for model initialization
-    env = EnhancedTradingEnv()
+    # Load data for environment initialization
+    try:
+        df = pd.read_csv('BTCUSDT_data.csv')
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df.set_index('timestamp', inplace=True)
+        
+        # Create mock volume profile data
+        vp7_df = create_mock_volume_profile_data(df)
+        vp30_df = create_mock_volume_profile_data(df)
+        
+        # Environment parameters (matching main.py structure)
+        env_kwargs = {
+            'initial_balance': 10000,
+            'vp_days': [7, 30],
+            'vp_bins': 40,
+            'lookback_window': 1,  # Required for RecurrentPPO
+            'buy_threshold': 0.0,
+            'sell_threshold': 0.0,
+            'trading_fee_multiplier': 0.0015,
+            'phase': 1,
+            'total_phases': 10,
+            'min_trade_value_usd': 5.0,
+            'pair': 'BTCUSDT',
+            'timeframe': '1h',
+            'split_date': '2023-01-01',
+        }
+        
+        # Create environment with data
+        env = EnhancedTradingEnv(
+            df=df,
+            precalculated_vp={7: vp7_df, 30: vp30_df},
+            **env_kwargs
+        )
+        
+    except Exception as e:
+        print(f"Warning: Could not load data for environment: {e}")
+        print("Creating environment with minimal data...")
+        # Create minimal synthetic data
+        dates = pd.date_range(start='2023-01-01', periods=1000, freq='1H')
+        df = pd.DataFrame({
+            'timestamp': dates,
+            'open': np.random.uniform(40000, 60000, 1000),
+            'high': np.random.uniform(40000, 60000, 1000),
+            'low': np.random.uniform(40000, 60000, 1000),
+            'close': np.random.uniform(40000, 60000, 1000),
+            'volume': np.random.uniform(100, 1000, 1000),
+            'ema_50': np.random.uniform(40000, 60000, 1000),
+        })
+        df.set_index('timestamp', inplace=True)
+        
+        env_kwargs = {
+            'initial_balance': 10000,
+            'vp_days': [7, 30],
+            'vp_bins': 40,
+            'lookback_window': 1,
+            'buy_threshold': 0.0,
+            'sell_threshold': 0.0,
+            'trading_fee_multiplier': 0.0015,
+            'phase': 1,
+            'total_phases': 10,
+            'min_trade_value_usd': 5.0,
+            'pair': 'BTCUSDT',
+            'timeframe': '1h',
+            'split_date': '2023-01-01',
+        }
+        
+        vp7_df = create_mock_volume_profile_data(df)
+        vp30_df = create_mock_volume_profile_data(df)
+        
+        env = EnhancedTradingEnv(
+            df=df,
+            precalculated_vp={7: vp7_df, 30: vp30_df},
+            **env_kwargs
+        )
     
     # Create RecurrentPPO model with LSTM policy
-    model = PPO(
-        MlpLstmPolicy,
+    model = RecurrentPPO(
+        "MlpLstmPolicy",
         env,
         verbose=1,
         learning_rate=3e-4,
@@ -84,6 +194,7 @@ def create_demo_model():
         clip_range=0.2,
         ent_coef=0.01,
         policy_kwargs=dict(
+            ortho_init=False,  # Avoid LAPACK requirement for orthogonal init
             lstm_hidden_size=256,
             n_lstm_layers=2,
             net_arch=dict(pi=[512, 512], vf=[512, 512])

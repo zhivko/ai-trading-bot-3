@@ -82,6 +82,19 @@ class NeuralNetworkVisualizer:
         self.hidden_states_history = {}
         self.feature_importance_history = {}
         
+    def _set_model_to_eval(self):
+        """
+        Safely set model to evaluation mode
+        Handles RecurrentPPO models that may not have eval() method
+        """
+        try:
+            if hasattr(self.model, 'eval'):
+                self.model.eval()
+            elif hasattr(self.model.policy, 'eval'):
+                self.model.policy.eval()
+        except Exception as e:
+            warnings.warn(f"Could not set model to evaluation mode: {e}")
+        
     def _extract_model_info(self) -> Dict[str, Any]:
         """Extract model architecture information"""
         info = {}
@@ -257,8 +270,7 @@ class NeuralNetworkVisualizer:
                 arrowsize=1,
                 arrowwidth=2,
                 arrowcolor='gray',
-                startarrowhead=2,
-                endarrowhead=2
+                startarrowhead=2
             )
         
         # Add legend
@@ -271,7 +283,7 @@ class NeuralNetworkVisualizer:
             mpatches.Patch(color='#1abc9c', label='Value Head')
         ]
         
-        fig.add_layout(
+        fig.update_layout(
             title=dict(
                 text="RecurrentPPO Model Architecture for Trading Bot",
                 font=dict(size=16),
@@ -425,7 +437,7 @@ class NeuralNetworkVisualizer:
         if not hasattr(self.model, 'policy') or not hasattr(self.model.policy, 'lstm_actor'):
             raise ValueError("Model must have LSTM layers")
         
-        self.model.eval()
+        self._set_model_to_eval()
         
         # Initialize LSTM states
         batch_size = 1
@@ -684,7 +696,7 @@ class NeuralNetworkVisualizer:
         if not CAPTUM_AVAILABLE:
             raise ImportError("Captum is required for decision flow visualization")
         
-        self.model.eval()
+        self._set_model_to_eval()
         
         # Convert observation to tensor
         obs_tensor = torch.FloatTensor(observation).unsqueeze(0)
@@ -868,7 +880,7 @@ class NeuralNetworkVisualizer:
         Returns:
             Plotly figure object
         """
-        self.model.eval()
+        self._set_model_to_eval()
         
         # Forward pass to get activations
         with torch.no_grad():
