@@ -322,8 +322,8 @@ class TensorboardCallback(BaseCallback):
 
         # === DEBUG: Log reward component statistics ===
         self._logger.info("=== REWARD COMPONENT ANALYSIS ===")
-        component_names = ['Base', 'Fee', 'Action_Change', 'Trend', 'Holding', 'Inertia', 'Closer', 'Overtrade', 'Episode']
-        for name, component_array in zip(component_names, [reward_base, reward_fee, reward_action_change, reward_trend, reward_holding, reward_inertia, reward_closer, reward_overtrade, reward_episode]):
+        component_names = ['Base', 'Fee', 'Action_Change', 'Trend', 'Holding', 'Inertia', 'Closer', 'Overtrade']
+        for name, component_array in zip(component_names, [reward_base, reward_fee, reward_action_change, reward_trend, reward_holding, reward_inertia, reward_closer, reward_overtrade]):
             self._logger.info(f"{name}: min={np.min(component_array):.6f}, max={np.max(component_array):.6f}, mean={np.mean(component_array):.6f}, std={np.std(component_array):.6f}")
             negative_count = np.sum(component_array < 0)
             positive_count = np.sum(component_array > 0)
@@ -439,8 +439,7 @@ class TensorboardCallback(BaseCallback):
             reward_holding,
             reward_inertia,
             reward_closer,
-            reward_overtrade,
-            reward_episode
+            reward_overtrade
         ]
         component_labels = [
             'Base (net worth)',
@@ -450,15 +449,23 @@ class TensorboardCallback(BaseCallback):
             'Holding cost',
             'Inertia penalty',
             'Closer bonus',
-            'Overtrading penalty',
-            'Episode termination'
+            'Overtrading penalty'
         ]
         # Colors from tab20c colormap
         colors = plt.cm.tab20c(np.linspace(0, 1, len(component_arrays)))
         
         # Plot each component as a separate line (no stacking)
         for i, (component_array, label, color) in enumerate(zip(component_arrays, component_labels, colors)):
-            ax4.plot(steps, component_array, label=label, color=color, linewidth=1, alpha=0.8)
+            # Apply specific styling for certain components
+            linestyle = '-'
+            linewidth = 1
+            
+            if i == 6:  # Closer bonus - dark green
+                color = 'darkgreen'
+            elif i == 7:  # Overtrading penalty - dashed line
+                linestyle = '--'
+                
+            ax4.plot(steps, component_array, label=label, color=color, linewidth=linewidth, linestyle=linestyle, alpha=0.8)
         
         # Add horizontal line at zero for reference
         ax4.axhline(y=0, color='gray', linestyle='--', linewidth=0.8, alpha=0.7)
@@ -828,8 +835,8 @@ class CustomEvalCallback(EvalCallback):
 
         # === DEBUG: Log reward component statistics ===
         self._logger.info("=== EVALUATION REWARD COMPONENT ANALYSIS ===")
-        component_names = ['Base', 'Fee', 'Action_Change', 'Trend', 'Holding', 'Inertia', 'Closer', 'Overtrade', 'Episode']
-        for name, component_array in zip(component_names, [reward_base, reward_fee, reward_action_change, reward_trend, reward_holding, reward_inertia, reward_closer, reward_overtrade, reward_episode]):
+        component_names = ['Base', 'Fee', 'Action_Change', 'Trend', 'Holding', 'Inertia', 'Closer', 'Overtrade']
+        for name, component_array in zip(component_names, [reward_base, reward_fee, reward_action_change, reward_trend, reward_holding, reward_inertia, reward_closer, reward_overtrade]):
             self._logger.info(f"EVAL {name}: min={np.min(component_array):.6f}, max={np.max(component_array):.6f}, mean={np.mean(component_array):.6f}, std={np.std(component_array):.6f}")
             negative_count = np.sum(component_array < 0)
             positive_count = np.sum(component_array > 0)
@@ -940,8 +947,7 @@ class CustomEvalCallback(EvalCallback):
             reward_holding,
             reward_inertia,
             reward_closer,
-            reward_overtrade,
-            reward_episode
+            reward_overtrade
         ]
         component_labels = [
             'Base (net worth)',
@@ -951,15 +957,23 @@ class CustomEvalCallback(EvalCallback):
             'Holding cost',
             'Inertia penalty',
             'Closer bonus',
-            'Overtrading penalty',
-            'Episode termination'
+            'Overtrading penalty'
         ]
         # Colors from tab20c colormap
         colors = plt.cm.tab20c(np.linspace(0, 1, len(component_arrays)))
         
         # Plot each component as a separate line (no stacking)
         for i, (component_array, label, color) in enumerate(zip(component_arrays, component_labels, colors)):
-            ax4.plot(steps, component_array, label=label, color=color, linewidth=1, alpha=0.8)
+            # Apply specific styling for certain components
+            linestyle = '-'
+            linewidth = 1
+            
+            if i == 6:  # Closer bonus - dark green
+                color = 'darkgreen'
+            elif i == 7:  # Overtrading penalty - dashed line
+                linestyle = '--'
+                
+            ax4.plot(steps, component_array, label=label, color=color, linewidth=linewidth, linestyle=linestyle, alpha=0.8)
         
         # Add horizontal line at zero for reference
         ax4.axhline(y=0, color='gray', linestyle='--', linewidth=0.8, alpha=0.7)

@@ -703,11 +703,16 @@ class EnhancedTradingEnv(gym.Env):
         else:
             self.steps_in_trade = 0
 
+        # --- FIX: Update prev_net_worth BEFORE calculating base reward
+        # This ensures base_reward reflects the actual PnL change from the previous step
+        prev_net_worth_for_reward = self.prev_net_worth
+        self.prev_net_worth = self.net_worth  # Move update here (earlier in step)
+
         # --- REWARD CALCULATION ---
 
         # 1. Base Reward: Net Worth Change (Captures Unrealized PnL naturally)
         # If price goes up while holding, this is positive. If price goes down, this is negative.
-        reward = ((self.net_worth - prev_net_worth) / prev_net_worth) * 100.0
+        reward = ((self.net_worth - prev_net_worth_for_reward) / prev_net_worth_for_reward) * 100.0
         reward_base = reward  # net worth change component
 
         # 2. Subtract costs (Fee is now reduced to 2x multiplier in init)
@@ -801,7 +806,6 @@ class EnhancedTradingEnv(gym.Env):
         self.portfolio_returns.append(portfolio_return)
         self.returns.append(reward)
         self.history_net_worth.append(self.net_worth)
-        self.prev_net_worth = self.net_worth
         self.current_position = np.sign(self.shares_held) if abs(self.shares_held) > 1e-6 else 0.0
         self.last_price = current_price
 
@@ -809,10 +813,6 @@ class EnhancedTradingEnv(gym.Env):
         terminated = False
         episode_penalty = 0.0
         truncated = bool(self.current_step >= len(self.df) - 1)
-        if self.net_worth < (self.initial_balance * 0.5):
-            terminated = True
-            episode_penalty = 0.5  # SCALED DOWN: 10x smaller to match base reward magnitude
-            reward -= episode_penalty  # Episode penalty
 
         # --- REWARD DOMINANCE CLAMP ---
         # Ensure base reward dominates - if penalties are larger than base, reduce them
