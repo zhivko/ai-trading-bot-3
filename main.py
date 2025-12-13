@@ -683,7 +683,7 @@ def main():
     # --- Initialize Phase Manager ---
     phase_manager = PhaseManager(
         total_phases=args.total_phases,
-        initial_entropy=0.12,    # Increased from 0.08 — more early exploration to discover switching benefits
+        initial_entropy=0.15,    # Increased from 0.08 — more early exploration to discover switching benefits
         final_entropy=0.0001,    # End low for exploitation
         initial_buy_threshold=0.15,  # Start with tighter buy thresholds
         final_buy_threshold=0.35,    # End with more selective buy thresholds

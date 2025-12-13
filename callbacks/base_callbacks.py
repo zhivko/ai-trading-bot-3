@@ -344,7 +344,7 @@ class TensorboardCallback(BaseCallback):
         # =====================================
 
         fig, (ax1, ax2, ax3, ax4) = plt.subplots(
-            4, 1, figsize=(18, 6), sharex=True,
+            4, 1, figsize=(27, 9), sharex=True,
             gridspec_kw={'height_ratios': [3, 1, 1, 1]}
         )
 
@@ -459,7 +459,7 @@ class TensorboardCallback(BaseCallback):
         ax4.set_ylabel("Reward Components")
         ax4.grid(True, alpha=0.3)
         # Legend with small font, placed below
-        ax4.legend(bbox_to_anchor=(0, -0.15, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=5, framealpha=0.7)
+        ax4.legend(bbox_to_anchor=(0, -0.25, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=5, framealpha=0.7)
 
         # Date labels
         num_ticks = min(8, len(steps))
@@ -814,7 +814,7 @@ class CustomEvalCallback(EvalCallback):
         # =====================================
 
         fig, (ax1, ax2, ax3, ax4) = plt.subplots(
-            4, 1, figsize=(18, 6), sharex=True,
+            4, 1, figsize=(27, 9), sharex=True,
             gridspec_kw={'height_ratios': [3, 1, 1, 1]}
         )
 
@@ -924,7 +924,7 @@ class CustomEvalCallback(EvalCallback):
         ax4.set_ylabel("Reward Components")
         ax4.grid(True, alpha=0.3)
         # Legend with small font, placed below
-        ax4.legend(bbox_to_anchor=(0, -0.15, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=5, framealpha=0.7)
+        ax4.legend(bbox_to_anchor=(0, -0.25, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=5, framealpha=0.7)
 
         # Date labels
         num_ticks = min(8, len(steps))

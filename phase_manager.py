@@ -24,17 +24,11 @@ class PhaseManager:
         if phase < 1 or phase > self.total_phases:
             raise ValueError(f"Phase must be between 1 and {self.total_phases}")
 
-        if self.total_phases == 1:
-            # Fallback for single phase training
-            return {
-                'entropy_coef': self.initial_entropy,
-                'buy_threshold': 0.0,
-                'sell_threshold': 0.0,
-                'phase': phase
-            }
-
         # Calculate interpolation factor
-        progress = (phase - 1) / (self.total_phases - 1)  # 0.0 to 1.0
+        if self.total_phases == 1:
+            progress = 0.0  # Start at initial values for single phase
+        else:
+            progress = (phase - 1) / (self.total_phases - 1)  # 0.0 to 1.0
 
         # Anneal entropy coefficient
         entropy_coef = self.initial_entropy + (self.final_entropy - self.initial_entropy) * progress

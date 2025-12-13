@@ -6,6 +6,7 @@ from gymnasium import spaces
 from collections import deque
 from scipy.signal import argrelextrema
 import os
+import matplotlib.pyplot as plt
 
 # Delegating heavy lifting to volume_profile.py
 from volume_profile import get_rolling_vp
@@ -94,10 +95,10 @@ class EnhancedTradingEnv(gym.Env):
 
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
-        self.reward_fee_multiplier = 1.0        # REDUCED: 2.0 -> 1.0 to encourage more trading
-        self.action_penalty = 0.0001             # FURTHER REDUCED: From 0.001 to 0.0001 — strongly encourages position switching while still deterring extreme noise
+        self.reward_fee_multiplier = 1.5         # Amplify fee impact in reward
+        self.action_penalty = 0.0005             # Moderate — allows switching but punishes noise
         self.holding_penalty = 0.0        # REMOVED: Was 0.0005, now 0.0 to allow holding profitable positions
-        self.trade_penalty = 0.01                # REDUCED: From 0.1 to 0.01 — lowers cost of entering/exiting positions
+        self.trade_penalty = 0.05                 # Higher fixed cost per trade
         self.last_trade_cost = 0
         self.reward_trade_cost = 0.0
         self.steps_in_trade = 0
@@ -733,12 +734,9 @@ class EnhancedTradingEnv(gym.Env):
 
         # NEW: Asymmetric holding penalty — punish staying long when trend is weakening/bearish
         # Encourages early exit/reversal in downtrends without punishing bull holds
-        if self.shares_held > 0.1:  # Only when meaningfully long
-            trend_strength = self.df.iloc[self.current_step]['trend_ema_norm']
-            fast_diff = self.df.iloc[self.current_step]['trend_fast_diff']  # Early warning of trend break
-            weakening_signal = min(0, trend_strength + fast_diff)  # Negative when weakening
-            holding_penalty_dynamic = -0.002 * abs(weakening_signal) ** 1.5  # Stronger near reversals
-            reward += holding_penalty_dynamic
+        if self.current_position > 0.1 and self.df.iloc[self.current_step]['trend_ema_norm'] < 0.2:
+            weakening = max(0, 0.2 - self.df.iloc[self.current_step]['trend_ema_norm'])
+            reward -= 0.005 * weakening ** 2   # Stronger quadratic penalty as trend weakens
 
         # Calculate "Rent" (Funding Fee) to discourage camping on a position
         current_holding_cost = 0.0
@@ -746,6 +744,9 @@ class EnhancedTradingEnv(gym.Env):
             current_holding_cost = self.holding_penalty
 
         reward -= current_holding_cost  # Apply the rent
+        
+        # Add small deadzone penalty around action=0 in reward (discourage tiny noisy actions but allow clean holds)
+        reward -= 0.0002 * (abs(action_val) < 0.1) * (1 - abs(action_val)/0.1)  # Small penalty for lingering near zero
 
         # 3. "Closer's Bonus" (Realized PnL Stimulus)
         closer_bonus = 0.0
