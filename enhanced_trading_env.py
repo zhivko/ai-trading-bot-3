@@ -665,12 +665,13 @@ class EnhancedTradingEnv(gym.Env):
         # NEW: Real portfolio return (no look-ahead)
         portfolio_return = (self.net_worth - self.prev_net_worth) / (self.prev_net_worth + 1e-8)
 
-        # Make thresholds active (force deadzone — suppress small actions)
+        # TEMP DISABLE deadzone early phases - only apply in phase 2+
         # Apply deadzone: force near-zero actions to exact zero if below threshold
-        if abs(action_val) < self.buy_threshold and action_val > 0:
-            action_val = 0.0
-        elif abs(action_val) < abs(self.sell_threshold) and action_val < 0:
-            action_val = 0.0
+        if self.phase > 1:  # Only apply deadzone in phase 2+
+            if abs(action_val) < self.buy_threshold and action_val > 0:
+                action_val = 0.0
+            elif abs(action_val) < abs(self.sell_threshold) and action_val < 0:
+                action_val = 0.0
 
         # === THRESHOLD CHECK ===
         # Always attempt to adjust position to the target.
@@ -736,14 +737,14 @@ class EnhancedTradingEnv(gym.Env):
         # If position direction opposes trend direction (and not cash)
         trend_penalty = 0.0
         if self.shares_held != 0 and np.sign(self.shares_held) != trend_direction:
-            trend_penalty = 0.005  # SCALED DOWN: 10x smaller to match base reward magnitude
+            trend_penalty = 0.01  # Softer misalignment cost
             reward -= trend_penalty  # Constant penalty per step for fighting the trend
 
         # NEW: Asymmetric holding penalty — punish staying long when trend is weakening/bearish
         # Encourages early exit/reversal in downtrends without punishing bull holds
         if self.current_position > 0.1 and self.df.iloc[self.current_step]['trend_ema_norm'] < 0.2:
             weakening = max(0, 0.2 - self.df.iloc[self.current_step]['trend_ema_norm'])
-            reward -= 0.005 * weakening**2  # SCALED DOWN: 10x smaller to match base reward magnitude
+            reward -= 0.005 * weakening**2  # Less aggressive early exit force
 
         # Encourage position reduction more aggressively (add small penalty for high positive action in neutral/weak trend)
         # Penalize strong long conviction when trend not strongly bullish
@@ -761,7 +762,7 @@ class EnhancedTradingEnv(gym.Env):
         # Add small deadzone penalty around action=0 in reward (discourage tiny noisy actions but allow clean holds)
         reward -= 0.0002 * (abs(action_val) < 0.1) * (1 - abs(action_val)/0.1)  # Small penalty for lingering near zero
 
-        # 3. FIXED: "Closer's Bonus" - Only for profitable closes, smaller scale
+        # 3. DISABLED: "Closer's Bonus" - Was rewarding loss-making closes
         closer_bonus = 0.0
         if self.prev_shares_held != 0 and self.shares_held == 0:
              realized_pnl_val = (current_price - self.entry_price) * self.prev_shares_held
@@ -770,10 +771,11 @@ class EnhancedTradingEnv(gym.Env):
              # Store for next observation
              self.last_trade_pnl = trade_return_pct
 
-             # FIXED: Only reward profitable closes with smaller multiplier
-             if realized_pnl_val > 0:
-                 closer_bonus = trade_return_pct * 50.0  # 50x smaller than original, only on profit
-                 reward += closer_bonus
+             # DISABLED: Was rewarding loss-making closes
+             closer_bonus = 0.0
+             # if realized_pnl_val > 0:
+             #     closer_bonus = trade_return_pct * 50.0  # 50x smaller than original, only on profit
+             #     reward += closer_bonus
              # else: closer_bonus stays 0.0 (no penalty for closing losses)
              
              # Reset entry price
