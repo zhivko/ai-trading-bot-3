@@ -344,7 +344,7 @@ class TensorboardCallback(BaseCallback):
         # =====================================
 
         fig, (ax1, ax2, ax3, ax4) = plt.subplots(
-            4, 1, figsize=(12, 12), sharex=True,
+            4, 1, figsize=(18, 6), sharex=True,
             gridspec_kw={'height_ratios': [3, 1, 1, 1]}
         )
 
@@ -401,7 +401,7 @@ class TensorboardCallback(BaseCallback):
 
         last_pv = self.ep_portfolio[-1]['net_worth'] if self.ep_portfolio else 0.0
         ax1.set_title(f"Thread 0 | PV: {last_pv:.2f}")
-        ax1.legend(loc='upper left')
+        ax1.legend(bbox_to_anchor=(0, 1.02, 1, 0.102), loc='lower left')
         ax1.grid(True, alpha=0.3)
 
         # --- Action bar plot: color = long/short, height = exposure ---
@@ -416,7 +416,7 @@ class TensorboardCallback(BaseCallback):
         ax3.plot(steps, portfolio, label='Networth', color='blue', linewidth=1.5)
         ax3.set_ylabel("Networth")
         ax3.grid(True, alpha=0.3)
-        ax3.legend(loc='upper left')
+        ax3.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
 
         # Rewards subplot - stacked components
         component_arrays = [
@@ -444,10 +444,22 @@ class TensorboardCallback(BaseCallback):
         # Colors from tab20c colormap
         colors = plt.cm.tab20c(np.linspace(0, 1, len(component_arrays)))
         ax4.stackplot(steps, component_arrays, labels=component_labels, colors=colors, alpha=0.8, edgecolor='black', linewidth=0.3)
+        
+        # Add vertical lines for each reward component at each step
+        for i, step in enumerate(steps):
+            y_position = 0
+            for j, component_array in enumerate(component_arrays):
+                component_value = component_array[i]
+                if component_value != 0:  # Only draw lines for non-zero values
+                    # Draw vertical line from current y_position to y_position + component_value
+                    ax4.plot([step, step], [y_position, y_position + component_value],
+                            color=colors[j], linewidth=1.5, alpha=0.7)
+                    y_position += component_value
+        
         ax4.set_ylabel("Reward Components")
         ax4.grid(True, alpha=0.3)
-        # Legend with small font, placed inside
-        ax4.legend(loc='upper left', fontsize='xx-small', ncol=2, framealpha=0.7)
+        # Legend with small font, placed below
+        ax4.legend(bbox_to_anchor=(0, -0.15, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=5, framealpha=0.7)
 
         # Date labels
         num_ticks = min(8, len(steps))
@@ -465,6 +477,8 @@ class TensorboardCallback(BaseCallback):
         ax4.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
 
         plt.tight_layout()
+        plt.subplots_adjust(hspace=0.4)
+        plt.subplots_adjust(hspace=0.4)
 
         # === 3. LOG THE FINAL COUNT ===
         self._logger.info(f"Chart Markers Plotted -> Buys: {total_plotted_buys}, Sells: {total_plotted_sells}")
@@ -800,7 +814,7 @@ class CustomEvalCallback(EvalCallback):
         # =====================================
 
         fig, (ax1, ax2, ax3, ax4) = plt.subplots(
-            4, 1, figsize=(12, 12), sharex=True,
+            4, 1, figsize=(18, 6), sharex=True,
             gridspec_kw={'height_ratios': [3, 1, 1, 1]}
         )
 
@@ -852,7 +866,7 @@ class CustomEvalCallback(EvalCallback):
         step = len(self.ep_portfolio)
         global_step = self.num_timesteps
         ax1.set_title(f"Evaluation | Episode: {episode} | Step: {step} | Global Step: {global_step} | PV: {last_pv:.2f}")
-        ax1.legend(loc='upper left')
+        ax1.legend(bbox_to_anchor=(0, 1.02, 1, 0.102), loc='lower left')
         ax1.grid(True, alpha=0.3)
 
         # --- Action bar plot: color = long/short, height = exposure ---
@@ -867,7 +881,7 @@ class CustomEvalCallback(EvalCallback):
         ax3.plot(steps, portfolio, label='Networth', color='blue', linewidth=1.5)
         ax3.set_ylabel("Networth")
         ax3.grid(True, alpha=0.3)
-        ax3.legend(loc='upper left')
+        ax3.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
 
         # Rewards subplot - stacked components
         component_arrays = [
@@ -895,10 +909,22 @@ class CustomEvalCallback(EvalCallback):
         # Colors from tab20c colormap
         colors = plt.cm.tab20c(np.linspace(0, 1, len(component_arrays)))
         ax4.stackplot(steps, component_arrays, labels=component_labels, colors=colors, alpha=0.8, edgecolor='black', linewidth=0.3)
+        
+        # Add vertical lines for each reward component at each step
+        for i, step in enumerate(steps):
+            y_position = 0
+            for j, component_array in enumerate(component_arrays):
+                component_value = component_array[i]
+                if component_value != 0:  # Only draw lines for non-zero values
+                    # Draw vertical line from current y_position to y_position + component_value
+                    ax4.plot([step, step], [y_position, y_position + component_value],
+                            color=colors[j], linewidth=1.5, alpha=0.7)
+                    y_position += component_value
+        
         ax4.set_ylabel("Reward Components")
         ax4.grid(True, alpha=0.3)
-        # Legend with small font, placed inside
-        ax4.legend(loc='upper left', fontsize='xx-small', ncol=2, framealpha=0.7)
+        # Legend with small font, placed below
+        ax4.legend(bbox_to_anchor=(0, -0.15, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=5, framealpha=0.7)
 
         # Date labels
         num_ticks = min(8, len(steps))

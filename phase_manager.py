@@ -44,9 +44,9 @@ class PhaseManager:
         sell_threshold = self.initial_sell_threshold + (self.final_sell_threshold - self.initial_sell_threshold) * progress
 
         return {
-            'entropy_coef': self.final_entropy, # entropy_coef,
-            'buy_threshold': 0,
-            'sell_threshold': 0,
+            'entropy_coef': entropy_coef,         # Use properly interpolated value
+            'buy_threshold': buy_threshold,       # Interpolate from conservative to more permissive
+            'sell_threshold': sell_threshold,     # Allows stronger signals in later phases
             'phase': phase
         }
 

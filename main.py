@@ -675,7 +675,7 @@ def main():
             "learning_rate": 3e-4,
             "n_steps": 2048,
             "batch_size": 128,
-            "clip_range": 0.2,
+            "clip_range": 0.25,  # Slightly larger — allows faster policy adaptation to reversals
             "gae_lambda": 0.95,
         }
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -683,7 +683,7 @@ def main():
     # --- Initialize Phase Manager ---
     phase_manager = PhaseManager(
         total_phases=args.total_phases,
-        initial_entropy=0.08,    # Start high for exploration
+        initial_entropy=0.12,    # Increased from 0.08 — more early exploration to discover switching benefits
         final_entropy=0.0001,    # End low for exploitation
         initial_buy_threshold=0.15,  # Start with tighter buy thresholds
         final_buy_threshold=0.35,    # End with more selective buy thresholds

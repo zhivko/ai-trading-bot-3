@@ -202,11 +202,13 @@ python main.py --pair BTCUSDT --vp-days 7 30 --algo recurrentppo --test-split 20
 
 ## CODE for LLM's to comment on code
 Sources of project are available in:
+```
 https://raw.githubusercontent.com/zhivko/ai-trading-bot-3/refs/heads/RecurrentPPO/main.py
 https://raw.githubusercontent.com/zhivko/ai-trading-bot-3/refs/heads/RecurrentPPO/enhanced_trading_env.py
 https://raw.githubusercontent.com/zhivko/ai-trading-bot-3/refs/heads/RecurrentPPO/phase_manager.py
 https://raw.githubusercontent.com/zhivko/ai-trading-bot-3/refs/heads/RecurrentPPO/callbacks/base_callbacks.py
 https://raw.githubusercontent.com/zhivko/ai-trading-bot-3/refs/heads/RecurrentPPO/feature_saliency.py
+```
 
 visualisation
 https://raw.githubusercontent.com/zhivko/ai-trading-bot-3/refs/heads/RecurrentPPO/callbacks/visualize_predictions.py
