@@ -332,8 +332,8 @@ class EnhancedTradingEnv(gym.Env):
         self.max_leverage = 2.0  # Reduced from 5.0 to prevent blowups
         self.leverage_buffer = 0.95
 
-        # Min trade value - REDUCED: Allow smaller position adjustments
-        self.min_trade_value_usd = 5.0 if min_trade_value_usd == 10.0 else min_trade_value_usd
+        # Min trade value - Lower threshold → more small adjustments execute (better feedback)
+        self.min_trade_value_usd = 1.0 if min_trade_value_usd == 10.0 else min_trade_value_usd
 
         # Phase
         self.phase = phase
@@ -710,14 +710,14 @@ class EnhancedTradingEnv(gym.Env):
         if self.prev_action is not None:
             # Calculate raw change in action (0.0 to 2.0 range)
             action_delta = abs(action_val - self.prev_action)
-            # REDUCED: 0.05 -> 0.02 to allow more flexibility
-            action_change_penalty = -(action_delta * 0.02)  # negative penalty
+            # Reduced 4x — allows smoother ramps
+            action_change_penalty = -(action_delta * 0.005)  # Reduced 4x — allows smoother ramps
         reward += action_change_penalty  # adding negative subtracts
 
         # 4. Inertia penalty (discourage twitching without position change)
         reward_inertia = 0.0
         if self.shares_held == self.prev_shares_held and abs(action_val) > 0.5:
-             reward_inertia = -0.05  # negative penalty
+             reward_inertia = -0.01  # Soften — less punishment for temporary inaction
         reward += reward_inertia
 
         # --- FIX: TREND ALIGNMENT PENALTY ---
@@ -736,7 +736,7 @@ class EnhancedTradingEnv(gym.Env):
         # Encourages early exit/reversal in downtrends without punishing bull holds
         if self.current_position > 0.1 and self.df.iloc[self.current_step]['trend_ema_norm'] < 0.2:
             weakening = max(0, 0.2 - self.df.iloc[self.current_step]['trend_ema_norm'])
-            reward -= 0.005 * weakening ** 2   # Stronger quadratic penalty as trend weakens
+            reward -= 0.01 * weakening**2   # Stronger push to reduce long in weakness
 
         # Calculate "Rent" (Funding Fee) to discourage camping on a position
         current_holding_cost = 0.0

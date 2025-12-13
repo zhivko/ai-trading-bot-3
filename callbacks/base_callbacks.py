@@ -320,6 +320,18 @@ class TensorboardCallback(BaseCallback):
         reward_overtrade = np.array(self.ep_reward_overtrade, dtype=float)
         reward_episode = np.array(self.ep_reward_episode, dtype=float)
 
+        # === DEBUG: Log reward component statistics ===
+        self._logger.info("=== REWARD COMPONENT ANALYSIS ===")
+        component_names = ['Base', 'Fee', 'Action_Change', 'Trend', 'Holding', 'Inertia', 'Closer', 'Overtrade', 'Episode']
+        for name, component_array in zip(component_names, [reward_base, reward_fee, reward_action_change, reward_trend, reward_holding, reward_inertia, reward_closer, reward_overtrade, reward_episode]):
+            self._logger.info(f"{name}: min={np.min(component_array):.6f}, max={np.max(component_array):.6f}, mean={np.mean(component_array):.6f}, std={np.std(component_array):.6f}")
+            negative_count = np.sum(component_array < 0)
+            positive_count = np.sum(component_array > 0)
+            zero_count = np.sum(component_array == 0)
+            self._logger.info(f"  Negative: {negative_count}, Positive: {positive_count}, Zero: {zero_count}")
+        self._logger.info("===============================")
+        # ==========================================
+
         # === 1. INSERT DEBUG COUNTERS HERE ===
         total_steps = len(self.ep_portfolio)
         total_plotted_buys = 0
@@ -418,7 +430,7 @@ class TensorboardCallback(BaseCallback):
         ax3.grid(True, alpha=0.3)
         ax3.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
 
-        # Rewards subplot - stacked components
+        # Rewards subplot - line plot for each component (no stacking)
         component_arrays = [
             reward_base,
             reward_fee,
@@ -443,23 +455,43 @@ class TensorboardCallback(BaseCallback):
         ]
         # Colors from tab20c colormap
         colors = plt.cm.tab20c(np.linspace(0, 1, len(component_arrays)))
-        ax4.stackplot(steps, component_arrays, labels=component_labels, colors=colors, alpha=0.8, edgecolor='black', linewidth=0.3)
         
-        # Add vertical lines for each reward component at each step
-        for i, step in enumerate(steps):
-            y_position = 0
-            for j, component_array in enumerate(component_arrays):
-                component_value = component_array[i]
-                if component_value != 0:  # Only draw lines for non-zero values
-                    # Draw vertical line from current y_position to y_position + component_value
-                    ax4.plot([step, step], [y_position, y_position + component_value],
-                            color=colors[j], linewidth=1.5, alpha=0.7)
-                    y_position += component_value
+        # Plot each component as a separate line (no stacking)
+        for i, (component_array, label, color) in enumerate(zip(component_arrays, component_labels, colors)):
+            ax4.plot(steps, component_array, label=label, color=color, linewidth=1, alpha=0.8)
+        
+        # Calculate and plot total cumulative reward as a line (no markers)
+        total_reward = np.sum(component_arrays, axis=0)
+        ax4.plot(steps, total_reward, color='black', linewidth=2, alpha=0.9, label='Total Reward', zorder=5)
+        
+        # Add total networth as a separate trace (scaled for visibility)
+        # Scale networth to be visible alongside rewards (divide by 1000 to bring to similar scale)
+        scaled_networth = portfolio / 1000.0
+        ax4.plot(steps, scaled_networth, color='red', linewidth=2, alpha=0.8, linestyle='--', label='Networth (÷1000)', zorder=4)
+        
+        # Add horizontal line at zero for reference
+        ax4.axhline(y=0, color='gray', linestyle='--', linewidth=0.8, alpha=0.7)
+        
+        # Add annotations for total reward at key points (every 10th step)
+        if len(steps) > 10:
+            # Annotate every 10th step to avoid clutter
+            for i in range(0, len(steps), max(1, len(steps)//8)):
+                step_idx = min(i, len(steps)-1)
+                ax4.annotate(f'{total_reward[step_idx]:.2f}',
+                           (steps[step_idx], total_reward[step_idx]),
+                           xytext=(5, 5), textcoords='offset points',
+                           fontsize=6, alpha=0.7, ha='left')
+        else:
+            # Annotate all steps if not too many
+            for i, (step, reward) in enumerate(zip(steps, total_reward)):
+                ax4.annotate(f'{reward:.2f}', (step, reward),
+                           xytext=(5, 5), textcoords='offset points',
+                           fontsize=6, alpha=0.7, ha='left')
         
         ax4.set_ylabel("Reward Components")
         ax4.grid(True, alpha=0.3)
         # Legend with small font, placed below
-        ax4.legend(bbox_to_anchor=(0, -0.25, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=5, framealpha=0.7)
+        ax4.legend(bbox_to_anchor=(0, -0.25, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=6, framealpha=0.7)
 
         # Date labels
         num_ticks = min(8, len(steps))
@@ -790,6 +822,18 @@ class CustomEvalCallback(EvalCallback):
         reward_overtrade = np.array(self.ep_reward_overtrade, dtype=float)
         reward_episode = np.array(self.ep_reward_episode, dtype=float)
 
+        # === DEBUG: Log reward component statistics ===
+        self._logger.info("=== EVALUATION REWARD COMPONENT ANALYSIS ===")
+        component_names = ['Base', 'Fee', 'Action_Change', 'Trend', 'Holding', 'Inertia', 'Closer', 'Overtrade', 'Episode']
+        for name, component_array in zip(component_names, [reward_base, reward_fee, reward_action_change, reward_trend, reward_holding, reward_inertia, reward_closer, reward_overtrade, reward_episode]):
+            self._logger.info(f"EVAL {name}: min={np.min(component_array):.6f}, max={np.max(component_array):.6f}, mean={np.mean(component_array):.6f}, std={np.std(component_array):.6f}")
+            negative_count = np.sum(component_array < 0)
+            positive_count = np.sum(component_array > 0)
+            zero_count = np.sum(component_array == 0)
+            self._logger.info(f"  Negative: {negative_count}, Positive: {positive_count}, Zero: {zero_count}")
+        self._logger.info("===========================================")
+        # ==========================================
+
         # === 1. INSERT DEBUG COUNTERS HERE ===
         total_steps = len(self.ep_portfolio)
         total_plotted_buys = 0
@@ -883,7 +927,7 @@ class CustomEvalCallback(EvalCallback):
         ax3.grid(True, alpha=0.3)
         ax3.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
 
-        # Rewards subplot - stacked components
+        # Rewards subplot - line plot for each component (no stacking)
         component_arrays = [
             reward_base,
             reward_fee,
@@ -908,23 +952,43 @@ class CustomEvalCallback(EvalCallback):
         ]
         # Colors from tab20c colormap
         colors = plt.cm.tab20c(np.linspace(0, 1, len(component_arrays)))
-        ax4.stackplot(steps, component_arrays, labels=component_labels, colors=colors, alpha=0.8, edgecolor='black', linewidth=0.3)
         
-        # Add vertical lines for each reward component at each step
-        for i, step in enumerate(steps):
-            y_position = 0
-            for j, component_array in enumerate(component_arrays):
-                component_value = component_array[i]
-                if component_value != 0:  # Only draw lines for non-zero values
-                    # Draw vertical line from current y_position to y_position + component_value
-                    ax4.plot([step, step], [y_position, y_position + component_value],
-                            color=colors[j], linewidth=1.5, alpha=0.7)
-                    y_position += component_value
+        # Plot each component as a separate line (no stacking)
+        for i, (component_array, label, color) in enumerate(zip(component_arrays, component_labels, colors)):
+            ax4.plot(steps, component_array, label=label, color=color, linewidth=1, alpha=0.8)
+        
+        # Calculate and plot total cumulative reward as a line (no markers)
+        total_reward = np.sum(component_arrays, axis=0)
+        ax4.plot(steps, total_reward, color='black', linewidth=2, alpha=0.9, label='Total Reward', zorder=5)
+        
+        # Add total networth as a separate trace (scaled for visibility)
+        # Scale networth to be visible alongside rewards (divide by 1000 to bring to similar scale)
+        scaled_networth = portfolio / 1000.0
+        ax4.plot(steps, scaled_networth, color='red', linewidth=2, alpha=0.8, linestyle='--', label='Networth (÷1000)', zorder=4)
+        
+        # Add horizontal line at zero for reference
+        ax4.axhline(y=0, color='gray', linestyle='--', linewidth=0.8, alpha=0.7)
+        
+        # Add annotations for total reward at key points (every 10th step)
+        if len(steps) > 10:
+            # Annotate every 10th step to avoid clutter
+            for i in range(0, len(steps), max(1, len(steps)//8)):
+                step_idx = min(i, len(steps)-1)
+                ax4.annotate(f'{total_reward[step_idx]:.2f}',
+                           (steps[step_idx], total_reward[step_idx]),
+                           xytext=(5, 5), textcoords='offset points',
+                           fontsize=6, alpha=0.7, ha='left')
+        else:
+            # Annotate all steps if not too many
+            for i, (step, reward) in enumerate(zip(steps, total_reward)):
+                ax4.annotate(f'{reward:.2f}', (step, reward),
+                           xytext=(5, 5), textcoords='offset points',
+                           fontsize=6, alpha=0.7, ha='left')
         
         ax4.set_ylabel("Reward Components")
         ax4.grid(True, alpha=0.3)
         # Legend with small font, placed below
-        ax4.legend(bbox_to_anchor=(0, -0.25, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=5, framealpha=0.7)
+        ax4.legend(bbox_to_anchor=(0, -0.25, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=6, framealpha=0.7)
 
         # Date labels
         num_ticks = min(8, len(steps))
