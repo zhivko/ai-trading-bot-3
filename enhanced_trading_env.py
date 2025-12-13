@@ -104,11 +104,26 @@ class EnhancedTradingEnv(gym.Env):
         self.steps_in_trade = 0
         self.last_trade_pnl = 0.0
         
+        # Reward shaping coefficients (adjust as needed)
+        self.trading_fee_multiplier = 1.5          # existing
+        self.action_change_coeff = 0.005
+        self.trend_coeff = 0.01
+        self.weakening_coeff = 0.02                # for long in weakening trend
+        self.inertia_coeff = 0.01
+        self.closer_multiplier = 50.0              # only on profitable closes
+        self.overtrade_coeff = 0.05
+        self.overtrade_threshold = 200             # trades per episode
+        
         # --- CONFIGURATION ---
         self.initial_balance = initial_balance
+        
+        # Tracking variables
+        self.prev_action = 0.0
+        self.prev_net_worth = self.initial_balance
+        self.trades_this_episode = 0
+        self.last_trade_cost = 0.0
         self.last_price = 0
         self.current_position = 0
-        self.prev_action = 0.0  # NEW: Track previous action for inertia
         # REMOVED: Look-ahead horizons (no more exploit)
         self.lookback_window = lookback_window
         # Default to [3, 7] if None
@@ -255,8 +270,10 @@ class EnhancedTradingEnv(gym.Env):
         self.div_scores = {k: 0.0 for k in self.div_features}  # Initialize state
         self.df.fillna(0, inplace=True)
 
-        # Convert the entire dataframe to a float32 numpy matrix for speed
-        self.data_matrix = self.df.values.astype(np.float32)
+        # Convert only numeric columns to a float32 numpy matrix for speed
+        # Select only numeric columns and exclude any datetime/timestamp columns
+        numeric_columns = self.df.select_dtypes(include=[np.number]).columns
+        self.data_matrix = self.df[numeric_columns].values.astype(np.float32)
 
         # Column indices for fast access
         self._logger.info("Column indices...")
@@ -708,91 +725,81 @@ class EnhancedTradingEnv(gym.Env):
         prev_net_worth_for_reward = self.prev_net_worth
         self.prev_net_worth = self.net_worth  # Move update here (earlier in step)
 
-        # --- REWARD CALCULATION ---
-
-        # 1. Base Reward: Net Worth Change (Captures Unrealized PnL naturally)
-        # If price goes up while holding, this is positive. If price goes down, this is negative.
-        reward = ((self.net_worth - prev_net_worth_for_reward) / prev_net_worth_for_reward) * 100.0
-        reward_base = reward  # net worth change component
-
-        # 2. Subtract costs (Fee is now reduced to 2x multiplier in init)
-        reward -= reward_trade_cost  # Now this variable is definitely defined
-
-        # 3. Action change penalty (discourage twitching)
-        action_change_penalty = 0.0
-        if self.prev_action is not None:
-            # Calculate raw change in action (0.0 to 2.0 range)
-            action_delta = abs(action_val - self.prev_action)
-            # Reduced 4x — allows smoother ramps
-            action_change_penalty = -(action_delta * 0.002)  # Less resistance to gradual exits
-        reward += action_change_penalty  # adding negative subtracts
-
-        # 4. Inertia penalty (discourage twitching without position change)
-        reward_inertia = 0.0
-        if self.shares_held == self.prev_shares_held and abs(action_val) > 0.5:
-             reward_inertia = -0.001  # SCALED DOWN: 10x smaller to match base reward magnitude
-        reward += reward_inertia
-
-        # --- FIX: TREND ALIGNMENT PENALTY ---
-        # Punish holding Long in Bear market or Short in Bull market
-        # This fixes "Saturation" where agent ignores crashes
-        ema_50 = self.data_matrix[self.current_step, self.ema_50_idx]
-        # 1 = Bull, -1 = Bear
-        trend_direction = 1.0 if current_price > ema_50 else -1.0
-        # If position direction opposes trend direction (and not cash)
-        trend_penalty = 0.0
-        if self.shares_held != 0 and np.sign(self.shares_held) != trend_direction:
-            trend_penalty = 0.01  # Softer misalignment cost
-            reward -= trend_penalty  # Constant penalty per step for fighting the trend
-
-        # NEW: Asymmetric holding penalty — punish staying long when trend is weakening/bearish
-        # Encourages early exit/reversal in downtrends without punishing bull holds
-        if self.current_position > 0.1 and self.df.iloc[self.current_step]['trend_ema_norm'] < 0.2:
-            weakening = max(0, 0.2 - self.df.iloc[self.current_step]['trend_ema_norm'])
-            reward -= 0.005 * weakening**2  # Less aggressive early exit force
-
-        # Encourage position reduction more aggressively (add small penalty for high positive action in neutral/weak trend)
-        # Penalize strong long conviction when trend not strongly bullish
-        if action_val > 0.3 and self.df.iloc[self.current_step]['trend_ema_norm'] < 0.4:
-            strong_long_penalty = 0.002 * (action_val - 0.3)  # SCALED DOWN: 10x smaller
-            reward -= strong_long_penalty
-
-        # Calculate "Rent" (Funding Fee) to discourage camping on a position
-        current_holding_cost = 0.0
-        if self.shares_held != 0:
-            current_holding_cost = self.holding_penalty
-
-        reward -= current_holding_cost  # Apply the rent
+        # Reset per-step component tracking for debugging/plotting
+        self.reward_components = {
+            'base': 0.0,
+            'fee_penalty': 0.0,
+            'action_change_penalty': 0.0,
+            'trend_alignment': 0.0,
+            'holding_penalty': 0.0,
+            'inertia_penalty': 0.0,
+            'closer_bonus': 0.0,
+            'overtrading_penalty': 0.0,
+            'episode_termination': 0.0,
+            # add any other components here
+        }
         
-        # Add small deadzone penalty around action=0 in reward (discourage tiny noisy actions but allow clean holds)
-        reward -= 0.0002 * (abs(action_val) < 0.1) * (1 - abs(action_val)/0.1)  # Small penalty for lingering near zero
-
-        # 3. DISABLED: "Closer's Bonus" - Was rewarding loss-making closes
+        reward = 0.0
+        
+        # 1. Base reward - % change in net worth (positive = profit, negative = loss)
+        base_reward = ((self.net_worth - prev_net_worth_for_reward) / prev_net_worth_for_reward) * 100.0 if prev_net_worth_for_reward > 0 else 0.0
+        reward += base_reward
+        self.reward_components['base'] = base_reward
+        
+        # 2. Fee penalty - always negative
+        fee_penalty = -reward_trade_cost
+        reward += fee_penalty
+        self.reward_components['fee_penalty'] = fee_penalty
+        
+        # 3. Action change penalty - always negative
+        action_change_penalty = -abs(action_val - self.prev_action) * self.action_change_coeff
+        reward += action_change_penalty
+        self.reward_components['action_change_penalty'] = action_change_penalty
+        
+        # 4. Trend alignment - positive when matching EMA trend, negative when opposing
+        trend_norm = self.df.iloc[self.current_step]['trend_ema_norm']
+        trend_sign = np.sign(trend_norm)
+        position_sign = np.sign(self.current_position)
+        if position_sign != 0:
+            trend_bonus = self.trend_coeff if position_sign == trend_sign else -self.trend_coeff
+        else:
+            trend_bonus = 0.0
+        reward += trend_bonus
+        self.reward_components['trend_alignment'] = trend_bonus
+        
+        # 5. Holding penalty - negative when holding long in weakening trend
+        holding_penalty = 0.0
+        if self.current_position > 0.1:  # meaningfully long
+            weakening = max(0.0, -trend_norm)  # positive when trend weakening
+            holding_penalty = -self.weakening_coeff * (weakening ** 2)
+        reward += holding_penalty
+        self.reward_components['holding_penalty'] = holding_penalty
+        
+        # 6. Inertia penalty - negative when large action but small position change
+        inertia_penalty = -self.inertia_coeff if abs(action_val) > 0.8 and abs(self.current_position) < 0.1 else 0.0
+        reward += inertia_penalty
+        self.reward_components['inertia_penalty'] = inertia_penalty
+        
+        # 7. Closer bonus - positive ONLY on profitable realized trade
         closer_bonus = 0.0
-        if self.prev_shares_held != 0 and self.shares_held == 0:
-             realized_pnl_val = (current_price - self.entry_price) * self.prev_shares_held
-             trade_return_pct = realized_pnl_val / abs(self.entry_price * self.prev_shares_held + 1e-8)
-
-             # Store for next observation
-             self.last_trade_pnl = trade_return_pct
-
-             # DISABLED: Was rewarding loss-making closes
-             closer_bonus = 0.0
-             # if realized_pnl_val > 0:
-             #     closer_bonus = trade_return_pct * 50.0  # 50x smaller than original, only on profit
-             #     reward += closer_bonus
-             # else: closer_bonus stays 0.0 (no penalty for closing losses)
-             
-             # Reset entry price
-             self.entry_price = 0.0
-
-        # 4. FIX: Death Spiral Bug
-        # Only penalize overtrading IF a trade actually occurred this step
-        # INCREASED: 20 -> 50 to allow more active trading strategy
-        overtrading_penalty = 0.0
-        if trade_occurred and self.trades_in_episode > 50:
-            overtrading_penalty = 0.05  # SCALED DOWN: 10x smaller to match base reward magnitude
-            reward -= overtrading_penalty
+        if trade_occurred and self.last_trade_pnl > 0:
+            # Calculate realized P&L percentage
+            realized_pnl_pct = self.last_trade_pnl / (self.initial_balance + 1e-8)
+            closer_bonus = realized_pnl_pct * self.closer_multiplier
+        reward += closer_bonus
+        self.reward_components['closer_bonus'] = closer_bonus
+        
+        # 8. Overtrading penalty - negative when too many trades
+        overtrading_penalty = -self.overtrade_coeff if self.trades_in_episode > self.overtrade_threshold else 0.0
+        reward += overtrading_penalty
+        self.reward_components['overtrading_penalty'] = overtrading_penalty
+        
+        # 9. Episode termination reward - REMOVED (set to 0)
+        self.reward_components['episode_termination'] = 0.0
+        
+        # Update tracking variables
+        self.prev_action = action_val
+        self.prev_net_worth = self.net_worth
 
         if trade_occurred:
             self.has_traded_once = True
@@ -816,18 +823,18 @@ class EnhancedTradingEnv(gym.Env):
 
         # --- REWARD DOMINANCE CLAMP ---
         # Ensure base reward dominates - if penalties are larger than base, reduce them
-        if abs(reward_base) > 1e-6:  # Avoid division by zero
-            total_penalties = abs(reward - reward_base - closer_bonus)
-            penalty_ratio = total_penalties / abs(reward_base)
+        if abs(base_reward) > 1e-6:  # Avoid division by zero
+            total_penalties = abs(reward - base_reward - closer_bonus)
+            penalty_ratio = total_penalties / abs(base_reward)
             
             # If penalties are more than 50% of base reward, clamp them
             if penalty_ratio > 0.5:
-                max_penalty = abs(reward_base) * 0.5
+                max_penalty = abs(base_reward) * 0.5
                 if total_penalties > max_penalty:
                     # Calculate how much to reduce penalties
                     reduction_factor = max_penalty / total_penalties
                     # Apply reduction to the total reward (keeping base reward intact)
-                    reward = reward_base + (reward - reward_base) * reduction_factor
+                    reward = base_reward + (reward - base_reward) * reduction_factor
                     
                     # Log this adjustment for debugging
                     if self.current_step % 100 == 0:  # Log every 100 steps to avoid spam
@@ -853,16 +860,7 @@ class EnhancedTradingEnv(gym.Env):
             "vp_heatmap": heatmap,
             "trades_per_episode": self.trades_in_episode,
             "trade_executed": trade_occurred,
-            # Reward components
-            "reward_base": reward_base,
-            "reward_fee": reward_trade_cost,
-            "reward_action_change": action_change_penalty,
-            "reward_trend": trend_penalty,
-            "reward_holding": current_holding_cost,
-            "reward_inertia": reward_inertia,
-            "reward_closer": closer_bonus,
-            "reward_overtrade": overtrading_penalty,
-            "reward_episode": episode_penalty,
+            "reward_components": self.reward_components.copy(),
         }
 
         return obs, reward, terminated, truncated, info
