@@ -60,6 +60,11 @@ if __name__ == '__main__':
         action = env.action_space.sample()  # Random action
         obs, reward, terminated, truncated, info = env.step(action)
         step_count += 1
-        logging.info(f"Step {step_count}: portfolio={info['portfolio_value']:.2f}, reward={reward:.4f}, phase={info['current_phase']}, terminated={terminated}")
+        # Format numbers without scientific notation
+        portfolio = f"{info['portfolio_value']:.2f}"
+        reward_str = f"{reward:.6f}"
+        print(f"Step {step_count}: portfolio={portfolio}, reward={reward_str}, phase={info['current_phase']}, terminated={terminated}")
 
-    logging.info(f"Final: step {step_count}, portfolio={info['portfolio_value']:.2f}, terminated={terminated}, truncated={truncated}")
+    # Final summary
+    portfolio = f"{info['portfolio_value']:.2f}"
+    print(f"Final: step {step_count}, portfolio={portfolio}, terminated={terminated}, truncated={truncated}")

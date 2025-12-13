@@ -94,9 +94,9 @@ class EnhancedTradingEnv(gym.Env):
 
         # === OVERTRADING FIXES ===
         self.transaction_cost_rate = 0.0015      # 0.15% per trade (Binance spot taker fee ≈ 0.1% + slippage)
-        self.reward_fee_multiplier = 2.0        # Magnify fee 2x in reward calculation to stop churning
+        self.reward_fee_multiplier = 1.0        # REDUCED: 2.0 -> 1.0 to encourage more trading
         self.action_penalty = 0.001              # FIX: Reduced by 50x. Allows switching, but still punishes noise.
-        self.holding_penalty = 0.0005        # NEW: A tiny "rent" for holding a position
+        self.holding_penalty = 0.0        # REMOVED: Was 0.0005, now 0.0 to allow holding profitable positions
         self.trade_penalty = 0.1               # NEW: Fixed penalty per trade to discourage overtrading
         self.last_trade_cost = 0
         self.reward_trade_cost = 0.0
@@ -331,8 +331,8 @@ class EnhancedTradingEnv(gym.Env):
         self.max_leverage = 2.0  # Reduced from 5.0 to prevent blowups
         self.leverage_buffer = 0.95
 
-        # Min trade value
-        self.min_trade_value_usd = min_trade_value_usd
+        # Min trade value - REDUCED: Allow smaller position adjustments
+        self.min_trade_value_usd = 5.0 if min_trade_value_usd == 10.0 else min_trade_value_usd
 
         # Phase
         self.phase = phase
@@ -419,7 +419,7 @@ class EnhancedTradingEnv(gym.Env):
 
         return False
 
-    def _execute_trade(self, deviation):
+    def _execute_trade(self, deviation, force_close=False):
         """Execute a trade based on the deviation amount."""
         current_price = self.raw_prices[self.current_step]
 
@@ -432,7 +432,7 @@ class EnhancedTradingEnv(gym.Env):
 
             # Double check min size after clamping
             if trade_usd < self.min_trade_value_usd:
-                return False
+                return False            
 
             shares_to_buy = trade_usd / current_price
             current_shares = self.shares_held
@@ -495,9 +495,13 @@ class EnhancedTradingEnv(gym.Env):
 
         return False
 
+    # Critical: add .seed() method that SB3 expects
+    def seed(self, seed=None):
+        return seed
+
     def reset(self, seed=None, options=None):
         """Reset environment state."""
-        super().reset(seed=seed)
+        super().reset(seed=self.seed())
 
         # CRITICAL FIX: Force modern Generator (integers() works)
         # Gymnasium sometimes gives old RandomState → we override it
@@ -684,26 +688,6 @@ class EnhancedTradingEnv(gym.Env):
         reward_trade_cost = (cost_pct * 100.0) * self.reward_fee_multiplier
         # === FIX ENDS HERE ===
 
-        # NEW: Inertia penalty (discourage twitching)
-        reward_inertia = 0.0
-        if self.shares_held == self.prev_shares_held and abs(action_val) > 0.5:
-             reward_inertia = -0.05
-
-        # NEW: Penalty for changing action direction (prevent oscillation)
-        # REPLACED: Instead of punishing sign flips (which kills agility),
-        # we punish the MAGNITUDE of the change.
-        # If agent moves from 1.0 to 0.9, penalty is small.
-        # If agent moves from 1.0 to -1.0, penalty is larger (but valid if market crashed).
-        action_change_penalty = 0.0
-        if self.prev_action is not None:
-            # Calculate raw change in action (0.0 to 2.0 range)
-            action_delta = abs(action_val - self.prev_action)
-
-            # Coefficient 0.05 means:
-            # - Small adjustment (0.1) -> -0.005 penalty (negligible)
-            # - Total Flip (2.0)       -> -0.100 penalty (significant, equal to old fixed penalty)
-            action_change_penalty = -(action_delta * 0.05)
-
         # --- UPDATE AGENT STATE ---
         if abs(self.shares_held) > 0:
             self.steps_in_trade += 1
@@ -715,10 +699,25 @@ class EnhancedTradingEnv(gym.Env):
         # 1. Base Reward: Net Worth Change (Captures Unrealized PnL naturally)
         # If price goes up while holding, this is positive. If price goes down, this is negative.
         reward = ((self.net_worth - prev_net_worth) / prev_net_worth) * 100.0
+        reward_base = reward  # net worth change component
 
         # 2. Subtract costs (Fee is now reduced to 2x multiplier in init)
         reward -= reward_trade_cost  # Now this variable is definitely defined
-        reward -= action_change_penalty
+
+        # 3. Action change penalty (discourage twitching)
+        action_change_penalty = 0.0
+        if self.prev_action is not None:
+            # Calculate raw change in action (0.0 to 2.0 range)
+            action_delta = abs(action_val - self.prev_action)
+            # REDUCED: 0.05 -> 0.02 to allow more flexibility
+            action_change_penalty = -(action_delta * 0.02)  # negative penalty
+        reward += action_change_penalty  # adding negative subtracts
+
+        # 4. Inertia penalty (discourage twitching without position change)
+        reward_inertia = 0.0
+        if self.shares_held == self.prev_shares_held and abs(action_val) > 0.5:
+             reward_inertia = -0.05  # negative penalty
+        reward += reward_inertia
 
         # --- FIX: TREND ALIGNMENT PENALTY ---
         # Punish holding Long in Bear market or Short in Bull market
@@ -727,8 +726,10 @@ class EnhancedTradingEnv(gym.Env):
         # 1 = Bull, -1 = Bear
         trend_direction = 1.0 if current_price > ema_50 else -1.0
         # If position direction opposes trend direction (and not cash)
+        trend_penalty = 0.0
         if self.shares_held != 0 and np.sign(self.shares_held) != trend_direction:
-            reward -= 0.05  # Constant penalty per step for fighting the trend
+            trend_penalty = 0.05
+            reward -= trend_penalty  # Constant penalty per step for fighting the trend
 
         # Calculate "Rent" (Funding Fee) to discourage camping on a position
         current_holding_cost = 0.0
@@ -738,6 +739,7 @@ class EnhancedTradingEnv(gym.Env):
         reward -= current_holding_cost  # Apply the rent
 
         # 3. "Closer's Bonus" (Realized PnL Stimulus)
+        closer_bonus = 0.0
         if self.prev_shares_held != 0 and self.shares_held == 0:
              realized_pnl_val = (current_price - self.entry_price) * self.prev_shares_held
              trade_return_pct = realized_pnl_val / abs(self.entry_price * self.prev_shares_held + 1e-8)
@@ -747,18 +749,22 @@ class EnhancedTradingEnv(gym.Env):
 
              if realized_pnl_val > 0:
                  # BONUS: Reward realizing a win 2x more than just holding it
-                 reward += (trade_return_pct * 100.0) * 2.0
+                 closer_bonus = (trade_return_pct * 100.0) * 2.0
              else:
                  # Standard penalty for realizing a loss
-                 reward += (trade_return_pct * 100.0) * 1.0
+                 closer_bonus = (trade_return_pct * 100.0) * 1.0
+             reward += closer_bonus
              
              # Reset entry price
              self.entry_price = 0.0
 
         # 4. FIX: Death Spiral Bug
         # Only penalize overtrading IF a trade actually occurred this step
-        if trade_occurred and self.trades_in_episode > 20:
-            reward -= 0.5
+        # INCREASED: 20 -> 50 to allow more active trading strategy
+        overtrading_penalty = 0.0
+        if trade_occurred and self.trades_in_episode > 50:
+            overtrading_penalty = 0.5
+            reward -= overtrading_penalty
 
         if trade_occurred:
             self.has_traded_once = True
@@ -778,10 +784,12 @@ class EnhancedTradingEnv(gym.Env):
 
         # Termination
         terminated = False
-        truncated = self.current_step >= len(self.df) - 1
+        episode_penalty = 0.0
+        truncated = bool(self.current_step >= len(self.df) - 1)
         if self.net_worth < (self.initial_balance * 0.5):
             terminated = True
-            reward -= 5.0  # Episode penalty
+            episode_penalty = 5.0
+            reward -= episode_penalty  # Episode penalty
 
         obs = self._next_observation()
 
@@ -803,6 +811,16 @@ class EnhancedTradingEnv(gym.Env):
             "vp_heatmap": heatmap,
             "trades_per_episode": self.trades_in_episode,
             "trade_executed": trade_occurred,
+            # Reward components
+            "reward_base": reward_base,
+            "reward_fee": reward_trade_cost,
+            "reward_action_change": action_change_penalty,
+            "reward_trend": trend_penalty,
+            "reward_holding": current_holding_cost,
+            "reward_inertia": reward_inertia,
+            "reward_closer": closer_bonus,
+            "reward_overtrade": overtrading_penalty,
+            "reward_episode": episode_penalty,
         }
 
         return obs, reward, terminated, truncated, info

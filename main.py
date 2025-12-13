@@ -26,12 +26,14 @@ matplotlib.use('Agg')
 
 # RL & Gym
 import gymnasium as gym
+from gymnasium.wrappers import EnvCompatibility
 from stable_baselines3 import SAC, PPO, A2C, TD3
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize, DummyVecEnv, VecFrameStack
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
 from stable_baselines3.common.utils import set_random_seed, ConstantSchedule
+from stable_baselines3.common.env_checker import check_env
 
 # WandB
 import wandb
@@ -140,7 +142,8 @@ def phased_training_loop(model, train_env, phase_manager, total_timesteps, callb
 
         logger.info(f"Phase {phase}: Updated entropy_coef to {phase_params['entropy_coef']:.6f}")
         logger.info(f"Phase {phase}: Updated buy_threshold to {phase_params['buy_threshold']:.3f}, sell_threshold to {phase_params['sell_threshold']:.3f}")
-        
+
+        # Raise thresholds in early phases if needed (override phase_manager values)
         # Set up callbacks for this phase
         phase_callbacks = callbacks.copy()
         
@@ -167,6 +170,7 @@ def phased_training_loop(model, train_env, phase_manager, total_timesteps, callb
         logger.info(f"Phase {phase}: Training for {phase_steps:,} steps")
 
         # Train for this phase
+        logger.debug(f"Starting model.learn for phase {phase}")
         try:
             model.learn(
                 total_timesteps=phase_steps,
@@ -297,8 +301,6 @@ def main():
     logging.info(f"Split Data: Train ({len(train_df)}) | Test ({len(test_df)})")
 
     # --- Pre-Calculate Volume Profile (Multiprocessing Fix) ---
-    logging.info(f"Creating {args.n_envs} parallel environments...")
-
     logging.info(f"--- Initializing EnhancedTradingEnv (Target Bins: {args.vp_bins}) ---")
 
     # 1. Train VP
@@ -337,6 +339,19 @@ def main():
     }
     logging.info(f"Env kwargs: {env_kwargs}")
 
+    # Validate environment API before parallelization
+    raw_env = EnhancedTradingEnv(
+        df=train_df,
+        precalculated_vp=vp_data_train,
+        **env_kwargs
+    )
+
+    check_env(raw_env, warn=True)
+    logger.info("Environment validation passed successfully!")
+    raw_env.close()
+
+    logging.info(f"Creating {args.n_envs} parallel environments...")
+
     # Training Env
     logging.info("Creating training environment...")
     train_env_kwargs = env_kwargs.copy()
@@ -345,9 +360,10 @@ def main():
 
     train_env = make_vec_env(
         EnhancedTradingEnv,
-        n_envs=args.n_envs,
+        # Temporarily use DummyVecEnv with 1 env for debugging (avoids EOFError by running in main process)
+        n_envs=10,
         seed=args.seed,
-        vec_env_cls=SubprocVecEnv,
+        vec_env_cls=SubprocVecEnv,              #DummyVecEnv,
         env_kwargs=train_env_kwargs
     )
     logger.info("Training environment created.")
@@ -359,6 +375,7 @@ def main():
         # CHANGE: norm_obs=False. We scale manually in the Env now.
         train_env = VecNormalize(train_env, norm_obs=False, norm_reward=True, clip_obs=10., clip_reward=10.)
         logger.info("VecNormalize applied.")
+        # If needed, disable VecNormalize temporarily by commenting the above and using raw train_env
         logger.info(f"Train env type after normalization: {type(train_env)}")
 
     # No VecFrameStack needed for RecurrentPPO - LSTM handles temporal dependencies internally
@@ -380,11 +397,7 @@ def main():
     eval_env.training = False  # Do not update stats during evaluation
     # REMOVED: We do not need to sync obs_rms because we are using norm_obs=False
     # and doing manual scaling inside the environment.
-    # # Link eval stats to train stats (Python passes by reference, so they stay synced)
-    # logger.info(f"Before syncing obs_rms: train_env type={type(train_env)}, eval_env type={type(eval_env)}")
-    # logger.info(f"train_env has obs_rms: {hasattr(train_env, 'obs_rms')}")
-    # logger.info(f"eval_env has obs_rms: {hasattr(eval_env, 'obs_rms')}")
-    # eval_env.obs_rms = train_env.obs_rms
+    # If re-enabling norm_obs=True, add: eval_env.obs_rms = train_env.obs_rms
 
     # Create dummy env for saliency callback (skip for RecurrentPPO due to LSTM compatibility issues)
     saliency_callback = None
@@ -440,8 +453,8 @@ def main():
 
     # --- Callbacks ---
     checkpoint_callback = CheckpointCallback(
-        save_freq=20000, 
-        save_path=f"./checkpoints/{args.algo}_{args.pair}", 
+        save_freq=20000,
+        save_path=f"./checkpoints/{args.algo}_{args.pair}",
         name_prefix=args.algo
     )
     
@@ -635,7 +648,7 @@ def main():
         chk_pattern = f"./checkpoints/{args.algo}_*/**/*.zip"
         chk_files = glob.glob(chk_pattern, recursive=True)
         for f in chk_files:
-            os.remove(f)    
+            os.remove(f)
 
         # delete tensorboard logs for algo
         if os.path.exists(tensorboard_log):
@@ -676,6 +689,8 @@ def main():
         final_buy_threshold=0.35,    # End with more selective buy thresholds
         initial_sell_threshold=-0.15, # Start with tighter sell thresholds
         final_sell_threshold=-0.35    # End with more selective sell thresholds
+        # For now, assume defaults; if log shows 0.000000 in Phase 1, check PhaseManager.get_phase_params(1)
+        # and adjust initial_entropy accordingly in PhaseManager __init__
     )
 
     # Pass phase_manager to environment kwargs

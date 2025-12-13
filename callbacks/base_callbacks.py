@@ -114,6 +114,16 @@ class TensorboardCallback(BaseCallback):
         self.ep_portfolio = []
         self.ep_dates = []
         self.ep_rewards = []
+        # Reward components
+        self.ep_reward_base = []
+        self.ep_reward_fee = []
+        self.ep_reward_action_change = []
+        self.ep_reward_trend = []
+        self.ep_reward_holding = []
+        self.ep_reward_inertia = []
+        self.ep_reward_closer = []
+        self.ep_reward_overtrade = []
+        self.ep_reward_episode = []
         self._logger = logging.getLogger(self.__class__.__name__)
         if not self._logger.handlers:
             thread_name = threading.current_thread().name
@@ -153,6 +163,16 @@ class TensorboardCallback(BaseCallback):
         self.ep_emas.append(ema_50)
         self.ep_actions.append(action)
         self.ep_rewards.append(reward)
+        # Store reward components
+        self.ep_reward_base.append(info.get('reward_base', 0.0))
+        self.ep_reward_fee.append(info.get('reward_fee', 0.0))
+        self.ep_reward_action_change.append(info.get('reward_action_change', 0.0))
+        self.ep_reward_trend.append(info.get('reward_trend', 0.0))
+        self.ep_reward_holding.append(info.get('reward_holding', 0.0))
+        self.ep_reward_inertia.append(info.get('reward_inertia', 0.0))
+        self.ep_reward_closer.append(info.get('reward_closer', 0.0))
+        self.ep_reward_overtrade.append(info.get('reward_overtrade', 0.0))
+        self.ep_reward_episode.append(info.get('reward_episode', 0.0))
         self.ep_portfolio.append({
             'step': self.n_calls,
             'net_worth': portfolio_value,
@@ -180,6 +200,16 @@ class TensorboardCallback(BaseCallback):
             self.ep_portfolio = []
             self.ep_dates = []
             self.ep_rewards = []
+            # Reset reward components
+            self.ep_reward_base = []
+            self.ep_reward_fee = []
+            self.ep_reward_action_change = []
+            self.ep_reward_trend = []
+            self.ep_reward_holding = []
+            self.ep_reward_inertia = []
+            self.ep_reward_closer = []
+            self.ep_reward_overtrade = []
+            self.ep_reward_episode = []
 
         return True
 
@@ -279,6 +309,17 @@ class TensorboardCallback(BaseCallback):
         portfolio = np.array([point['net_worth'] for point in self.ep_portfolio], dtype=float)
         dates   = self.ep_dates
 
+        # Reward components arrays
+        reward_base = np.array(self.ep_reward_base, dtype=float)
+        reward_fee = np.array(self.ep_reward_fee, dtype=float)
+        reward_action_change = np.array(self.ep_reward_action_change, dtype=float)
+        reward_trend = np.array(self.ep_reward_trend, dtype=float)
+        reward_holding = np.array(self.ep_reward_holding, dtype=float)
+        reward_inertia = np.array(self.ep_reward_inertia, dtype=float)
+        reward_closer = np.array(self.ep_reward_closer, dtype=float)
+        reward_overtrade = np.array(self.ep_reward_overtrade, dtype=float)
+        reward_episode = np.array(self.ep_reward_episode, dtype=float)
+
         # === 1. INSERT DEBUG COUNTERS HERE ===
         total_steps = len(self.ep_portfolio)
         total_plotted_buys = 0
@@ -377,23 +418,36 @@ class TensorboardCallback(BaseCallback):
         ax3.grid(True, alpha=0.3)
         ax3.legend(loc='upper left')
 
-        # Rewards subplot
-        ax4.plot(steps, rewards, label='Rewards', color='purple', linewidth=1.5)
-        ax4.set_ylabel("Rewards")
+        # Rewards subplot - stacked components
+        component_arrays = [
+            reward_base,
+            reward_fee,
+            reward_action_change,
+            reward_trend,
+            reward_holding,
+            reward_inertia,
+            reward_closer,
+            reward_overtrade,
+            reward_episode
+        ]
+        component_labels = [
+            'Base (net worth)',
+            'Fee penalty',
+            'Action change penalty',
+            'Trend alignment',
+            'Holding cost',
+            'Inertia penalty',
+            'Closer bonus',
+            'Overtrading penalty',
+            'Episode termination'
+        ]
+        # Colors from tab20c colormap
+        colors = plt.cm.tab20c(np.linspace(0, 1, len(component_arrays)))
+        ax4.stackplot(steps, component_arrays, labels=component_labels, colors=colors, alpha=0.8, edgecolor='black', linewidth=0.3)
+        ax4.set_ylabel("Reward Components")
         ax4.grid(True, alpha=0.3)
-        ax4.legend(loc='upper left')
-
-        # Rewards subplot
-        ax4.plot(steps, rewards, label='Rewards', color='purple', linewidth=1.5)
-        ax4.set_ylabel("Rewards")
-        ax4.grid(True, alpha=0.3)
-        ax4.legend(loc='upper left')
-
-        # Rewards subplot
-        ax4.plot(steps, rewards, label='Rewards', color='purple', linewidth=1.5)
-        ax4.set_ylabel("Rewards")
-        ax4.grid(True, alpha=0.3)
-        ax4.legend(loc='upper left')
+        # Legend with small font, placed inside
+        ax4.legend(loc='upper left', fontsize='xx-small', ncol=2, framealpha=0.7)
 
         # Date labels
         num_ticks = min(8, len(steps))
@@ -457,6 +511,16 @@ class CustomEvalCallback(EvalCallback):
         self.ep_portfolio = []
         self.ep_dates = []
         self.ep_rewards = []
+        # Reward components
+        self.ep_reward_base = []
+        self.ep_reward_fee = []
+        self.ep_reward_action_change = []
+        self.ep_reward_trend = []
+        self.ep_reward_holding = []
+        self.ep_reward_inertia = []
+        self.ep_reward_closer = []
+        self.ep_reward_overtrade = []
+        self.ep_reward_episode = []
 
     def _evaluate_with_portfolio(self):
         """
@@ -494,6 +558,16 @@ class CustomEvalCallback(EvalCallback):
                 self.ep_portfolio = []
                 self.ep_dates = []
                 self.ep_rewards = []
+                # Reset reward components
+                self.ep_reward_base = []
+                self.ep_reward_fee = []
+                self.ep_reward_action_change = []
+                self.ep_reward_trend = []
+                self.ep_reward_holding = []
+                self.ep_reward_inertia = []
+                self.ep_reward_closer = []
+                self.ep_reward_overtrade = []
+                self.ep_reward_episode = []
 
             while not done:
                 action, _ = self.model.predict(obs, deterministic=self.deterministic)
@@ -530,6 +604,16 @@ class CustomEvalCallback(EvalCallback):
                     self.ep_emas.append(ema_50)
                     self.ep_actions.append(action_val)
                     self.ep_rewards.append(reward)
+                    # Store reward components
+                    self.ep_reward_base.append(info.get('reward_base', 0.0))
+                    self.ep_reward_fee.append(info.get('reward_fee', 0.0))
+                    self.ep_reward_action_change.append(info.get('reward_action_change', 0.0))
+                    self.ep_reward_trend.append(info.get('reward_trend', 0.0))
+                    self.ep_reward_holding.append(info.get('reward_holding', 0.0))
+                    self.ep_reward_inertia.append(info.get('reward_inertia', 0.0))
+                    self.ep_reward_closer.append(info.get('reward_closer', 0.0))
+                    self.ep_reward_overtrade.append(info.get('reward_overtrade', 0.0))
+                    self.ep_reward_episode.append(info.get('reward_episode', 0.0))
                     self.ep_portfolio.append({
                         'step': step_count,
                         'net_worth': portfolio_value,
@@ -681,6 +765,17 @@ class CustomEvalCallback(EvalCallback):
         portfolio = np.array([point['net_worth'] for point in self.ep_portfolio], dtype=float)
         dates   = self.ep_dates
 
+        # Reward components arrays
+        reward_base = np.array(self.ep_reward_base, dtype=float)
+        reward_fee = np.array(self.ep_reward_fee, dtype=float)
+        reward_action_change = np.array(self.ep_reward_action_change, dtype=float)
+        reward_trend = np.array(self.ep_reward_trend, dtype=float)
+        reward_holding = np.array(self.ep_reward_holding, dtype=float)
+        reward_inertia = np.array(self.ep_reward_inertia, dtype=float)
+        reward_closer = np.array(self.ep_reward_closer, dtype=float)
+        reward_overtrade = np.array(self.ep_reward_overtrade, dtype=float)
+        reward_episode = np.array(self.ep_reward_episode, dtype=float)
+
         # === 1. INSERT DEBUG COUNTERS HERE ===
         total_steps = len(self.ep_portfolio)
         total_plotted_buys = 0
@@ -704,9 +799,9 @@ class CustomEvalCallback(EvalCallback):
         self._logger.info(f"Steps with 'trade_executed'=True: {executed_true_count}")
         # =====================================
 
-        fig, (ax1, ax2, ax3) = plt.subplots(
-            3, 1, figsize=(12, 10), sharex=True,
-            gridspec_kw={'height_ratios': [3, 1, 1]}
+        fig, (ax1, ax2, ax3, ax4) = plt.subplots(
+            4, 1, figsize=(12, 12), sharex=True,
+            gridspec_kw={'height_ratios': [3, 1, 1, 1]}
         )
 
         # Price + EMA + bull/bear shading
@@ -774,6 +869,37 @@ class CustomEvalCallback(EvalCallback):
         ax3.grid(True, alpha=0.3)
         ax3.legend(loc='upper left')
 
+        # Rewards subplot - stacked components
+        component_arrays = [
+            reward_base,
+            reward_fee,
+            reward_action_change,
+            reward_trend,
+            reward_holding,
+            reward_inertia,
+            reward_closer,
+            reward_overtrade,
+            reward_episode
+        ]
+        component_labels = [
+            'Base (net worth)',
+            'Fee penalty',
+            'Action change penalty',
+            'Trend alignment',
+            'Holding cost',
+            'Inertia penalty',
+            'Closer bonus',
+            'Overtrading penalty',
+            'Episode termination'
+        ]
+        # Colors from tab20c colormap
+        colors = plt.cm.tab20c(np.linspace(0, 1, len(component_arrays)))
+        ax4.stackplot(steps, component_arrays, labels=component_labels, colors=colors, alpha=0.8, edgecolor='black', linewidth=0.3)
+        ax4.set_ylabel("Reward Components")
+        ax4.grid(True, alpha=0.3)
+        # Legend with small font, placed inside
+        ax4.legend(loc='upper left', fontsize='xx-small', ncol=2, framealpha=0.7)
+
         # Date labels
         num_ticks = min(8, len(steps))
         tick_indices = np.linspace(0, len(steps) - 1, num_ticks, dtype=int)
@@ -786,8 +912,8 @@ class CustomEvalCallback(EvalCallback):
                 d_str = str(raw_date)[:16]
             tick_labels.append(d_str)
 
-        ax3.set_xticks(tick_indices)
-        ax3.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
+        ax4.set_xticks(tick_indices)
+        ax4.set_xticklabels(tick_labels, rotation=0, ha='center', fontsize=8)
 
         plt.tight_layout()
 
