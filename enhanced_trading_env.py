@@ -333,7 +333,7 @@ class EnhancedTradingEnv(gym.Env):
         self.leverage_buffer = 0.95
 
         # Min trade value - Lower threshold → more small adjustments execute (better feedback)
-        self.min_trade_value_usd = 1.0 if min_trade_value_usd == 10.0 else min_trade_value_usd
+        self.min_trade_value_usd = 1.0  # Lower → small ramps execute, more feedback, visible incremental sells
 
         # Phase
         self.phase = phase
@@ -736,7 +736,7 @@ class EnhancedTradingEnv(gym.Env):
         # Encourages early exit/reversal in downtrends without punishing bull holds
         if self.current_position > 0.1 and self.df.iloc[self.current_step]['trend_ema_norm'] < 0.2:
             weakening = max(0, 0.2 - self.df.iloc[self.current_step]['trend_ema_norm'])
-            reward -= 0.01 * weakening**2   # Stronger push to reduce long in weakness
+            reward -= 0.02 * weakening**2  # 4x stronger quadratic → faster long reduction when trend_ema_norm drops
 
         # Calculate "Rent" (Funding Fee) to discourage camping on a position
         current_holding_cost = 0.0
