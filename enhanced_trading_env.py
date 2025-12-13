@@ -665,10 +665,17 @@ class EnhancedTradingEnv(gym.Env):
         # NEW: Real portfolio return (no look-ahead)
         portfolio_return = (self.net_worth - self.prev_net_worth) / (self.prev_net_worth + 1e-8)
 
+        # Make thresholds active (force deadzone — suppress small actions)
+        # Apply deadzone: force near-zero actions to exact zero if below threshold
+        if abs(action_val) < self.buy_threshold and action_val > 0:
+            action_val = 0.0
+        elif abs(action_val) < abs(self.sell_threshold) and action_val < 0:
+            action_val = 0.0
+
         # === THRESHOLD CHECK ===
         # Always attempt to adjust position to the target.
         # The _take_action method already checks 'min_trade_value_usd' to prevent dust trades.
-        trade_occurred = self._take_action(action)
+        trade_occurred = self._take_action([action_val])
 
         # === FIX STARTS HERE ===
         # 1. Calculate the actual size of the trade in dollars
@@ -711,13 +718,13 @@ class EnhancedTradingEnv(gym.Env):
             # Calculate raw change in action (0.0 to 2.0 range)
             action_delta = abs(action_val - self.prev_action)
             # Reduced 4x — allows smoother ramps
-            action_change_penalty = -(action_delta * 0.005)  # Reduced 4x — allows smoother ramps
+            action_change_penalty = -(action_delta * 0.002)  # Less resistance to gradual exits
         reward += action_change_penalty  # adding negative subtracts
 
         # 4. Inertia penalty (discourage twitching without position change)
         reward_inertia = 0.0
         if self.shares_held == self.prev_shares_held and abs(action_val) > 0.5:
-             reward_inertia = -0.01  # Soften — less punishment for temporary inaction
+             reward_inertia = -0.001  # SCALED DOWN: 10x smaller to match base reward magnitude
         reward += reward_inertia
 
         # --- FIX: TREND ALIGNMENT PENALTY ---
@@ -729,14 +736,20 @@ class EnhancedTradingEnv(gym.Env):
         # If position direction opposes trend direction (and not cash)
         trend_penalty = 0.0
         if self.shares_held != 0 and np.sign(self.shares_held) != trend_direction:
-            trend_penalty = 0.05
+            trend_penalty = 0.005  # SCALED DOWN: 10x smaller to match base reward magnitude
             reward -= trend_penalty  # Constant penalty per step for fighting the trend
 
         # NEW: Asymmetric holding penalty — punish staying long when trend is weakening/bearish
         # Encourages early exit/reversal in downtrends without punishing bull holds
         if self.current_position > 0.1 and self.df.iloc[self.current_step]['trend_ema_norm'] < 0.2:
             weakening = max(0, 0.2 - self.df.iloc[self.current_step]['trend_ema_norm'])
-            reward -= 0.02 * weakening**2  # 4x stronger quadratic → faster long reduction when trend_ema_norm drops
+            reward -= 0.005 * weakening**2  # SCALED DOWN: 10x smaller to match base reward magnitude
+
+        # Encourage position reduction more aggressively (add small penalty for high positive action in neutral/weak trend)
+        # Penalize strong long conviction when trend not strongly bullish
+        if action_val > 0.3 and self.df.iloc[self.current_step]['trend_ema_norm'] < 0.4:
+            strong_long_penalty = 0.002 * (action_val - 0.3)  # SCALED DOWN: 10x smaller
+            reward -= strong_long_penalty
 
         # Calculate "Rent" (Funding Fee) to discourage camping on a position
         current_holding_cost = 0.0
@@ -748,7 +761,7 @@ class EnhancedTradingEnv(gym.Env):
         # Add small deadzone penalty around action=0 in reward (discourage tiny noisy actions but allow clean holds)
         reward -= 0.0002 * (abs(action_val) < 0.1) * (1 - abs(action_val)/0.1)  # Small penalty for lingering near zero
 
-        # 3. "Closer's Bonus" (Realized PnL Stimulus)
+        # 3. FIXED: "Closer's Bonus" - Only for profitable closes, smaller scale
         closer_bonus = 0.0
         if self.prev_shares_held != 0 and self.shares_held == 0:
              realized_pnl_val = (current_price - self.entry_price) * self.prev_shares_held
@@ -757,13 +770,11 @@ class EnhancedTradingEnv(gym.Env):
              # Store for next observation
              self.last_trade_pnl = trade_return_pct
 
+             # FIXED: Only reward profitable closes with smaller multiplier
              if realized_pnl_val > 0:
-                 # BONUS: Reward realizing a win 2x more than just holding it
-                 closer_bonus = (trade_return_pct * 100.0) * 2.0
-             else:
-                 # Standard penalty for realizing a loss
-                 closer_bonus = (trade_return_pct * 100.0) * 1.0
-             reward += closer_bonus
+                 closer_bonus = trade_return_pct * 50.0  # 50x smaller than original, only on profit
+                 reward += closer_bonus
+             # else: closer_bonus stays 0.0 (no penalty for closing losses)
              
              # Reset entry price
              self.entry_price = 0.0
@@ -773,7 +784,7 @@ class EnhancedTradingEnv(gym.Env):
         # INCREASED: 20 -> 50 to allow more active trading strategy
         overtrading_penalty = 0.0
         if trade_occurred and self.trades_in_episode > 50:
-            overtrading_penalty = 0.5
+            overtrading_penalty = 0.05  # SCALED DOWN: 10x smaller to match base reward magnitude
             reward -= overtrading_penalty
 
         if trade_occurred:
@@ -798,8 +809,27 @@ class EnhancedTradingEnv(gym.Env):
         truncated = bool(self.current_step >= len(self.df) - 1)
         if self.net_worth < (self.initial_balance * 0.5):
             terminated = True
-            episode_penalty = 5.0
+            episode_penalty = 0.5  # SCALED DOWN: 10x smaller to match base reward magnitude
             reward -= episode_penalty  # Episode penalty
+
+        # --- REWARD DOMINANCE CLAMP ---
+        # Ensure base reward dominates - if penalties are larger than base, reduce them
+        if abs(reward_base) > 1e-6:  # Avoid division by zero
+            total_penalties = abs(reward - reward_base - closer_bonus)
+            penalty_ratio = total_penalties / abs(reward_base)
+            
+            # If penalties are more than 50% of base reward, clamp them
+            if penalty_ratio > 0.5:
+                max_penalty = abs(reward_base) * 0.5
+                if total_penalties > max_penalty:
+                    # Calculate how much to reduce penalties
+                    reduction_factor = max_penalty / total_penalties
+                    # Apply reduction to the total reward (keeping base reward intact)
+                    reward = reward_base + (reward - reward_base) * reduction_factor
+                    
+                    # Log this adjustment for debugging
+                    if self.current_step % 100 == 0:  # Log every 100 steps to avoid spam
+                        self._logger.info(f"Reward clamp applied: penalty_ratio={penalty_ratio:.2f}, reduction_factor={reduction_factor:.2f}")
 
         obs = self._next_observation()
 
