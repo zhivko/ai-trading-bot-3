@@ -106,8 +106,8 @@ class EnhancedTradingEnv(gym.Env):
         
         # Reward shaping coefficients (adjust as needed)
         self.trading_fee_multiplier = 1.5          # existing
-        self.action_change_coeff = 0.005
-        self.trend_coeff = 0.01
+        self.action_change_coeff = 0.001  # lower early penalty
+        self.trend_coeff = 0.02  # higher bonus/penalty for match/mismatch
         self.weakening_coeff = 0.02                # for long in weakening trend
         self.inertia_coeff = 0.01
         self.closer_multiplier = 50.0              # only on profitable closes
@@ -837,8 +837,8 @@ class EnhancedTradingEnv(gym.Env):
                     reward = base_reward + (reward - base_reward) * reduction_factor
                     
                     # Log this adjustment for debugging
-                    if self.current_step % 100 == 0:  # Log every 100 steps to avoid spam
-                        self._logger.info(f"Reward clamp applied: penalty_ratio={penalty_ratio:.2f}, reduction_factor={reduction_factor:.2f}")
+                    #if self.current_step % 100 == 0:  # Log every 100 steps to avoid spam
+                    #    self._logger.info(f"Reward clamp applied: penalty_ratio={penalty_ratio:.2f}, reduction_factor={reduction_factor:.2f}")
 
         obs = self._next_observation()
 

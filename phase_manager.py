@@ -8,7 +8,7 @@ class PhaseManager:
     Manages phased training with entropy coefficient annealing and threshold adjustments.
     """
     def __init__(self, total_phases=10, initial_entropy=0.08, final_entropy=0.0001,
-                 initial_buy_threshold=0.05, final_buy_threshold=0.35,
+                 initial_buy_threshold=0.1, final_buy_threshold=0.35,
                  initial_sell_threshold=-0.05, final_sell_threshold=-0.35):
         self.total_phases = total_phases
         self.initial_entropy = initial_entropy
