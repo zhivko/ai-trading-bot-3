@@ -163,16 +163,17 @@ class TensorboardCallback(BaseCallback):
         self.ep_emas.append(ema_50)
         self.ep_actions.append(action)
         self.ep_rewards.append(reward)
-        # Store reward components
-        self.ep_reward_base.append(info.get('reward_base', 0.0))
-        self.ep_reward_fee.append(info.get('reward_fee', 0.0))
-        self.ep_reward_action_change.append(info.get('reward_action_change', 0.0))
-        self.ep_reward_trend.append(info.get('reward_trend', 0.0))
-        self.ep_reward_holding.append(info.get('reward_holding', 0.0))
-        self.ep_reward_inertia.append(info.get('reward_inertia', 0.0))
-        self.ep_reward_closer.append(info.get('reward_closer', 0.0))
-        self.ep_reward_overtrade.append(info.get('reward_overtrade', 0.0))
-        self.ep_reward_episode.append(info.get('reward_episode', 0.0))
+        # Store reward components - FIX: Use correct keys from reward_components
+        reward_components = info.get('reward_components', {})
+        self.ep_reward_base.append(reward_components.get('base', 0.0))
+        self.ep_reward_fee.append(reward_components.get('fee_penalty', 0.0))
+        self.ep_reward_action_change.append(reward_components.get('action_change_penalty', 0.0))
+        self.ep_reward_trend.append(reward_components.get('trend_alignment', 0.0))
+        self.ep_reward_holding.append(reward_components.get('holding_penalty', 0.0))
+        self.ep_reward_inertia.append(reward_components.get('inertia_penalty', 0.0))
+        self.ep_reward_closer.append(reward_components.get('closer_bonus', 0.0))
+        self.ep_reward_overtrade.append(reward_components.get('overtrading_penalty', 0.0))
+        self.ep_reward_episode.append(reward_components.get('episode_termination', 0.0))
         self.ep_portfolio.append({
             'step': self.n_calls,
             'net_worth': portfolio_value,
@@ -309,7 +310,7 @@ class TensorboardCallback(BaseCallback):
         portfolio = np.array([point['net_worth'] for point in self.ep_portfolio], dtype=float)
         dates   = self.ep_dates
 
-        # Reward components arrays
+        # FIX: Use the already collected reward component arrays instead of trying to extract from ep_portfolio
         reward_base = np.array(self.ep_reward_base, dtype=float)
         reward_fee = np.array(self.ep_reward_fee, dtype=float)
         reward_action_change = np.array(self.ep_reward_action_change, dtype=float)
@@ -451,26 +452,57 @@ class TensorboardCallback(BaseCallback):
             'Closer bonus',
             'Overtrading penalty'
         ]
-        # Colors from tab20c colormap
-        colors = plt.cm.tab20c(np.linspace(0, 1, len(component_arrays)))
+        # Plot signed components correctly
+        colors = {
+            'base': 'blue',
+            'fee_penalty': 'red',
+            'action_change_penalty': 'orange',
+            'trend_alignment': 'purple',
+            'holding_penalty': 'brown',
+            'inertia_penalty': 'pink',
+            'closer_bonus': 'green',
+            'overtrading_penalty': 'darkred',
+        }
         
         # Plot each component as a separate line (no stacking)
-        for i, (component_array, label, color) in enumerate(zip(component_arrays, component_labels, colors)):
+        for i, (component_array, label) in enumerate(zip(component_arrays, component_labels)):
             # Apply specific styling for certain components
             linestyle = '-'
-            linewidth = 1
+            linewidth = 1.5
             
             if i == 6:  # Closer bonus - dark green
                 color = 'darkgreen'
             elif i == 7:  # Overtrading penalty - dashed line
                 linestyle = '--'
+                color = 'darkred'
+            else:
+                # Use color mapping based on component type
+                component_key = label.split(' ')[0].lower().replace('(', '').replace(')', '')
+                if 'base' in component_key:
+                    color = colors['base']
+                elif 'fee' in component_key:
+                    color = colors['fee_penalty']
+                elif 'action' in component_key:
+                    color = colors['action_change_penalty']
+                elif 'trend' in component_key:
+                    color = colors['trend_alignment']
+                elif 'holding' in component_key:
+                    color = colors['holding_penalty']
+                elif 'inertia' in component_key:
+                    color = colors['inertia_penalty']
+                elif 'closer' in component_key:
+                    color = colors['closer_bonus']
+                elif 'overtrading' in component_key:
+                    color = colors['overtrading_penalty']
+                else:
+                    color = 'gray'
                 
             ax4.plot(steps, component_array, label=label, color=color, linewidth=linewidth, linestyle=linestyle, alpha=0.8)
         
         # Add horizontal line at zero for reference
-        ax4.axhline(y=0, color='gray', linestyle='--', linewidth=0.8, alpha=0.7)
+        ax4.axhline(y=0, color='black', linestyle='--', linewidth=0.8, alpha=0.7)
         
-        ax4.set_ylabel("Reward Components")
+        ax4.set_ylabel("Reward Components (signed)")
         ax4.grid(True, alpha=0.3)
         # Legend with small font, placed below
         ax4.legend(bbox_to_anchor=(0, -0.25, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=6, framealpha=0.7)
@@ -661,16 +693,17 @@ class CustomEvalCallback(EvalCallback):
                     self.ep_emas.append(ema_50)
                     self.ep_actions.append(action_val)
                     self.ep_rewards.append(reward)
-                    # Store reward components
-                    self.ep_reward_base.append(info.get('reward_base', 0.0))
-                    self.ep_reward_fee.append(info.get('reward_fee', 0.0))
-                    self.ep_reward_action_change.append(info.get('reward_action_change', 0.0))
-                    self.ep_reward_trend.append(info.get('reward_trend', 0.0))
-                    self.ep_reward_holding.append(info.get('reward_holding', 0.0))
-                    self.ep_reward_inertia.append(info.get('reward_inertia', 0.0))
-                    self.ep_reward_closer.append(info.get('reward_closer', 0.0))
-                    self.ep_reward_overtrade.append(info.get('reward_overtrade', 0.0))
-                    self.ep_reward_episode.append(info.get('reward_episode', 0.0))
+                    # Store reward components - FIX: Use correct keys from reward_components
+                    reward_components = info.get('reward_components', {})
+                    self.ep_reward_base.append(reward_components.get('base', 0.0))
+                    self.ep_reward_fee.append(reward_components.get('fee_penalty', 0.0))
+                    self.ep_reward_action_change.append(reward_components.get('action_change_penalty', 0.0))
+                    self.ep_reward_trend.append(reward_components.get('trend_alignment', 0.0))
+                    self.ep_reward_holding.append(reward_components.get('holding_penalty', 0.0))
+                    self.ep_reward_inertia.append(reward_components.get('inertia_penalty', 0.0))
+                    self.ep_reward_closer.append(reward_components.get('closer_bonus', 0.0))
+                    self.ep_reward_overtrade.append(reward_components.get('overtrading_penalty', 0.0))
+                    self.ep_reward_episode.append(reward_components.get('episode_termination', 0.0))
                     self.ep_portfolio.append({
                         'step': step_count,
                         'net_worth': portfolio_value,
@@ -822,7 +855,7 @@ class CustomEvalCallback(EvalCallback):
         portfolio = np.array([point['net_worth'] for point in self.ep_portfolio], dtype=float)
         dates   = self.ep_dates
 
-        # Reward components arrays
+        # FIX: Use the already collected reward component arrays instead of trying to extract from ep_portfolio
         reward_base = np.array(self.ep_reward_base, dtype=float)
         reward_fee = np.array(self.ep_reward_fee, dtype=float)
         reward_action_change = np.array(self.ep_reward_action_change, dtype=float)
@@ -959,26 +992,57 @@ class CustomEvalCallback(EvalCallback):
             'Closer bonus',
             'Overtrading penalty'
         ]
-        # Colors from tab20c colormap
-        colors = plt.cm.tab20c(np.linspace(0, 1, len(component_arrays)))
+        # Plot signed components correctly
+        colors = {
+            'base': 'blue',
+            'fee_penalty': 'red',
+            'action_change_penalty': 'orange',
+            'trend_alignment': 'purple',
+            'holding_penalty': 'brown',
+            'inertia_penalty': 'pink',
+            'closer_bonus': 'green',
+            'overtrading_penalty': 'darkred',
+        }
         
         # Plot each component as a separate line (no stacking)
-        for i, (component_array, label, color) in enumerate(zip(component_arrays, component_labels, colors)):
+        for i, (component_array, label) in enumerate(zip(component_arrays, component_labels)):
             # Apply specific styling for certain components
             linestyle = '-'
-            linewidth = 1
+            linewidth = 1.5
             
             if i == 6:  # Closer bonus - dark green
                 color = 'darkgreen'
             elif i == 7:  # Overtrading penalty - dashed line
                 linestyle = '--'
+                color = 'darkred'
+            else:
+                # Use color mapping based on component type
+                component_key = label.split(' ')[0].lower().replace('(', '').replace(')', '')
+                if 'base' in component_key:
+                    color = colors['base']
+                elif 'fee' in component_key:
+                    color = colors['fee_penalty']
+                elif 'action' in component_key:
+                    color = colors['action_change_penalty']
+                elif 'trend' in component_key:
+                    color = colors['trend_alignment']
+                elif 'holding' in component_key:
+                    color = colors['holding_penalty']
+                elif 'inertia' in component_key:
+                    color = colors['inertia_penalty']
+                elif 'closer' in component_key:
+                    color = colors['closer_bonus']
+                elif 'overtrading' in component_key:
+                    color = colors['overtrading_penalty']
+                else:
+                    color = 'gray'
                 
             ax4.plot(steps, component_array, label=label, color=color, linewidth=linewidth, linestyle=linestyle, alpha=0.8)
         
         # Add horizontal line at zero for reference
-        ax4.axhline(y=0, color='gray', linestyle='--', linewidth=0.8, alpha=0.7)
+        ax4.axhline(y=0, color='black', linestyle='--', linewidth=0.8, alpha=0.7)
         
-        ax4.set_ylabel("Reward Components")
+        ax4.set_ylabel("Reward Components (signed)")
         ax4.grid(True, alpha=0.3)
         # Legend with small font, placed below
         ax4.legend(bbox_to_anchor=(0, -0.25, 1, 0.1), loc='upper center', fontsize='xx-small', ncol=6, framealpha=0.7)

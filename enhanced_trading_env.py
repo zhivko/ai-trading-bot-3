@@ -6,6 +6,8 @@ from gymnasium import spaces
 from collections import deque
 from scipy.signal import argrelextrema
 import os
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for headless operation
 import matplotlib.pyplot as plt
 
 # Delegating heavy lifting to volume_profile.py
@@ -106,13 +108,13 @@ class EnhancedTradingEnv(gym.Env):
         
         # Reward shaping coefficients (adjust as needed)
         self.trading_fee_multiplier = 1.5          # existing
-        self.action_change_coeff = 0.001  # lower early penalty
+        self.action_change_coeff = 0.0  # DISABLED to encourage exploration
         self.trend_coeff = 0.02  # higher bonus/penalty for match/mismatch
         self.weakening_coeff = 0.02                # for long in weakening trend
         self.inertia_coeff = 0.01
         self.closer_multiplier = 50.0              # only on profitable closes
-        self.overtrade_coeff = 0.05
-        self.overtrade_threshold = 200             # trades per episode
+        self.overtrade_threshold = 500  # Higher to allow more trades
+        self.overtrade_coeff = 0.0  # DISABLED to encourage exploration
         
         # --- CONFIGURATION ---
         self.initial_balance = initial_balance
@@ -743,6 +745,17 @@ class EnhancedTradingEnv(gym.Env):
         
         # 1. Base reward - % change in net worth (positive = profit, negative = loss)
         base_reward = ((self.net_worth - prev_net_worth_for_reward) / prev_net_worth_for_reward) * 100.0 if prev_net_worth_for_reward > 0 else 0.0
+        
+        # --- FIX: SUBTRACT MARKET RETURN (Normalize) ---
+        # If the market went up by X and we just Held, our 'skill' is 0.
+        # This forces the agent to BEAT the market to get a positive reward.
+        if self.current_step > 0:
+            market_return = (self.raw_prices[self.current_step] - self.raw_prices[self.current_step-1])
+            # Assuming full exposure for simplified benchmark comparison:
+            benchmark_gain = (self.net_worth / self.raw_prices[self.current_step]) * market_return if self.raw_prices[self.current_step] > 0 else 0.0
+            base_reward -= benchmark_gain
+        # -----------------------------------------------
+        
         reward += base_reward
         self.reward_components['base'] = base_reward
         

@@ -671,8 +671,8 @@ def main():
         # Set model hyperparameters
         model_kwargs = {
             "verbose": 1,
-            "ent_coef": 0.01,
-            "learning_rate": 3e-4,
+            "ent_coef": 0.05,
+            "learning_rate": 1e-4,
             "n_steps": 2048,
             "batch_size": 128,
             "clip_range": 0.25,  # Slightly larger — allows faster policy adaptation to reversals

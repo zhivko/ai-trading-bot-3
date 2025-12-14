@@ -27,4 +27,7 @@ websockets
 
 mplfinance
 
-seaborn
+#seaborn
+
+TA-Lib
+
