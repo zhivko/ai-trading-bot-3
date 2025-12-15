@@ -76,7 +76,7 @@ class ContinuousTradingEnv(gym.Env):
             # Replaces absolute price with percentage change
             df_features.loc[:, col] = df_features[col].pct_change()
             # Forward-fill NaNs with the first valid percentage change to avoid artificial zeros
-            df_features.loc[:, col] = df_features[col].fillna(method='bfill').fillna(0)
+            df_features.loc[:, col] = df_features[col].bfill().fillna(0)
             
         # Normalize volume
         df_features.loc[:, 'volume'] = df_features['volume'] / df_features['volume'].rolling(self.window_size).mean()
@@ -188,47 +188,52 @@ class ContinuousTradingEnv(gym.Env):
         observation = self._get_observation()
         info = {}
         return observation, info
-    
-def _take_action(self, action):
-    # Action comes in as an array, e.g., [0.54]
-    # Clip just in case, though PPO usually handles bounds
-    current_action = np.clip(action[0], -1, 1)
 
-    current_price = self.prices[self.current_step]
+    def _take_action(self, action):
+        # Action comes in as a scalar
+        # Clip just in case, though PPO usually handles bounds
+        current_action = np.clip(action, -1, 1)
 
-    # SCENARIO: BUYING (Action > 0)
-    if current_action > 0:
-        # Calculate how much we can buy with available balance
-        # We multiply by the action magnitude (e.g., 0.5 = use 50% of cash)
-        total_possible_crypto = self.balance / current_price
-        amount_to_buy = total_possible_crypto * current_action 
-        
-        # Execute Buy
-        cost = amount_to_buy * current_price
-        trading_fee = cost * self.commission
-        
-        if self.balance >= (cost + trading_fee):
-            self.balance -= (cost + trading_fee)
-            self.crypto_held += amount_to_buy
-            # Log the trade for rendering later
-            self.trades.append({'step': self.current_step, 'type': 'buy', 'total': cost, 'price': current_price})
+        current_price = self.raw_data_for_plot.loc[self.current_step]['close']
 
-    # SCENARIO: SELLING (Action < 0)
-    elif current_action < 0:
-        # Calculate how much to sell based on current holdings
-        # We look at the absolute value (e.g., -0.3 = sell 30% of holdings)
-        amount_to_sell = self.crypto_held * abs(current_action)
+        trade_type = 'hold'
+        trade_price = np.nan
 
-        # Execute Sell
-        revenue = amount_to_sell * current_price
-        trading_fee = revenue * self.commission
-        
-        self.balance += (revenue - trading_fee)
-        self.crypto_held -= amount_to_sell
-        # Log the trade
-        self.trades.append({'step': self.current_step, 'type': 'sell', 'total': revenue, 'price': current_price})
-    
-    # Action == 0 is a Hold, do nothing.
+        # SCENARIO: BUYING (Action > 0)
+        if current_action > 0:
+            # Calculate how much we can buy with available balance
+            # We multiply by the action magnitude (e.g., 0.5 = use 50% of cash)
+            total_possible_crypto = self.balance / current_price
+            amount_to_buy = total_possible_crypto * current_action
+
+            # Execute Buy
+            cost = amount_to_buy * current_price
+            trading_fee = cost * self.commission
+
+            if self.balance >= (cost + trading_fee):
+                self.balance -= (cost + trading_fee)
+                self.shares_held += amount_to_buy
+                trade_type = 'buy'
+                trade_price = current_price
+
+        # SCENARIO: SELLING (Action < 0)
+        elif current_action < 0:
+            # Calculate how much to sell based on current holdings
+            # We look at the absolute value (e.g., -0.3 = sell 30% of holdings)
+            amount_to_sell = self.shares_held * abs(current_action)
+
+            if amount_to_sell > 0:
+                # Execute Sell
+                revenue = amount_to_sell * current_price
+                trading_fee = revenue * self.commission
+
+                self.balance += (revenue - trading_fee)
+                self.shares_held -= amount_to_sell
+                trade_type = 'sell'
+                trade_price = current_price
+
+        # Action == 0 is a Hold, do nothing.
+        return trade_type, trade_price
 
     def step(self, action):
         # Action is a single float in [-1, 1]. Positive is Buy, Negative is Sell.
@@ -237,40 +242,9 @@ def _take_action(self, action):
         # FIX 4: Use raw data for correct price calculation
         current_price = self.raw_data_for_plot.loc[self.current_step]['close']
         action_magnitude = action[0] if hasattr(action, '__len__') else action
-        
+
         # --- Execute Trade based on Action ---
-        if action_magnitude > 0: # Buy
-            # Agent tries to allocate a percentage of current cash based on magnitude
-            cash_to_spend_ratio = action_magnitude
-            max_can_buy = self.balance / (current_price * (1 + self.commission)) # Factor in commission for max buy
-
-            shares_to_buy = max_can_buy * cash_to_spend_ratio
-            trade_cost = shares_to_buy * current_price * (1 + self.commission)
-
-            if trade_cost <= self.balance:
-                self.shares_held += shares_to_buy
-                self.balance -= trade_cost
-
-        elif action_magnitude < 0: # Sell
-            # Agent tries to sell a percentage of current holdings based on magnitude
-            shares_to_sell_ratio = abs(action_magnitude)
-
-            shares_to_sell = self.shares_held * shares_to_sell_ratio
-            trade_revenue = shares_to_sell * current_price * (1 - self.commission)
-
-            self.shares_held -= shares_to_sell
-            self.balance += trade_revenue
-
-        # Determine if a trade actually occurred for logging and penalties
-        trade_type = 'hold'
-        trade_price_log = np.nan
-
-        if 'shares_to_buy' in locals() and shares_to_buy > 0:
-            trade_type = 'buy'
-            trade_price_log = current_price
-        elif 'shares_to_sell' in locals() and shares_to_sell > 0:
-            trade_type = 'sell'
-            trade_price_log = current_price
+        trade_type, trade_price_log = self._take_action(action_magnitude)
 
         # Set trade_executed flag for callback
         trade_executed = trade_type != 'hold'
