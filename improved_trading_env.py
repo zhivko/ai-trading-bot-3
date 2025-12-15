@@ -334,10 +334,10 @@ class ImprovedTradingEnv(gym.Env):
         
         # Calculate target position size
         max_position_value = self.net_worth * self.max_exposure
-        target_position_value = max_position_value * size_intensity * abs(position_target)
+        target_position_value = max_position_value * size_intensity * position_target
         
         # Calculate current position value
-        current_position_value = abs(self.shares_held * current_price)
+        current_position_value = self.shares_held * current_price
         
         # Determine if we need to trade
         position_diff = target_position_value - current_position_value
@@ -348,42 +348,19 @@ class ImprovedTradingEnv(gym.Env):
         trade_executed = False
         fees_paid = 0.0
         
-        if abs(position_diff) > min_trade_value:
-            if position_diff > 0:  # Need to buy
-                # Calculate shares to buy
-                shares_to_buy = position_diff / current_price
-                trade_value = shares_to_buy * current_price
-                
-                # Check if we have enough balance
-                max_affordable = self.balance * 0.95  # Leave some buffer
-                if trade_value <= max_affordable:
-                    # Execute buy
-                    self.balance -= trade_value
-                    self.shares_held += shares_to_buy
-                    
-                    # Calculate and track fees
-                    fees = trade_value * self.trading_fee_rate
-                    self.balance -= fees
-                    fees_paid = fees
-                    
-                    trade_executed = True
-                    
-            elif position_diff < 0:  # Need to sell
-                # Calculate shares to sell
-                shares_to_sell = min(abs(position_diff) / current_price, abs(self.shares_held))
-                
-                if shares_to_sell > 0:
-                    # Execute sell
-                    self.balance += shares_to_sell * current_price
-                    self.shares_held -= shares_to_sell * np.sign(self.shares_held)
-                    
-                    # Calculate and track fees
-                    trade_value = shares_to_sell * current_price
-                    fees = trade_value * self.trading_fee_rate
-                    self.balance -= fees
-                    fees_paid = fees
-                    
-                    trade_executed = True
+        # Calculate required change in shares (can be negative)
+        value_diff = target_position_value - current_position_value
+        shares_diff = value_diff / current_price
+
+        if abs(shares_diff) > 0.0001: # Check threshold
+            # Simply add the difference.
+            # If shares_diff is negative, you Sell (or Short).
+            # If shares_diff is positive, you Buy (or Cover).
+            self.shares_held += shares_diff
+            self.balance -= shares_diff * current_price # Adjust cash (Shorting adds cash, Buying removes it)
+            self.balance -= abs(shares_diff * current_price) * self.trading_fee_rate # Fee is always positive
+            trade_executed = True
+            fees_paid = abs(shares_diff * current_price) * self.trading_fee_rate
         
         # Update position tracking
         if trade_executed:
