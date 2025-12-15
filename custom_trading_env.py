@@ -396,7 +396,16 @@ class ContinuousTradingEnv(gym.Env):
                 ylabel='Actions'
             )
 
-            all_add_plots = trade_plots + [reward_plot, shares_plot, actions_plot]
+            # --- 6. Prepare Net Worth for a separate subplot ---
+            net_worth_plot = mpf.make_addplot(
+                history_df['net_worth'],
+                panel=5,
+                color='red',
+                type='line',
+                ylabel='Net Worth'
+            )
+
+            all_add_plots = trade_plots + [reward_plot, shares_plot, actions_plot, net_worth_plot]
 
             # --- 4. Plot and SAVE using mplfinance (The fix) ---
             file_name = f'{agent_name.lower().replace(" ", "_")}_evaluation_chart_{pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")}.png'
@@ -408,8 +417,8 @@ class ContinuousTradingEnv(gym.Env):
                 style='yahoo',
                 volume=True,
                 addplot=all_add_plots,
-                figratio=(3,1),
-                figsize=(25,5),
+                figratio=(2.5,1),
+                figsize=(30,12),
                 title=f'{agent_name} Trading Performance',
                 ylabel='Price',
                 mav=(10, 50),
@@ -424,6 +433,9 @@ class ContinuousTradingEnv(gym.Env):
             # Add extra padding between subplots
             for ax in axlist:
                 ax.margins(x=0.02, y=0.05)  # Add margins for better spacing
+                # Make fonts smaller
+                ax.tick_params(axis='both', which='major', labelsize=8)
+                ax.tick_params(axis='both', which='minor', labelsize=6)
 
             # Add legend
             fig.legend(loc='upper left')
@@ -503,8 +515,17 @@ class ContinuousTradingEnv(gym.Env):
                     type='line',
                     ylabel='Actions'
                 )
-
-                all_add_plots = trade_plots + [reward_plot, shares_plot, actions_plot]
+    
+                # --- 6. Prepare Net Worth for a separate subplot ---
+                net_worth_plot = mpf.make_addplot(
+                    history_df['net_worth'],
+                    panel=5,
+                    color='red',
+                    type='line',
+                    ylabel='Net Worth'
+                )
+    
+                all_add_plots = trade_plots + [reward_plot, shares_plot, actions_plot, net_worth_plot]
 
                 # --- 4. Plot using mplfinance, get figure ---
                 fig, axlist = mpf.plot(
@@ -513,8 +534,8 @@ class ContinuousTradingEnv(gym.Env):
                     style='yahoo',
                     volume=True,
                     addplot=all_add_plots,
-                    figratio=(3,1),
-                    figsize=(25,5),
+                    figratio=(2.5,1),
+                    figsize=(30,12),
                     title=f'{agent_name} Trading Performance',
                     ylabel='Price',
                     mav=(10, 50),
@@ -529,6 +550,9 @@ class ContinuousTradingEnv(gym.Env):
                 # Add extra padding between subplots
                 for ax in axlist:
                     ax.margins(x=0.02, y=0.05)  # Add margins for better spacing
+                    # Make fonts smaller
+                    ax.tick_params(axis='both', which='major', labelsize=8)
+                    ax.tick_params(axis='both', which='minor', labelsize=6)
 
                 # Add legend
                 fig.legend(loc='upper left')
