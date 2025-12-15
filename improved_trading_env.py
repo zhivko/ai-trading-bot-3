@@ -24,8 +24,9 @@ class ImprovedTradingEnv(gym.Env):
     """
     metadata = {'render_modes': ['human', 'rgb_array'], 'render_fps': 30}
 
-    def __init__(self, df, initial_balance=10000, window_size=20, 
-                 trading_fee_rate=0.0015, max_exposure=0.8, optimal_hold_duration=24):
+    def __init__(self, df, initial_balance=10000, window_size=20,
+                 trading_fee_rate=0.0015, max_exposure=0.8, optimal_hold_duration=24,
+                 max_hold_steps=10):  # New param: max_hold_steps
         super(ImprovedTradingEnv, self).__init__()
         self.render_mode = 'rgb_array'
 
@@ -35,6 +36,7 @@ class ImprovedTradingEnv(gym.Env):
         self.trading_fee_rate = trading_fee_rate  # 0.15% = 0.0015
         self.max_exposure = max_exposure  # 80% maximum exposure
         self.optimal_hold_duration = optimal_hold_duration  # 24 hours for crypto
+        self.max_hold_steps = max_hold_steps  # New: maximum hold steps (e.g., 10 hours)
         
         # Initialize data
         self.raw_data_for_plot = self._clean_data_for_plot(df)
@@ -73,11 +75,11 @@ class ImprovedTradingEnv(gym.Env):
         # --- Multi-dimensional Action Space ---
         # Dimension 1: Position target (-1 to 1, where -1=max short, 0=flat, 1=max long)
         # Dimension 2: Position size intensity (0 to 1, scaling factor for position size)
-        # Dimension 3: Hold duration preference (-1 to 1, where -1=short-term, 1=long-term)
+        # Dimension 3: Hold duration (0 to 1, mapped to 0-max_hold_steps for locking)
         self.action_space = spaces.Box(
-            low=np.array([-1.0, 0.0, -1.0]), 
-            high=np.array([1.0, 1.0, 1.0]), 
-            shape=(3,), 
+            low=np.array([-1.0, 0.0, 0.0]),  # Changed low[2] to 0.0 for duration
+            high=np.array([1.0, 1.0, 1.0]),
+            shape=(3,),
             dtype=np.float32
         )
         
@@ -209,6 +211,11 @@ class ImprovedTradingEnv(gym.Env):
         self.position_start_step = None
         self.position_type = None
         
+        # Reset lock tracking
+        self.current_lock_duration = 0
+        self.last_position_target = 0.0
+        self.last_size_intensity = 0.0
+        
         # Reset trade statistics
         self.trade_statistics = {
             'total_trades': 0,
@@ -216,7 +223,8 @@ class ImprovedTradingEnv(gym.Env):
             'total_fees_paid': 0.0,
             'total_holding_penalties': 0.0,
             'total_action_penalties': 0.0,
-            'total_position_penalties': 0.0
+            'total_position_penalties': 0.0,
+            'total_lock_bonuses': 0.0
         }
         
         # Reset market tracking
@@ -256,7 +264,8 @@ class ImprovedTradingEnv(gym.Env):
             'holding_penalty': 0.0,
             'action_change_penalty': 0.0,
             'position_size_penalty': 0.0,
-            'duration_penalty': 0.0
+            'duration_penalty': 0.0,
+            'lock_bonus': 0.0
         }
         
         observation = self._get_observation()
@@ -301,7 +310,7 @@ class ImprovedTradingEnv(gym.Env):
         # Extract action components
         position_target = np.clip(action[0], -1.0, 1.0)  # -1 to 1
         size_intensity = np.clip(action[1], 0.0, 1.0)    # 0 to 1
-        hold_preference = action[2]                      # -1 to 1
+        duration_preference = np.clip(action[2], 0.0, 1.0)  # 0 to 1 (duration)
         
         # Calculate target position size
         max_position_value = self.net_worth * self.max_exposure
@@ -372,7 +381,7 @@ class ImprovedTradingEnv(gym.Env):
             
             self.position_start_step = self.current_step
         
-        return trade_executed, fees_paid, [position_target, size_intensity, hold_preference]
+        return trade_executed, fees_paid, [position_target, size_intensity, duration_preference]
 
     def _calculate_reward_components(self, trade_executed, fees_paid, action_components):
         """Calculate all reward components with improved structure."""
@@ -471,7 +480,7 @@ class ImprovedTradingEnv(gym.Env):
         return total_reward, reward_components
 
     def step(self, action):
-        """Execute one time step in the environment."""
+        """Execute one time step in the environment with duration-based locking."""
         self.current_step += 1
         
         # Check for episode end
@@ -491,10 +500,33 @@ class ImprovedTradingEnv(gym.Env):
         else:
             self.previous_action = [0.0, 0.0, 0.0]
         
-        # Execute trade
-        trade_executed, fees_paid, action_components = self._execute_trade(action)
+        # LOCK LOGIC: Check if we're in a lock period
+        trade_executed = False
+        fees_paid = 0.0
+        action_components = [0.0, 0.0, 0.0]
+        reward_bonus = 0.0
         
-        # Update net worth
+        if self.current_lock_duration > 0:
+            # We're locked - ignore new action, hold current position
+            self.current_lock_duration -= 1
+            action_components = [self.last_position_target, self.last_size_intensity, 0.0]
+            
+            # Optional: Small bonus for holding if position is profitable
+            if self.net_worth > self.previous_net_worth:
+                reward_bonus = 0.0005  # Small bonus for profitable hold
+        else:
+            # Not locked - process new action
+            trade_executed, fees_paid, action_components = self._execute_trade(action)
+            
+            # Set new lock if duration > 0
+            if len(action_components) >= 3 and action_components[2] > 0:
+                hold_steps = int(action_components[2] * self.max_hold_steps)
+                if hold_steps > 0:
+                    self.current_lock_duration = hold_steps - 1  # Current step executes the action
+                    self.last_position_target = action_components[0]
+                    self.last_size_intensity = action_components[1]
+        
+        # Update net worth (always, based on current position)
         current_price = self.raw_data_for_plot.loc[self.current_step]['close']
         self.net_worth = self.balance + self.shares_held * current_price
         
@@ -504,6 +536,12 @@ class ImprovedTradingEnv(gym.Env):
         
         # Calculate reward components
         reward, reward_components = self._calculate_reward_components(trade_executed, fees_paid, action_components)
+        
+        # Add lock bonus if applicable
+        reward += reward_bonus
+        if reward_bonus > 0:
+            reward_components['lock_bonus'] = reward_bonus
+            self.trade_statistics['total_lock_bonuses'] += reward_bonus
         
         # Update action history
         self.previous_action = action_components
@@ -530,6 +568,7 @@ class ImprovedTradingEnv(gym.Env):
         info['action_components'] = action_components
         info['trade_executed'] = trade_executed
         info['fees_paid'] = fees_paid
+        info['lock_remaining'] = self.current_lock_duration
         
         # Update history
         self.history['date'].append(self.raw_data_for_plot.loc[self.current_step, 'timestamp'])

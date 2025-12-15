@@ -563,7 +563,7 @@ class TensorboardCallback(BaseCallback):
         try:
             if wandb.run is not None:
                 self._logger.info(f"Attempting to log chart to WandB, wandb.run.id: {wandb.run.id}")
-                wandb.log({"trade_analysis/thread_0_chart": wandb.Image(fig)})
+                wandb.log({"trade_analysis/thread_0_chart": wandb.Image(fig)}, commit=True)
                 self._logger.info("Successfully logged regime chart to WandB")
             else:
                 self._logger.warning("wandb.run is None, skipping chart log")

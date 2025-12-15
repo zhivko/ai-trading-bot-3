@@ -44,7 +44,17 @@ class SafeImageRecorderCallback(BaseCallback):
                                 img,
                                 caption=f"Step {self.num_timesteps} - Trading Performance"
                             )
-                        })
+                        }, step=self.num_timesteps, commit=True)
+                        # Force immediate flush to ensure image is pushed to WandB dashboard
+                        # Try alternative flush methods (skip _flush_live_policy as it doesn't exist)
+                        if hasattr(wandb.run, 'flush'):
+                            print("Debug: Using wandb.run.flush()")
+                            wandb.run.flush()
+                        elif hasattr(wandb.run, 'log'):
+                            print("Debug: Using wandb.log() with commit=True")
+                            wandb.log({}, step=self.num_timesteps, commit=True)
+                        else:
+                            print("Debug: No flush method available, continuing...")
                         self.last_logged_step = self.n_calls
                         print(f"Logged visualization at step {self.num_timesteps}")
                     else:
@@ -91,7 +101,7 @@ class EnhancedWandbCallback(BaseCallback):
             return True
             
         # Log basic training metrics
-        wandb.log({"timesteps": self.num_timesteps})
+        wandb.log({"timesteps": self.num_timesteps}, step=self.num_timesteps, commit=True)
         
         # Extract environment information safely
         try:
@@ -114,8 +124,9 @@ class EnhancedWandbCallback(BaseCallback):
                     "balance": balance,
                     "shares_held": shares_held,
                     "market_regime": market_regime,
-                    "trade_executed": trade_executed
-                })
+                    "trade_executed": trade_executed,
+                    "lock_remaining": info.get('lock_remaining', 0)
+                }, commit=True)
                 
                 # Track episode data
                 self.ep_net_worths.append(net_worth)
@@ -151,7 +162,7 @@ class EnhancedWandbCallback(BaseCallback):
                 # Track best performance
                 if net_worth > self.best_net_worth:
                     self.best_net_worth = net_worth
-                    wandb.log({"best_net_worth": self.best_net_worth})
+                    wandb.log({"best_net_worth": self.best_net_worth}, commit=True)
                 
         except Exception as e:
             print(f"Warning: Error logging step data: {e}")
@@ -166,9 +177,9 @@ class EnhancedWandbCallback(BaseCallback):
         """Handle end of episode."""
         if wandb.run is None:
             return True
-            
+
         self.episode_count += 1
-        
+
         try:
             episode_return = 0.0
             # Calculate episode metrics
@@ -191,15 +202,15 @@ class EnhancedWandbCallback(BaseCallback):
                     "max_drawdown": max_drawdown,
                     "sharpe_ratio": sharpe_ratio,
                     "cumulative_return": np.prod([r + 1 for r in self.episode_returns]) - 1
-                })
+                }, step=self.num_timesteps, commit=True)
 
             # Log reward component analysis
-            if self.ep_reward_components:
-                self._log_detailed_reward_analysis()
+            # if self.ep_reward_components:
+            #     self._log_detailed_reward_analysis()
 
             # Log action component analysis
-            if self.ep_action_components:
-                self._log_detailed_action_analysis()
+            # if self.ep_action_components:
+            #     self._log_detailed_action_analysis()
 
             # Generate episode summary visualization
             if len(self.ep_net_worths) > 10:
@@ -210,13 +221,13 @@ class EnhancedWandbCallback(BaseCallback):
                       f"Return: {episode_return:.2%}, "
                       f"Trades: {self.ep_trade_count}, "
                       f"Net Worth: ${self.ep_net_worths[-1]:.2f}")
-            
+
         except Exception as e:
             print(f"Warning: Error logging episode end: {e}")
-        
+
         # Reset episode tracking
         self._reset_episode_tracking()
-        
+
         return True
     
     def _calculate_max_drawdown(self, net_worths):
@@ -243,7 +254,7 @@ class EnhancedWandbCallback(BaseCallback):
         """Log detailed analysis of reward components."""
         if not self.ep_reward_components:
             return
-        
+
         try:
             # Aggregate reward components across episode
             component_stats = {}
@@ -252,17 +263,21 @@ class EnhancedWandbCallback(BaseCallback):
                     if key not in component_stats:
                         component_stats[key] = []
                     component_stats[key].append(value)
-            
-            # Log component statistics
-            for component, values in component_stats.items():
+
+            # Build single log dict for all component statistics
+            log_data = {}
+            for component in component_stats.keys():
+                values = component_stats[component]
                 if values:
-                    wandb.log({
-                        f"reward_component_{component}_mean": np.mean(values),
-                        f"reward_component_{component}_std": np.std(values),
-                        f"reward_component_{component}_min": np.min(values),
-                        f"reward_component_{component}_max": np.max(values),
-                        f"reward_component_{component}_total": np.sum(values)
-                    })
+                    log_data[f"reward_component_{component}_mean"] = np.mean(values)
+                    log_data[f"reward_component_{component}_std"] = np.std(values)
+                    log_data[f"reward_component_{component}_min"] = np.min(values)
+                    log_data[f"reward_component_{component}_max"] = np.max(values)
+                    log_data[f"reward_component_{component}_total"] = np.sum(values)
+
+            # Log all at once
+            if log_data:
+                wandb.log(log_data, commit=True)
         except Exception as e:
             print(f"Warning: Error in reward analysis: {e}")
     
@@ -270,34 +285,37 @@ class EnhancedWandbCallback(BaseCallback):
         """Log detailed analysis of action components."""
         if not self.ep_action_components:
             return
-        
+
         try:
             # Convert to numpy array for easier analysis
             actions_array = np.array(self.ep_action_components)
-            
+
+            # Build single log dict for all action statistics
+            log_data = {}
+
             # Log component statistics
             for i in range(actions_array.shape[1]):
                 component_values = actions_array[:, i]
                 component_names = ['position_target', 'size_intensity', 'hold_preference']
                 component_name = component_names[i] if i < len(component_names) else f'component_{i}'
-                
-                wandb.log({
-                    f"action_{component_name}_mean": np.mean(component_values),
-                    f"action_{component_name}_std": np.std(component_values),
-                    f"action_{component_name}_min": np.min(component_values),
-                    f"action_{component_name}_max": np.max(component_values)
-                })
-            
+
+                log_data[f"action_{component_name}_mean"] = np.mean(component_values)
+                log_data[f"action_{component_name}_std"] = np.std(component_values)
+                log_data[f"action_{component_name}_min"] = np.min(component_values)
+                log_data[f"action_{component_name}_max"] = np.max(component_values)
+
             # Log action stability (how much actions change)
             if actions_array.shape[0] > 1:
                 action_changes = np.diff(actions_array, axis=0)
                 for i, component_name in enumerate(['position_target', 'size_intensity', 'hold_preference']):
                     if i < action_changes.shape[1]:
                         changes = action_changes[:, i]
-                        wandb.log({
-                            f"action_{component_name}_change_std": np.std(changes),
-                            f"action_{component_name}_change_mean": np.mean(np.abs(changes))
-                        })
+                        log_data[f"action_{component_name}_change_std"] = np.std(changes)
+                        log_data[f"action_{component_name}_change_mean"] = np.mean(np.abs(changes))
+
+            # Log all at once
+            if log_data:
+                wandb.log(log_data, commit=True)
         except Exception as e:
             print(f"Warning: Error in action analysis: {e}")
     
@@ -353,7 +371,7 @@ class EnhancedWandbCallback(BaseCallback):
             plt.tight_layout()
 
             # Log to wandb
-            wandb.log({"comprehensive_performance": wandb.Image(fig)})
+            wandb.log({"comprehensive_performance": wandb.Image(fig)}, step=self.num_timesteps, commit=True)
             plt.close(fig)
 
         except Exception as e:
@@ -401,7 +419,7 @@ class EnhancedWandbCallback(BaseCallback):
             plt.tight_layout()
 
             # Log to wandb
-            wandb.log({"episode_summary": wandb.Image(fig)})
+            wandb.log({"episode_summary": wandb.Image(fig)}, step=self.num_timesteps, commit=True)
             plt.close(fig)
 
         except Exception as e:
@@ -455,7 +473,7 @@ class EvaluationCallback(BaseCallback):
                         "eval_mean_reward": mean_reward,
                         "eval_std_reward": std_reward,
                         "eval_timestep": self.num_timesteps
-                    })
+                    }, step=self.num_timesteps, commit=True)
                 
                 print(f"Evaluation Mean Reward: {mean_reward:.2f} ± {std_reward:.2f}")
                 
@@ -497,7 +515,8 @@ def make_improved_env(data_frame, window_size=35, initial_balance=10000):
         window_size=window_size,
         trading_fee_rate=0.0015,    # 0.15% trading fee
         max_exposure=0.8,           # 80% maximum exposure
-        optimal_hold_duration=24    # 24 hours optimal hold duration
+        optimal_hold_duration=24,   # 24 hours optimal hold duration
+        max_hold_steps=10           # 10 steps maximum lock duration
     )
 
 
@@ -530,7 +549,7 @@ def main():
         },
         tags=["enhanced", "sac", "multi-dimensional-actions", "comprehensive-logging"]
     )
-    
+
     # Load and prepare data
     try:
         print("📊 Loading and preparing data...")
@@ -683,7 +702,7 @@ def main():
                 "final_max_net_worth": max_net_worth,
                 "final_mean_trades": mean_trades,
                 "total_training_timesteps": TIMESTEPS
-            })
+            }, step=TIMESTEPS, commit=True)
         
         # Visualize final performance
         print("\n🎨 Generating final performance visualization...")

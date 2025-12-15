@@ -1,242 +1,172 @@
 # visualize_predictions.py
-import argparse
-import numpy as np
-import pandas as pd
 import torch
-import matplotlib
-matplotlib.use('Agg')  # Use non-GUI backend to prevent tkinter issues
+import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from tqdm import tqdm
-from captum.attr import IntegratedGradients
-
-from sb3_contrib import RecurrentPPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-
-from enhanced_trading_env import EnhancedTradingEnv
-from fetch_metrics import generate_metrics
+import numpy as np
+import pickle
 import os
+from sb3_contrib import RecurrentPPO
+import gymnasium as gym
+from trading_env import TradingEnv
+from volume_profile import get_rolling_vp, compute_volume_profile
+from features import get_features
 
+# 1. Load the trained model
+model = RecurrentPPO.load("ppo_crypto_trader.zip")
+print("Model loaded successfully")
 
-def compute_saliency(model, obs_tensor, lstm_states, device='cuda'):
-    was_training = model.policy.training
-    model.policy.eval()
+# 2. Load data
+pair = 'BTC/USDT'
+data_file = f'{pair.replace("/", "_")}_data.csv'
+df = pd.read_csv(data_file, parse_dates=['timestamp'])
+df = df.set_index('timestamp').sort_index()
+print(f"Full data length: {len(df)} rows")
 
-    def forward_func(inputs):
-        batch_size = inputs.shape[0]
-        if lstm_states is not None:
-            h, c = lstm_states
-            h = torch.as_tensor(h, device=device).repeat(1, batch_size, 1)
-            c = torch.as_tensor(c, device=device).repeat(1, batch_size, 1)
-        else:
-            num_layers = model.policy.lstm_actor.num_layers
-            hidden_size = model.policy.lstm_actor.hidden_size
-            h = torch.zeros(num_layers, batch_size, hidden_size, device=device)
-            c = torch.zeros(num_layers, batch_size, hidden_size, device=device)
-        episode_starts = torch.zeros(batch_size, device=device)
-        dist, _ = model.policy.get_distribution(inputs, (h, c), episode_starts)
-        return dist.distribution.mean.sum(dim=1)
+# Compute VP with caching
+vp7_file = f'{pair.replace("/", "_")}_vp7.pkl'
+vp30_file = f'{pair.replace("/", "_")}_vp30.pkl'
 
-    ig = IntegratedGradients(forward_func)
-    obs_tensor.requires_grad = True
-    attr, delta = ig.attribute(obs_tensor, n_steps=30, return_convergence_delta=True)
-    model.policy.train(was_training)
-    return attr.detach().cpu().numpy()[0].squeeze()
+data_mtime = os.path.getmtime(data_file) if os.path.exists(data_file) else 0
+vp7_mtime = os.path.getmtime(vp7_file) if os.path.exists(vp7_file) else 0
+vp30_mtime = os.path.getmtime(vp30_file) if os.path.exists(vp30_file) else 0
 
+if os.path.exists(vp7_file) and vp7_mtime >= data_mtime:
+    print("Loading cached 7d VP...")
+    with open(vp7_file, 'rb') as f:
+        vp7_df = pickle.load(f)
+else:
+    print("Computing 7d VP...")
+    vp7_df = get_rolling_vp(df, 7)
+    print("Saving 7d VP...")
+    with open(vp7_file, 'wb') as f:
+        pickle.dump(vp7_df, f)
 
-def plot_trading_chart(df_results, feature_names, attributions_matrix):
-    """
-    Beautiful trading visualization with price, EMA, bull/bear zones, smart trade markers, and exposure.
-    """
-    prices = df_results['close'].values
-    actions = df_results['action'].values
-    ema50 = df_results['ema50'].values
-    net_worths = df_results['net_worth'].values
-    dates = df_results.index
-    net_worth_final = df_results['net_worth'].iloc[-1]
+if os.path.exists(vp30_file) and vp30_mtime >= data_mtime:
+    print("Loading cached 30d VP...")
+    with open(vp30_file, 'rb') as f:
+        vp30_df = pickle.load(f)
+else:
+    print("Computing 30d VP...")
+    vp30_df = get_rolling_vp(df, 30)
+    print("Saving 30d VP...")
+    with open(vp30_file, 'wb') as f:
+        pickle.dump(vp30_df, f)
 
-    steps = np.arange(len(prices))
+print("VP computation completed.")
 
-    fig, (ax1, ax2, ax3) = plt.subplots(
-        3, 1, figsize=(16, 12), sharex=True,
-        gridspec_kw={'height_ratios': [3, 1, 1]}
-    )
+# NO ENV SIMULATION: Direct rollout over FULL df for viz (faster, deterministic)
+print("Starting full-data simulation...")
+actions = []
+values = []
+prices = []
 
-    # === Price + EMA + Bull/Bear shading ===
-    ax1.plot(steps, prices, label='Price', color='black', linewidth=1.4)
-    ax1.plot(steps, ema50, label='EMA 50', color='orange', linestyle='--', linewidth=1.2)
+# Initialize for recurrent policy
+lstm_states = None
+episode_starts = torch.tensor([1.0], dtype=torch.float32)
 
-    # Bull/Bear background
-    ax1.fill_between(
-        steps, prices, ema50,
-        where=(prices >= ema50),
-        color='green', alpha=0.12, interpolate=True, label='Bull Regime'
-    )
-    ax1.fill_between(
-        steps, prices, ema50,
-        where=(prices < ema50),
-        color='red', alpha=0.12, interpolate=True, label='Bear Regime'
-    )
+for step in range(len(df)):  # FULL df!
+    current_price = df['close'].iloc[step]
+    obs = get_features(df, vp7_df, vp30_df, df.index[step])
+    
+    # Predict action/value
+    action, lstm_states = model.predict(obs, state=lstm_states, episode_start=episode_starts, deterministic=True)
+    lstm_states = (torch.tensor(lstm_states[0], dtype=torch.float32), torch.tensor(lstm_states[1], dtype=torch.float32)) if lstm_states is not None else None
+    episode_starts = torch.tensor([0.0], dtype=torch.float32)
+    
+    with torch.no_grad():
+        obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+        value = model.policy.predict_values(obs_tensor, lstm_states, episode_starts).item()
+    
+    actions.append(action[0])
+    values.append(value)
+    prices.append(current_price)
+    
+    if step % 5000 == 0:
+        print(f"Processed {step} steps")
 
-    # === Smart Buy/Sell Markers (based on exposure change) ===
-    buy_plotted = sell_plotted = False
-    for i in range(1, len(actions)):
-        delta = actions[i] - actions[i-1] if i > 0 else 0
-        if abs(delta) < 0.02:  # Filter noise
-            continue
-        if delta > 0:  # Increasing long or reducing short → Buy signal
-            label = 'Buy' if not buy_plotted else ""
-            ax1.scatter(steps[i], prices[i], color='green', marker='^', s=120, zorder=5,
-                        edgecolors='darkgreen', linewidth=1.5, label=label)
-            buy_plotted = True
-        elif delta < 0:  # Increasing short or reducing long → Sell signal
-            label = 'Sell' if not sell_plotted else ""
-            ax1.scatter(steps[i], prices[i], color='red', marker='v', s=120, zorder=5,
-                        edgecolors='darkred', linewidth=1.5, label=label)
-            sell_plotted = True
+print(f"Full simulation complete. Collected {len(actions)} steps ({len(df)} total)")
+# 4. Plot everything beautifully
+print("Generating plots...")
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10), sharex=True)  # Taller for long timeline
 
-    ax1.set_title(f"AI Trading Bot Performance | Final Portfolio Value: ${net_worth_final:,.2f}", fontsize=16, pad=20)
-    ax1.legend(loc='upper left', fontsize=11)
-    ax1.grid(True, alpha=0.3)
-    ax1.set_ylabel("Price (USDT)")
+vp_window = 24
+num_bins = 50
+ax1.plot(range(len(prices)), prices, label='Price', color='blue', linewidth=0.8)  # Thinner for long plot
 
-    # === Exposure Bar Chart ===
-    colors = ['green' if a >= 0 else 'red' for a in actions]
-    ax2.bar(steps, actions, color=colors, width=0.9, alpha=0.8)
-    ax2.axhline(0, color='white', linewidth=1.2)
-    ax2.set_ylabel("Exposure", fontsize=12)
-    ax2.grid(True, axis='y', alpha=0.4)
+for i in range(vp_window, len(prices)):  # Now full ~40k!
+    window_data = df.iloc[i - vp_window : i]
+    vp = compute_volume_profile(window_data, num_bins=num_bins)
+    
+    # POC/VA/HVN (unchanged, but now every step across years)
+    ax1.axhline(vp['poc'], xmin=i/len(prices), xmax=(i+1)/len(prices), color='yellow', lw=1, alpha=0.6, label='POC' if i==vp_window else '')
+    ax1.fill_between([i, i+1], vp['val'], vp['vah'], color='cyan', alpha=0.1, label='Value Area' if i==vp_window else '')  # Lower alpha for density
+    
+    # HVN (add plot skip for perf: every 10th to avoid overload)
+    if i % 10 == 0:  # ← NEW: Sample for speed (remove for full density)
+        threshold = np.percentile(vp['vp'], 75)
+        hvn_indices = np.where(vp['vp'] > threshold)[0]
+        if len(hvn_indices) > 0:
+            bin_size = (vp['bins'][1] - vp['bins'][0]) if len(vp['bins']) > 1 else 0
+            hvn_levels = vp['bins'][hvn_indices] + bin_size / 2
+            hvn_volumes = vp['vp'][hvn_indices]
+            current_price = prices[i]
+            local_range = current_price * 0.15
+            for level, vol in zip(hvn_levels, hvn_volumes):
+                if abs(level - current_price) > local_range:
+                    continue
+                ax1.scatter(i, level, s=min(vol * 5, 100), marker='^', c='green', alpha=0.5, label='HVN' if i==vp_window else '')  # Smaller s/alpha
+# New version – works with continuous actions [-1, 1]
+long_entries  = [i for i, a in enumerate(actions) if a > 0.6]      # confident long
+short_entries = [i for i, a in enumerate(actions) if a < -0.6]     # confident short
 
-    # === Net Worth Plot ===
-    ax3.plot(steps, net_worths, label='Net Worth', color='blue', linewidth=1.5)
-    ax3.set_ylabel("Net Worth (USDT)")
-    ax3.set_xlabel("Time")
-    ax3.legend(loc='upper left')
-    ax3.grid(True, alpha=0.3)
+ax1.scatter(long_entries,  [prices[i] for i in long_entries],  marker='^', color='lime',  s=100, edgecolors='black', linewidth=1.5, label='Long Entry', zorder=10, alpha=0.7)
+ax1.scatter(short_entries, [prices[i] for i in short_entries], marker='v', color='red',   s=100, edgecolors='black', linewidth=1.5, label='Short Entry', zorder=10, alpha=0.7)
 
-    # === Smart Date Ticks ===
-    n_ticks = 10
-    indices = np.linspace(0, len(dates) - 1, n_ticks, dtype=int)
-    tick_labels = [dates[i].strftime("%m-%d\n%H:%M") for i in indices]
-    ax3.set_xticks(indices)
-    ax3.set_xticklabels(tick_labels, fontsize=10, ha='center')
+exit_longs  = []
+exit_shorts = []
 
-    plt.tight_layout()
-    os.makedirs("results", exist_ok=True)
-    plt.savefig("results/trading_performance.png", dpi=600, bbox_inches='tight')
-    plt.close()
-    print("Trading performance chart saved: results/trading_performance.png")
+for i in range(1, len(actions)):
+    prev = actions[i-1]
+    curr = actions[i]
+    
+    # Long exit: was clearly long and now clearly reducing / flat
+    if prev > 0.6 and curr <= 0.4 and (i == 1 or actions[i-2] > 0.6):
+        exit_longs.append(i)
+    
+    # Short exit: was clearly short and now reducing / flat
+    if prev < -0.6 and curr >= -0.4 and (i == 1 or actions[i-2] < -0.6):
+        exit_shorts.append(i)
 
-    # === Average Saliency (Top 20) ===
-    avg_importance = np.mean(np.abs(attributions_matrix), axis=0)
-    top_idx = np.argsort(avg_importance)[-20:][::-1]
-    top_features = [feature_names[i] for i in top_idx]
-    top_values = avg_importance[top_idx]
+# Plot them — now they will actually appear!
+ax1.scatter(exit_longs,  [prices[i] for i in exit_longs],
+            marker='o', facecolors='none', edgecolors='orange', s=80, linewidth=2.5,
+            label='Exit Long', zorder=9, alpha=0.7)
+ax1.scatter(exit_shorts, [prices[i] for i in exit_shorts],
+            marker='o', facecolors='none', edgecolors='purple', s=80, linewidth=2.5,
+            label='Exit Short', zorder=9, alpha=0.7)
 
-    plt.figure(figsize=(10, 8))
-    bars = plt.barh(range(len(top_values)), top_values, color='skyblue', edgecolor='navy', alpha=0.8)
-    plt.yticks(range(len(top_values)), top_features, fontsize=10)
-    plt.xlabel("Average Absolute Saliency", fontsize=12)
-    plt.title("Top 20 Most Important Features (Neural Network Focus)", fontsize=14, pad=20)
-    plt.gca().invert_yaxis()
-    plt.grid(axis='x', alpha=0.3)
-    plt.tight_layout()
-    plt.savefig("results/average_saliency.png", dpi=600, bbox_inches='tight')
-    plt.close()
-    print("Average saliency chart saved: results/average_saliency.png")
+ax1.set_title("Price + Volume Profile Context (Full 5-Year Rollout)")
+ax1.legend()
+ax1.grid(alpha=0.2)
 
+ax2.plot(actions, label='Action', color='green', linewidth=0.8)
+ax2.axhline(0, color='black', linestyle='--', alpha=0.5)
+ax2.set_title("Agent Actions (-1=Short, 0=Neutral, 1=Long)")
+ax2.legend()
+ax2.grid(alpha=0.2)
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--pair", type=str, default="BTCUSDT")
-    parser.add_argument("--model-path", type=str, default="models/best_model")
-    parser.add_argument("--data-path", type=str, default="BTCUSDT_data.csv")
-    parser.add_argument("--steps", type=int, default=500, help="Number of steps to visualize")
-    parser.add_argument("--start-index", type=int, default=5000, help="Start step in dataset")
-    args = parser.parse_args()
+# Fig 2: Now full length
+fig2, ax3 = plt.subplots(figsize=(16, 4))
+ax3.plot(values, color='orange', linewidth=0.5)
+ax3.set_title("Value Function (expected future return)")
+ax3.grid(alpha=0.2)
 
-    print(f"Model path: {args.model_path}")
-    if not os.path.exists(args.model_path + '.zip'):
-        print(f"Model file does not exist at {args.model_path}.zip")
-    print("Loading data...")
-    df = pd.read_csv(args.data_path)
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    df.set_index('timestamp', inplace=True)
+step = max(1, len(df) // 10)  # ~4k for 40k
+date_labels = df.index[::step]
+for ax in (ax1, ax2, ax3):  # Add to fig2 too
+    ax.set_xticks(range(0, len(df), step))
+    ax.set_xticklabels([d.strftime('%Y-%m-%d') for d in date_labels], rotation=45)  # Monthly for long view
+ax3.set_xlabel('Steps (Full Timeline)')
 
-    print("Setting up environment...")
-    env = EnhancedTradingEnv(
-        df=df,
-        lookback_window=1,  # Critical for RecurrentPPO
-        initial_balance=10000,
-    )
-    env = DummyVecEnv([lambda: env])
-
-    # Load normalization stats if exist
-    norm_path = args.model_path.replace(".zip", ".pkl")
-    if os.path.exists(norm_path):
-        env = VecNormalize.load(norm_path, env)
-        env.training = False
-        env.norm_reward = False
-
-    print(f"Loading model: {args.model_path}")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = RecurrentPPO.load(args.model_path, env=env, device=device)
-
-    print("Running inference and computing saliency...")
-    obs = env.reset()
-    lstm_states = None
-
-    actions = []
-    prices = []
-    ema50s = []
-    net_worths = []
-    timestamps = []
-    attributions_list = []
-
-    # Get feature names
-    try:
-        feature_names = env.envs[0].get_feature_names()
-    except:
-        feature_names = [f"F{i}" for i in range(env.observation_space.shape[1])]
-
-    for i in tqdm(range(args.steps)):
-        # Saliency
-        # FIX: obs is (Batch, Features). We need (Batch, Seq_Len, Features).
-        # We insert the sequence dimension at index 1.
-        obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(1)
-
-        lstm_states_np = lstm_states
-        attr = compute_saliency(model, obs_tensor, lstm_states_np, device)
-        attributions_list.append(attr)
-
-        action, lstm_states = model.predict(obs, state=lstm_states, deterministic=True)
-        obs, _, done, infos = env.step(action)
-
-        info = infos[0]
-        actions.append(action[0][0])
-        prices.append(info['price'])
-        ema50s.append(info.get('ema50', info['price']))  # fallback
-        net_worths.append(info['net_worth'])
-        timestamps.append(env.envs[0].raw_df.iloc[env.envs[0].current_step].name)
-
-        if done:
-            break
-
-    # Build results DataFrame
-    results_df = pd.DataFrame({
-        'close': prices,
-        'action': actions,
-        'net_worth': net_worths,
-        'ema50': ema50s
-    }, index=pd.DatetimeIndex(timestamps))
-
-    attributions_matrix = np.stack(attributions_list)
-
-    # Generate charts
-    plot_trading_chart(results_df, feature_names, attributions_matrix)
-    print("\nVisualization complete!")
-    generate_metrics()
-
-
-if __name__ == "__main__":
-    main()
+plt.tight_layout()
+plt.show()

@@ -27,6 +27,7 @@ pip-delete-this-directory.txt
 nosetests.xml
 coverage.xml
 *.cover
+*.log
 .git
 .mypy_cache
 .pytest_cache
@@ -53,11 +54,5 @@ logs/
 checkpoints/
 __pycache__/
 
+.log
 *.npz
-
-
-*.log
-
-recurrentppo_tb/*.*
-recurrentppo_models/*.*
-recurrentppo_logs/*.*

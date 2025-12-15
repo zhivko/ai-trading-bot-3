@@ -4,10 +4,7 @@ import os
 import time
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import threading
-import logging
-import numpy as np
 
 def calculate_financial_kpis(history_df, summary_dict):
     """
@@ -111,238 +108,62 @@ def calculate_financial_kpis(history_df, summary_dict):
 
     return kpis
 
-def create_comprehensive_chart(metrics_df, summary_dict):
-    """
-    Create a comprehensive multi-subplot chart with actions, networth, reward components, and total reward.
-    Similar to the _plot_regime_chart method in callbacks/base_callbacks.py
-    """
-    logging.info("Creating comprehensive trading analysis chart...")
-    
-    # Check what data columns are available
-    available_columns = list(metrics_df.columns)
-    logging.info(f"Available columns: {available_columns}")
-    
-    # X-axis data
-    x_col = 'global_step' if 'global_step' in metrics_df.columns else metrics_df.index
-    steps = np.arange(len(metrics_df))
-    
-    # Determine what subplots to create based on available data
-    subplot_count = 1  # Base reward subplot
-    has_actions = any(col in available_columns for col in ['action', 'actions', 'train/action'])
-    has_networth = any(col in available_columns for col in ['net_worth', 'portfolio_value', 'financial/final_networth'])
-    has_reward_components = any(col in available_columns for col in [
-        'reward_base', 'reward_fee', 'reward_action_change', 'reward_trend', 
-        'reward_holding', 'reward_inertia', 'reward_closer', 'reward_overtrade', 'reward_episode'
-    ])
-    has_price_data = any(col in available_columns for col in ['current_price', 'price', 'price/current_price'])
-    has_ema_data = any(col in available_columns for col in ['ema50', 'price/ema50'])
-    
-    # Count additional subplots
-    if has_price_data: subplot_count += 1  # Price/EMA subplot
-    if has_actions: subplot_count += 1     # Actions subplot
-    if has_networth: subplot_count += 1    # Networth subplot
-    if has_reward_components: subplot_count += 2  # Components + Total reward subplots
-    
-    # Create subplot titles
-    subplot_titles = []
-    if has_price_data:
-        subplot_titles.append("Price & EMA")
-    subplot_titles.append("Training Performance")
-    if has_actions:
-        subplot_titles.append("Actions")
-    if has_networth:
-        subplot_titles.append("Net Worth")
-    if has_reward_components:
-        subplot_titles.append("Reward Components")
-        subplot_titles.append("Total Reward")
-    
-    # Create subplots
-    fig = make_subplots(
-        rows=subplot_count, 
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.08,
-        subplot_titles=subplot_titles,
-        specs=[[{"secondary_y": False}] for _ in range(subplot_count)]
-    )
-    
-    current_row = 1
-    
-    # 1. Price & EMA subplot
-    if has_price_data:
-        price_col = next((col for col in ['current_price', 'price', 'price/current_price'] if col in available_columns), None)
-        if price_col:
-            prices = metrics_df[price_col].fillna(method='ffill').fillna(method='bfill')
-            fig.add_trace(
-                go.Scatter(x=steps, y=prices, name='Price', line=dict(color='black', width=1.2)),
-                row=current_row, col=1
-            )
-            
-            # Add EMA if available
-            if has_ema_data:
-                ema_col = next((col for col in ['ema50', 'price/ema50'] if col in available_columns), None)
-                if ema_col:
-                    emas = metrics_df[ema_col].fillna(method='ffill').fillna(method='bfill')
-                    fig.add_trace(
-                        go.Scatter(x=steps, y=emas, name='EMA 50', line=dict(color='orange', width=1, dash='dash')),
-                        row=current_row, col=1
-                    )
-        
-        current_row += 1
-    
-    # 2. Main reward subplot (training performance)
-    potential_reward_cols = [
-        'best_eval/mean_reward', 'rollout/ep_rew_mean', 'train/reward', 'mean_reward',
-        'eval/mean_reward', 'reward'
-    ]
-    reward_col = next((col for col in potential_reward_cols if col in available_columns), None)
-    
-    if reward_col:
-        rewards = metrics_df[reward_col].fillna(method='ffill').fillna(method='bfill')
-        fig.add_trace(
-            go.Scatter(x=steps, y=rewards, name=f'{reward_col}', line=dict(color='#00ff00', width=2)),
-            row=current_row, col=1
-        )
-        chart_title = f"Trading Performance: {reward_col}"
-    else:
-        chart_title = "Trading Performance: No reward data available"
-        logging.warning("No reward columns found for main chart")
-    
-    current_row += 1
-    
-    # 3. Actions subplot
-    if has_actions:
-        action_col = next((col for col in ['action', 'actions', 'train/action'] if col in available_columns), None)
-        if action_col:
-            actions = metrics_df[action_col].fillna(0)
-            colors = ['green' if a >= 0 else 'red' for a in actions]
-            fig.add_trace(
-                go.Bar(x=steps, y=actions, name='Actions', marker_color=colors, opacity=0.7),
-                row=current_row, col=1
-            )
-        current_row += 1
-    
-    # 4. Networth subplot
-    if has_networth:
-        networth_col = next((col for col in ['net_worth', 'portfolio_value', 'financial/final_networth'] if col in available_columns), None)
-        if networth_col:
-            networth = metrics_df[networth_col].fillna(method='ffill').fillna(method='bfill')
-            fig.add_trace(
-                go.Scatter(x=steps, y=networth, name='Net Worth', line=dict(color='blue', width=1.5)),
-                row=current_row, col=1
-            )
-        current_row += 1
-    
-    # 5. Reward components subplot
-    if has_reward_components:
-        reward_component_mapping = {
-            'reward_base': 'Base (net worth)',
-            'reward_fee': 'Fee penalty',
-            'reward_action_change': 'Action change penalty',
-            'reward_trend': 'Trend alignment',
-            'reward_holding': 'Holding cost',
-            'reward_inertia': 'Inertia penalty',
-            'reward_closer': 'Closer bonus',
-            'reward_overtrade': 'Overtrading penalty',
-            'reward_episode': 'Episode termination'
-        }
-        
-        # Color palette for components
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-                 '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22']
-        
-        component_count = 0
-        for col, label in reward_component_mapping.items():
-            if col in available_columns:
-                component_data = metrics_df[col].fillna(0)
-                fig.add_trace(
-                    go.Scatter(x=steps, y=component_data, name=label, 
-                             line=dict(color=colors[component_count % len(colors)], width=1, dash='solid')),
-                    row=current_row, col=1
-                )
-                component_count += 1
-        
-        current_row += 1
-        
-        # 6. Total reward subplot (sum of all components)
-        if component_count > 0:
-            # Calculate total reward as sum of available components
-            total_reward = np.zeros(len(metrics_df))
-            for col in reward_component_mapping.keys():
-                if col in available_columns:
-                    total_reward += metrics_df[col].fillna(0).values
-            
-            fig.add_trace(
-                go.Scatter(x=steps, y=total_reward, name='Total Reward', 
-                         line=dict(color='black', width=2)),
-                row=current_row, col=1
-            )
-            # Add horizontal line at zero
-            fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.7, row=current_row, col=1)
-    
-    # Update layout
-    fig.update_layout(
-        title=dict(text=chart_title, x=0.5, font=dict(size=16)),
-        template="plotly_dark",
-        height=300 * subplot_count,
-        margin=dict(l=20, r=20, t=60, b=20),
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    
-    # Update x-axis labels
-    fig.update_xaxes(title_text="Steps", row=subplot_count, col=1)
-    
-    # Update y-axis labels for each subplot
-    if has_price_data:
-        fig.update_yaxes(title_text="Price", row=1, col=1)
-    
-    reward_row = 2 if has_price_data else 1
-    fig.update_yaxes(title_text="Reward", row=reward_row, col=1)
-    
-    if has_actions:
-        action_row = reward_row + 1
-        fig.update_yaxes(title_text="Actions", row=action_row, col=1)
-    
-    if has_networth:
-        networth_row = action_row + 1 if has_actions else reward_row + 1
-        fig.update_yaxes(title_text="Net Worth", row=networth_row, col=1)
-    
-    if has_reward_components:
-        components_row = networth_row + 1 if has_networth else (action_row + 1 if has_actions else reward_row + 1)
-        fig.update_yaxes(title_text="Reward Components", row=components_row, col=1)
-        
-        total_row = components_row + 1
-        fig.update_yaxes(title_text="Total Reward", row=total_row, col=1)
-    
-    chart_html = fig.to_html(full_html=False, include_plotlyjs='cdn')
-    
-    logging.info(f"✅ Created comprehensive chart with {subplot_count} subplots")
-    return chart_html, chart_title
-
 def create_html_report(metrics_df, summary_dict):
-    logging.info("📊 Generating Professional Quant Report...")
-
-    # Get Git information
-    git_info = {}
-    try:
-        git_info['local_branch'] = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD']).decode('utf-8').strip()
-        git_info['commit_id'] = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
-        try:
-            remote_branch = subprocess.check_output(['git', 'rev-parse', '--symbolic-full-name', '@{u}']).decode('utf-8').strip()
-            git_info['remote_branch'] = remote_branch
-        except subprocess.CalledProcessError:
-            git_info['remote_branch'] = 'No upstream'
-    except subprocess.CalledProcessError:
-        git_info['local_branch'] = 'N/A'
-        git_info['commit_id'] = 'N/A'
-        git_info['remote_branch'] = 'N/A'
-
+    print("📊 Generating Professional Quant Report...")
+    
     # 1. KPIs Section
     kpis = calculate_financial_kpis(metrics_df, summary_dict)
     
-    # 2. Enhanced Interactive Chart: Comprehensive Trading Analysis
-    chart_html, chart_title = create_comprehensive_chart(metrics_df, summary_dict)
+    # 2. Interactive Chart: Training Reward Over Time
+    # We look for ANY of these columns to plot the main line
+    potential_cols = [
+        'best_eval/mean_reward',  # Best metric (Validation)
+        'rollout/ep_rew_mean',    # Second best (Training)
+        'train/reward',           # Alternative
+        'mean_reward'             # Generic
+    ]
+    
+    # Find the first column that actually exists in the DF
+    plot_col = next((c for c in potential_cols if c in metrics_df.columns), None)
+
+    if not plot_col:
+        print(f"⚠️ Warning: No reward columns found. Available: {list(metrics_df.columns)}")
+        chart_html = "<p style='color:red; text-align:center;'>Reward data not available in history.</p>"
+        chart_title = "Data Missing"
+    else:
+        print(f"   > Using '{plot_col}' for main chart.")
+        chart_title = f"Performance: {plot_col}"
+        
+        # Filter NaNs
+        # Use global_step for X axis if available, else index
+        x_col = 'global_step' if 'global_step' in metrics_df.columns else None
+        
+        if x_col:
+            plot_df = metrics_df[[x_col, plot_col]].dropna()
+            x_data = plot_df[x_col]
+        else:
+            plot_df = metrics_df[[plot_col]].dropna()
+            x_data = plot_df.index
+
+        y_data = plot_df[plot_col]
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=x_data, 
+            y=y_data, 
+            mode='lines', 
+            name='Reward',
+            line=dict(color='#00ff00', width=2)
+        ))
+        fig.update_layout(
+            title=chart_title,
+            template="plotly_dark",
+            height=400,
+            margin=dict(l=20, r=20, t=40, b=20),
+            xaxis_title="Steps",
+            yaxis_title="Reward"
+        )
+        chart_html = fig.to_html(full_html=False, include_plotlyjs='cdn')
 
     # --- HTML GENERATION ---
     html_content = f"""
@@ -352,7 +173,7 @@ def create_html_report(metrics_df, summary_dict):
         <title>AI Trading Bot - Quant Report</title>
         <style>
             body {{ background-color: #1e1e1e; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; }}
-            .container {{ max-width: 1200px; margin: auto; }}
+            .container {{ max_width: 1200px; margin: auto; }}
             .header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 20px; }}
             .kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }}
             .kpi-card {{ background: #2d2d2d; padding: 20px; border-radius: 8px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }}
@@ -374,7 +195,6 @@ def create_html_report(metrics_df, summary_dict):
                 <div>
                     <h1>🤖 AI Trading Bot Report</h1>
                     <span style="color: #888;">Run ID: {summary_dict.get('run_id', 'N/A')} | {summary_dict.get('_timestamp', '')}</span>
-                    <br><span style="color: #666; font-size: 12px;">Git: Branch {git_info['local_branch']} ({git_info['remote_branch']}) | Commit {git_info['commit_id'][:8]}</span>
                 </div>
             </div>
 
@@ -397,14 +217,6 @@ def create_html_report(metrics_df, summary_dict):
             <div class="section">
                 <h2>📈 Training Performance</h2>
                 {chart_html}
-            </div>
-
-            <div class="section">
-                <h2>📊 Visualization</h2>
-                <div class="img-grid">
-                    <img src="trading_performance.png" alt="Trading Performance">
-                    <img src="average_saliency.png" alt="Average Saliency">
-                </div>
             </div>
 
             <div class="section">
@@ -433,7 +245,7 @@ def create_html_report(metrics_df, summary_dict):
 
     with open("results/quant_report.html", "w", encoding="utf-8") as f:
         f.write(html_content)
-    logging.info("✅ Successfully generated: results/quant_report.html")
+    print("✅ Successfully generated: results/quant_report.html")
 
     
 def _generate_metrics_worker():
@@ -443,11 +255,11 @@ def _generate_metrics_worker():
 
     if runs:
         run = runs[0]
-        logging.info(f"Fetching metrics for run: {run.name} ({run.id})")
+        print(f"Fetching metrics for run: {run.name} ({run.id})")
         os.makedirs("results", exist_ok=True)
 
         # 1. Fetch History (More samples to catch sparse eval metrics)
-        logging.info("Downloading history...")
+        print("Downloading history...")
         # Increase samples to ensure we capture the 'best_eval' points
         history_df = run.history(samples=10000)
         history_df.to_csv("results/metrics.csv")
@@ -460,18 +272,16 @@ def _generate_metrics_worker():
         create_html_report(history_df, summary_dict)
 
         # 4. Git Push
-        '''
         try:
-            logging.info("Pushing to Git...")
+            print("Pushing to Git...")
             subprocess.run(["git", "add", "results/"], check=True)
             subprocess.run(["git", "commit", "-m", f"Report update {run.name}"], check=True)
             subprocess.run(["git", "push"], check=True)
         except subprocess.CalledProcessError as e:
-             if e.returncode == 1: logging.info("Nothing to commit.")
-             else: logging.info(f"Git error: {e}")
-        '''
+             if e.returncode == 1: print("Nothing to commit.")
+             else: print(f"Git error: {e}")
     else:
-        logging.info("No runs found.")
+        print("No runs found.")
 
 def generate_metrics():
     thread = threading.Thread(target=_generate_metrics_worker)
