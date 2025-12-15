@@ -4,8 +4,10 @@ import matplotlib
 import talib
 matplotlib.use('Agg')  # Use non-interactive backend for headless operation
 import matplotlib.pyplot as plt
-from stable_baselines3 import PPO, SAC
+from stable_baselines3 import SAC
+from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.vec_env import SubprocVecEnv
 from improved_trading_env import ImprovedTradingEnv
 import wandb
 from stable_baselines3.common.callbacks import BaseCallback
@@ -29,6 +31,11 @@ class SafeImageRecorderCallback(BaseCallback):
         if self.n_calls % self.render_freq == 0 and self.n_calls != self.last_logged_step:
             print(f"Debug: Attempting to log visualization at n_calls={self.n_calls}, num_timesteps={self.num_timesteps}")
             try:
+                # Check if environment supports direct access to individual envs (not available for SubprocVecEnv)
+                if not hasattr(self.training_env, 'envs'):
+                    print("Debug: Training environment does not support direct env access (e.g., SubprocVecEnv), skipping visualization")
+                    return True
+
                 # Safely access environment and render
                 env = self.training_env.envs[0]
                 print(f"Debug: Environment has render: {hasattr(env.unwrapped, 'render')}")
@@ -44,17 +51,8 @@ class SafeImageRecorderCallback(BaseCallback):
                                 img,
                                 caption=f"Step {self.num_timesteps} - Trading Performance"
                             )
-                        }, step=self.num_timesteps, commit=True)
-                        # Force immediate flush to ensure image is pushed to WandB dashboard
-                        # Try alternative flush methods (skip _flush_live_policy as it doesn't exist)
-                        if hasattr(wandb.run, 'flush'):
-                            print("Debug: Using wandb.run.flush()")
-                            wandb.run.flush()
-                        elif hasattr(wandb.run, 'log'):
-                            print("Debug: Using wandb.log() with commit=True")
-                            wandb.log({}, step=self.num_timesteps, commit=True)
-                        else:
-                            print("Debug: No flush method available, continuing...")
+                        }, commit=True)
+
                         self.last_logged_step = self.n_calls
                         print(f"Logged visualization at step {self.num_timesteps}")
                     else:
@@ -91,7 +89,9 @@ class EnhancedWandbCallback(BaseCallback):
         self.ep_reward_components = []
         self.ep_trade_statistics = []
         self.ep_market_regimes = []
-        
+        self.ep_buy_steps = []
+        self.ep_sell_steps = []
+
         # Performance tracking
         self.best_net_worth = 0
         self.episode_returns = []
@@ -101,13 +101,13 @@ class EnhancedWandbCallback(BaseCallback):
             return True
             
         # Log basic training metrics
-        wandb.log({"timesteps": self.num_timesteps}, step=self.num_timesteps, commit=True)
+        wandb.log({"timesteps": self.num_timesteps}, commit=True)
         
         # Extract environment information safely
         try:
             infos = self.locals.get('infos', [])
             if infos:
-                info = infos[0] if isinstance(infos, list) else infos
+                info = infos[0] if isinstance(infos, (list, tuple)) else infos
                 
                 # Extract key metrics
                 net_worth = info.get('net_worth', 0)
@@ -156,8 +156,10 @@ class EnhancedWandbCallback(BaseCallback):
                         position_target = action_components[0]
                         if position_target > 0.1:
                             self.ep_buy_count += 1
+                            self.ep_buy_steps.append(len(self.ep_balances) - 1)
                         elif position_target < -0.1:
                             self.ep_sell_count += 1
+                            self.ep_sell_steps.append(len(self.ep_balances) - 1)
                 
                 # Track best performance
                 if net_worth > self.best_net_worth:
@@ -202,15 +204,15 @@ class EnhancedWandbCallback(BaseCallback):
                     "max_drawdown": max_drawdown,
                     "sharpe_ratio": sharpe_ratio,
                     "cumulative_return": np.prod([r + 1 for r in self.episode_returns]) - 1
-                }, step=self.num_timesteps, commit=True)
+                }, commit=True)
 
             # Log reward component analysis
-            # if self.ep_reward_components:
-            #     self._log_detailed_reward_analysis()
+            if self.ep_reward_components:
+                self._log_detailed_reward_analysis()
 
             # Log action component analysis
-            # if self.ep_action_components:
-            #     self._log_detailed_action_analysis()
+            if self.ep_action_components:
+                self._log_detailed_action_analysis()
 
             # Generate episode summary visualization
             if len(self.ep_net_worths) > 10:
@@ -331,6 +333,15 @@ class EnhancedWandbCallback(BaseCallback):
 
             # Plot 1: Net Worth and Prices
             axes[0].plot(steps, self.ep_prices, label='Price', color='black', alpha=0.7)
+
+            # Add buy/sell triangles
+            if self.ep_buy_steps:
+                buy_prices = [self.ep_prices[i] for i in self.ep_buy_steps if i < len(self.ep_prices)]
+                axes[0].scatter(self.ep_buy_steps, buy_prices, marker='^', color='green', s=50, label='Buy')
+            if self.ep_sell_steps:
+                sell_prices = [self.ep_prices[i] for i in self.ep_sell_steps if i < len(self.ep_prices)]
+                axes[0].scatter(self.ep_sell_steps, sell_prices, marker='v', color='red', s=50, label='Sell')
+
             axes[0].set_ylabel('Price ($)')
             axes[0].set_title(f'Enhanced Trading Performance - Step {self.num_timesteps}')
             axes[0].grid(True, alpha=0.3)
@@ -371,7 +382,7 @@ class EnhancedWandbCallback(BaseCallback):
             plt.tight_layout()
 
             # Log to wandb
-            wandb.log({"comprehensive_performance": wandb.Image(fig)}, step=self.num_timesteps, commit=True)
+            wandb.log({"comprehensive_performance": wandb.Image(fig)}, commit=True)
             plt.close(fig)
 
         except Exception as e:
@@ -419,7 +430,7 @@ class EnhancedWandbCallback(BaseCallback):
             plt.tight_layout()
 
             # Log to wandb
-            wandb.log({"episode_summary": wandb.Image(fig)}, step=self.num_timesteps, commit=True)
+            wandb.log({"episode_summary": wandb.Image(fig)}, commit=True)
             plt.close(fig)
 
         except Exception as e:
@@ -442,6 +453,8 @@ class EnhancedWandbCallback(BaseCallback):
         self.ep_reward_components = []
         self.ep_trade_statistics = []
         self.ep_market_regimes = []
+        self.ep_buy_steps = []
+        self.ep_sell_steps = []
 
 
 class EvaluationCallback(BaseCallback):
@@ -473,7 +486,7 @@ class EvaluationCallback(BaseCallback):
                         "eval_mean_reward": mean_reward,
                         "eval_std_reward": std_reward,
                         "eval_timestep": self.num_timesteps
-                    }, step=self.num_timesteps, commit=True)
+                    }, commit=True)
                 
                 print(f"Evaluation Mean Reward: {mean_reward:.2f} ± {std_reward:.2f}")
                 
@@ -507,7 +520,7 @@ def create_improved_data(df):
     return df
 
 
-def make_improved_env(data_frame, window_size=35, initial_balance=10000):
+def make_improved_env(data_frame, window_size=35, initial_balance=10000, max_hold_steps=10):
     """Create improved trading environment with enhanced features."""
     return ImprovedTradingEnv(
         df=data_frame,
@@ -516,7 +529,7 @@ def make_improved_env(data_frame, window_size=35, initial_balance=10000):
         trading_fee_rate=0.0015,    # 0.15% trading fee
         max_exposure=0.8,           # 80% maximum exposure
         optimal_hold_duration=24,   # 24 hours optimal hold duration
-        max_hold_steps=10           # 10 steps maximum lock duration
+        max_hold_steps=max_hold_steps           # Configurable maximum lock duration
     )
 
 
@@ -525,19 +538,19 @@ def main():
     
     # Configuration
     DATA_FILE = 'BTCUSDT_data.csv'
-    TIMESTEPS = 1000000  # Increased for better training
+    TIMESTEPS = 5000000  # Increased for better training
     WINDOW_SIZE = 35
     INITIAL_BALANCE = 10000
     
-    print("🚀 Starting Enhanced SAC Training with Improved Environment")
+    print("🚀 Starting Enhanced PPO Training with Improved Environment")
     print("=" * 60)
     
     # Initialize WandB with enhanced configuration
     wandb.init(
         project="crypto-trading-rl-improved",
-        name=f"enhanced-sac-training-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        name=f"enhanced-ppo-training-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         config={
-            "algorithm": "SAC",
+            "algorithm": "RecurrentPPO",
             "environment": "ImprovedTradingEnv",
             "timesteps": TIMESTEPS,
             "window_size": WINDOW_SIZE,
@@ -545,9 +558,9 @@ def main():
             "trading_fee_rate": 0.0015,
             "max_exposure": 0.8,
             "optimal_hold_duration": 24,
-            "n_envs": 4
+            "n_envs": 12
         },
-        tags=["enhanced", "sac", "multi-dimensional-actions", "comprehensive-logging"]
+        tags=["enhanced", "recurrent-ppo", "lstm-policy", "multi-dimensional-actions", "comprehensive-logging"]
     )
 
     # Load and prepare data
@@ -574,38 +587,40 @@ def main():
     
     # Create environments
     print("\n🏗️ Creating environments...")
-    
+
     def make_train_env():
-        return make_improved_env(train_df, WINDOW_SIZE, INITIAL_BALANCE)
-    
-    # Vectorized environment for training
-    train_env = make_vec_env(make_train_env, n_envs=4)
-    
+        return make_improved_env(train_df, WINDOW_SIZE, INITIAL_BALANCE, max_hold_steps=24)
+
+    # Vectorized environment for training with parallel execution
+    train_env = make_vec_env(make_train_env, n_envs=12, vec_env_cls=SubprocVecEnv)
+
     # Separate evaluation environment
-    eval_env = make_improved_env(test_df, WINDOW_SIZE, INITIAL_BALANCE)
+    eval_env = make_improved_env(test_df, WINDOW_SIZE, INITIAL_BALANCE, max_hold_steps=24)
     
-    # Initialize SAC model with enhanced configuration
-    print("\n🤖 Initializing SAC model...")
-    sac_model = SAC(
-        "MlpPolicy",
+    # Initialize Recurrent PPO model with LSTM policy for temporal awareness
+    print("\n🤖 Initializing Recurrent PPO model with LSTM policy...")
+    ppo_model = RecurrentPPO(
+        "MlpLstmPolicy",
         train_env,
         verbose=1,
-        buffer_size=1000000,
-        learning_rate=3e-5,
-        ent_coef='auto',
-        gamma=0.99,
-        tau=0.02,
+        learning_rate=3e-4,  # Higher learning rate for exploration
+        n_steps=2048,
         batch_size=256,
+        n_epochs=10,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
         policy_kwargs=dict(
             net_arch=[256, 256, 128],  # Larger network for complex action space
-            activation_fn=torch.nn.ReLU
+            activation_fn=torch.nn.ReLU,
+            lstm_hidden_size=128
         ),
         device='auto'
     )
     
-    print("✅ SAC model initialized successfully")
-    print(f"Action space: {sac_model.action_space}")
-    print(f"Observation space: {sac_model.observation_space}")
+    print("✅ Recurrent PPO model initialized successfully")
+    print(f"Action space: {ppo_model.action_space}")
+    print(f"Observation space: {ppo_model.observation_space}")
     
     # Initialize callbacks
     print("\n📊 Setting up callbacks...")
@@ -632,15 +647,15 @@ def main():
     
     try:
         # Train the model with all callbacks
-        sac_model.learn(
+        ppo_model.learn(
             total_timesteps=TIMESTEPS,
             progress_bar=True,
             callback=callbacks
         )
-        
+
         # Save the final model
-        model_path = f"sac_improved_crypto_trader_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        sac_model.save(model_path)
+        model_path = f"ppo_improved_crypto_trader_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        ppo_model.save(model_path)
         print(f"\n💾 Model saved to: {model_path}")
         
     except Exception as e:
@@ -663,7 +678,7 @@ def main():
             episode_trades = 0
             
             while True:
-                action, _states = sac_model.predict(obs, deterministic=True)
+                action, _states = ppo_model.predict(obs, deterministic=True)
                 obs, reward, terminated, truncated, info = eval_env.step(action)
                 episode_reward += reward
                 
@@ -702,11 +717,11 @@ def main():
                 "final_max_net_worth": max_net_worth,
                 "final_mean_trades": mean_trades,
                 "total_training_timesteps": TIMESTEPS
-            }, step=TIMESTEPS, commit=True)
+            }, commit=True)
         
         # Visualize final performance
         print("\n🎨 Generating final performance visualization...")
-        eval_env.render(mode='human', agent_name='Final_SAC_Improved_Evaluation')
+        eval_env.render(mode='human', agent_name='Final_PPO_Improved_Evaluation')
         
         # Print comprehensive summary
         print("\n" + "=" * 60)

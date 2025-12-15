@@ -25,8 +25,8 @@ class ImprovedTradingEnv(gym.Env):
     metadata = {'render_modes': ['human', 'rgb_array'], 'render_fps': 30}
 
     def __init__(self, df, initial_balance=10000, window_size=20,
-                 trading_fee_rate=0.0015, max_exposure=0.8, optimal_hold_duration=24,
-                 max_hold_steps=10):  # New param: max_hold_steps
+                  trading_fee_rate=0.0015, max_exposure=0.8, optimal_hold_duration=24,
+                  max_hold_steps=20):  # New param: max_hold_steps
         super(ImprovedTradingEnv, self).__init__()
         self.render_mode = 'rgb_array'
 
@@ -75,10 +75,10 @@ class ImprovedTradingEnv(gym.Env):
         # --- Multi-dimensional Action Space ---
         # Dimension 1: Position target (-1 to 1, where -1=max short, 0=flat, 1=max long)
         # Dimension 2: Position size intensity (0 to 1, scaling factor for position size)
-        # Dimension 3: Hold duration (0 to 1, mapped to 0-max_hold_steps for locking)
+        # Dimension 3: Hold duration (0 to max_hold_steps, mapped to 0-max_hold_steps for locking)
         self.action_space = spaces.Box(
-            low=np.array([-1.0, 0.0, 0.0]),  # Changed low[2] to 0.0 for duration
-            high=np.array([1.0, 1.0, 1.0]),
+            low=np.array([-1.0, 0.0, 10.0]),  # Changed low[2] to 10.0 for minimum hold duration
+            high=np.array([1.0, 1.0, self.max_hold_steps]),
             shape=(3,),
             dtype=np.float32
         )
@@ -310,7 +310,7 @@ class ImprovedTradingEnv(gym.Env):
         # Extract action components
         position_target = np.clip(action[0], -1.0, 1.0)  # -1 to 1
         size_intensity = np.clip(action[1], 0.0, 1.0)    # 0 to 1
-        duration_preference = np.clip(action[2], 0.0, 1.0)  # 0 to 1 (duration)
+        duration_preference = np.clip(action[2], 10.0, self.max_hold_steps)  # 10 to max_hold_steps (duration)
         
         # Calculate target position size
         max_position_value = self.net_worth * self.max_exposure
@@ -385,7 +385,10 @@ class ImprovedTradingEnv(gym.Env):
 
     def _calculate_reward_components(self, trade_executed, fees_paid, action_components):
         """Calculate all reward components with improved structure."""
-        
+
+        # Calculate hold preference (normalized duration)
+        hold_preference = action_components[2] / self.max_hold_steps
+
         # 1. Base Reward: Net worth change percentage
         base_reward = 0.0
         if self.previous_net_worth > 0:
@@ -417,7 +420,7 @@ class ImprovedTradingEnv(gym.Env):
             
             # Penalize holding beyond optimal duration
             if time_in_position > self.optimal_hold_duration:
-                excess_time = time_in_position - self.optimal_hold_duration
+                excess_time = abs(time_in_position - self.optimal_hold_duration)
                 duration_penalty = -(excess_time / self.optimal_hold_duration) * 0.1
                 
             # Symmetric holding penalty for any position
@@ -458,7 +461,15 @@ class ImprovedTradingEnv(gym.Env):
                 holding_penalty *= reduction_factor
                 duration_penalty *= reduction_factor
                 position_size_penalty *= reduction_factor
-        
+
+        # Hold preference tweaks
+        hold_bonus = 0.0
+        hold_penalty = 0.0
+        if self.market_regime == 'low':
+            hold_bonus = 0.002 * hold_preference
+        if self.market_regime == 'high' and hold_preference < 0.5:
+            hold_penalty = -0.001
+
         # Compile reward components
         reward_components = {
             'base': base_reward,
@@ -466,7 +477,9 @@ class ImprovedTradingEnv(gym.Env):
             'action_change_penalty': action_change_penalty,
             'holding_penalty': holding_penalty,
             'duration_penalty': duration_penalty,
-            'position_size_penalty': position_size_penalty
+            'position_size_penalty': position_size_penalty,
+            'hold_bonus': hold_bonus,
+            'hold_penalty': hold_penalty
         }
         
         # Calculate total reward
@@ -520,7 +533,7 @@ class ImprovedTradingEnv(gym.Env):
             
             # Set new lock if duration > 0
             if len(action_components) >= 3 and action_components[2] > 0:
-                hold_steps = int(action_components[2] * self.max_hold_steps)
+                hold_steps = int(action_components[2])
                 if hold_steps > 0:
                     self.current_lock_duration = hold_steps - 1  # Current step executes the action
                     self.last_position_target = action_components[0]
