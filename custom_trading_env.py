@@ -496,7 +496,7 @@ class ContinuousTradingEnv(gym.Env):
                     volume=True,
                     addplot=all_add_plots,
                     figratio=(3,1),
-                    figsize=(20,10),
+                    figsize=(25,5),
                     title=f'{agent_name} Trading Performance',
                     ylabel='Price',
                     mav=(10, 50),
