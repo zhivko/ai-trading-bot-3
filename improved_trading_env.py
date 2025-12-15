@@ -145,6 +145,15 @@ class ImprovedTradingEnv(gym.Env):
             'net_worth': [],
             'reward': [],
             'reward_components': {},
+            'base_reward': [],
+            'fee_penalty': [],
+            'action_change_penalty': [],
+            'holding_penalty': [],
+            'duration_penalty': [],
+            'position_size_penalty': [],
+            'hold_bonus': [],
+            'hold_penalty': [],
+            'lock_bonus': [],
             'action': [],
             'action_components': [],
             'trade_type': [],
@@ -267,6 +276,17 @@ class ImprovedTradingEnv(gym.Env):
             'duration_penalty': 0.0,
             'lock_bonus': 0.0
         }
+
+        # Initialize reward components
+        self.history['base_reward'].append(0.0)
+        self.history['fee_penalty'].append(0.0)
+        self.history['action_change_penalty'].append(0.0)
+        self.history['holding_penalty'].append(0.0)
+        self.history['duration_penalty'].append(0.0)
+        self.history['position_size_penalty'].append(0.0)
+        self.history['hold_bonus'].append(0.0)
+        self.history['hold_penalty'].append(0.0)
+        self.history['lock_bonus'].append(0.0)
         
         observation = self._get_observation()
         info = self._get_info_dict()
@@ -472,7 +492,7 @@ class ImprovedTradingEnv(gym.Env):
 
         # Compile reward components
         reward_components = {
-            'base': base_reward,
+            'base_reward': base_reward,
             'fee_penalty': fee_penalty,
             'action_change_penalty': action_change_penalty,
             'holding_penalty': holding_penalty,
@@ -549,13 +569,17 @@ class ImprovedTradingEnv(gym.Env):
         
         # Calculate reward components
         reward, reward_components = self._calculate_reward_components(trade_executed, fees_paid, action_components)
-        
+
         # Add lock bonus if applicable
         reward += reward_bonus
         if reward_bonus > 0:
             reward_components['lock_bonus'] = reward_bonus
             self.trade_statistics['total_lock_bonuses'] += reward_bonus
-        
+
+        # Append reward components to history
+        for key, value in reward_components.items():
+            self.history[key].append(value)
+
         # Update action history
         self.previous_action = action_components
         
@@ -642,16 +666,16 @@ class ImprovedTradingEnv(gym.Env):
                 buy_prices = pd.Series(index=episode_df.index, data=np.nan)
                 buy_prices.loc[buys.index] = buys['trade_price']
                 trade_plots.append(mpf.make_addplot(
-                    buy_prices, type='scatter', markersize=100, marker='^', 
-                    color='green', label='Buy'
+                    buy_prices, type='scatter', markersize=120, marker='^',
+                    color='green', alpha=0.5, label='Buy'
                 ))
-            
+
             if not sells.empty:
                 sell_prices = pd.Series(index=episode_df.index, data=np.nan)
                 sell_prices.loc[sells.index] = sells['trade_price']
                 trade_plots.append(mpf.make_addplot(
-                    sell_prices, type='scatter', markersize=100, marker='v', 
-                    color='red', label='Sell'
+                    sell_prices, type='scatter', markersize=120, marker='o',
+                    color='red', alpha=0.5, label='Sell'
                 ))
             
             # Prepare subplots
@@ -671,13 +695,18 @@ class ImprovedTradingEnv(gym.Env):
             net_worth_plot = mpf.make_addplot(
                 history_df['net_worth'], panel=5, color='red', type='line', ylabel='Net Worth'
             )
-            
-            all_add_plots = trade_plots + [reward_plot, position_size_plot, action_plot, net_worth_plot]
+
+            reward_components_plot = mpf.make_addplot(
+                history_df[['base_reward', 'fee_penalty', 'action_change_penalty', 'holding_penalty', 'duration_penalty', 'position_size_penalty', 'hold_bonus', 'hold_penalty', 'lock_bonus']],
+                panel=6, type='line', ylabel='Reward Components'
+            )
+
+            all_add_plots = trade_plots + [reward_plot, position_size_plot, action_plot, net_worth_plot, reward_components_plot]
             
             # Create plot
             fig, axlist = mpf.plot(
                 episode_df, type='candle', style='yahoo', volume=True,
-                addplot=all_add_plots, figratio=(2.5, 1), figsize=(32, 14),
+                addplot=all_add_plots, figratio=(2.5, 1), figsize=(32, 18),
                 title=f'{agent_name} Trading Performance (Improved Environment)',
                 ylabel='Price', mav=(10, 50), show_nontrading=False,
                 tight_layout=False, returnfig=True
@@ -773,12 +802,17 @@ class ImprovedTradingEnv(gym.Env):
                 history_df['net_worth'], panel=5, color='red', type='line', ylabel='Net Worth'
             )
 
-            all_add_plots = trade_plots + [reward_plot, position_size_plot, action_plot, net_worth_plot]
+            reward_components_plot = mpf.make_addplot(
+                history_df[['base_reward', 'fee_penalty', 'action_change_penalty', 'holding_penalty', 'duration_penalty', 'position_size_penalty', 'hold_bonus', 'hold_penalty', 'lock_bonus']],
+                panel=6, type='line', ylabel='Reward Components'
+            )
+
+            all_add_plots = trade_plots + [reward_plot, position_size_plot, action_plot, net_worth_plot, reward_components_plot]
 
             # Create plot
             fig, axlist = mpf.plot(
                 episode_df, type='candle', style='yahoo', volume=True,
-                addplot=all_add_plots, figratio=(2.5, 1), figsize=(32, 14),
+                addplot=all_add_plots, figratio=(2.5, 1), figsize=(32, 18),
                 title=f'{agent_name} Trading Performance (Improved Environment)',
                 ylabel='Price', mav=(10, 50), show_nontrading=False,
                 tight_layout=False, returnfig=True
