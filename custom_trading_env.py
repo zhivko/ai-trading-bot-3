@@ -418,7 +418,7 @@ class ContinuousTradingEnv(gym.Env):
                 volume=True,
                 addplot=all_add_plots,
                 figratio=(2.5,1),
-                figsize=(30,12),
+                figsize=(32,14),
                 title=f'{agent_name} Trading Performance',
                 ylabel='Price',
                 mav=(10, 50),
@@ -433,9 +433,9 @@ class ContinuousTradingEnv(gym.Env):
             # Add extra padding between subplots
             for ax in axlist:
                 ax.margins(x=0.02, y=0.05)  # Add margins for better spacing
-                # Make fonts smaller
-                ax.tick_params(axis='both', which='major', labelsize=8)
-                ax.tick_params(axis='both', which='minor', labelsize=6)
+                # Make fonts smaller to accommodate more panels
+                ax.tick_params(axis='both', which='major', labelsize=7)
+                ax.tick_params(axis='both', which='minor', labelsize=5)
 
             # Add legend
             fig.legend(loc='upper left')
@@ -535,7 +535,7 @@ class ContinuousTradingEnv(gym.Env):
                     volume=True,
                     addplot=all_add_plots,
                     figratio=(2.5,1),
-                    figsize=(30,12),
+                    figsize=(32,14),
                     title=f'{agent_name} Trading Performance',
                     ylabel='Price',
                     mav=(10, 50),
@@ -550,9 +550,9 @@ class ContinuousTradingEnv(gym.Env):
                 # Add extra padding between subplots
                 for ax in axlist:
                     ax.margins(x=0.02, y=0.05)  # Add margins for better spacing
-                    # Make fonts smaller
-                    ax.tick_params(axis='both', which='major', labelsize=8)
-                    ax.tick_params(axis='both', which='minor', labelsize=6)
+                    # Make fonts smaller to accommodate more panels
+                    ax.tick_params(axis='both', which='major', labelsize=7)
+                    ax.tick_params(axis='both', which='minor', labelsize=5)
 
                 # Add legend
                 fig.legend(loc='upper left')
