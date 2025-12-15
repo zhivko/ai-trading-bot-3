@@ -328,8 +328,8 @@ class ContinuousTradingEnv(gym.Env):
 
     def render(self, mode='human', agent_name='RL_Agent'):
         """Plots the agent's performance using mplfinance, saving the result to a file."""
-        print(f"DEBUG: render called with mode='{mode}', agent_name='{agent_name}'")
-        print(f"DEBUG: current_step={self.current_step}, history length={len(self.history['date'])}")
+        #print(f"DEBUG: render called with mode='{mode}', agent_name='{agent_name}'")
+        #print(f"DEBUG: current_step={self.current_step}, history length={len(self.history['date'])}")
         if mode == 'human':
             print("DEBUG: Rendering in human mode")
             # 1. Convert history to DataFrame and set a DatetimeIndex
@@ -428,7 +428,7 @@ class ContinuousTradingEnv(gym.Env):
             print(f"\nVisualisation saved to: {file_name}")
 
         elif mode == 'rgb_array':
-            print("DEBUG: Rendering in rgb_array mode")
+            # print("DEBUG: Rendering in rgb_array mode")
             try:
                 # Same plotting logic as human mode, but return image array instead of saving
                 # 1. Convert history to DataFrame and set a DatetimeIndex

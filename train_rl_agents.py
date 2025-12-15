@@ -255,7 +255,7 @@ test_df = df.iloc[train_size:]
 # 2. CREATE ENVIRONMENT FACTORY FUNCTION
 def make_env(data_frame):
     # Pass the specific dataframe slice to the custom environment
-    return ContinuousTradingEnv(df=data_frame, window_size=WINDOW_SIZE)
+    return ContinuousTradingEnv(df=data_frame, window_size=WINDOW_SIZE, commission=0.001)
 
 # Create Vectorized Environment for stable training
 train_env = make_vec_env(lambda: make_env(train_df), n_envs=4)
