@@ -20,12 +20,8 @@ class ImageRecorderCallback(BaseCallback):
         # Only run every 1000 steps (or at end of episode) to save speed
         if self.n_calls % self.render_freq == 0:
             # Get the image from the environment
-            # Note: SB3 vectorizes environments, so we access the first one
-            img = self.training_env.render(mode='rgb_array')
-            
-            # If vectorized, img might be a list, take the first one
-            if isinstance(img, list):
-                img = img[0]
+            # Access the unwrapped first env to bypass any wrappers that don't support mode argument
+            img = self.training_env.envs[0].unwrapped.render(mode='rgb_array')
 
             # Log to Weights & Biases
             if img is not None:
@@ -46,6 +42,7 @@ class WandbCallback(BaseCallback):
         self.ep_dates = []
         self.ep_balances = []
         self.ep_shares = []
+        self.episode_count = 0
 
     def _on_step(self) -> bool:
         if wandb.run is not None:
@@ -92,12 +89,14 @@ class WandbCallback(BaseCallback):
 
     def _on_rollout_end(self):
         if wandb.run is not None:
+            self.episode_count += 1
             # Generate episode plot before resetting
             if len(self.ep_balances) > 1:
                 self._generate_episode_plot()
 
             # Log trade counts
             wandb.log({
+                "episode_number": self.episode_count,
                 "episode_trade_count": self.ep_trade_count,
                 "episode_buy_count": self.ep_buy_count,
                 "episode_sell_count": self.ep_sell_count

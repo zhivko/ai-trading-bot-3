@@ -10,10 +10,11 @@ import matplotlib.pyplot as plt
 import talib
 
 class ContinuousTradingEnv(gym.Env):
-    metadata = {'render_modes': ['human'], 'render_fps': 30}
+    metadata = {'render_modes': ['human', 'rgb_array'], 'render_fps': 30}
 
     def __init__(self, df, initial_balance=10000, window_size=20, commission=0.000):
         super(ContinuousTradingEnv, self).__init__()
+        self.render_mode = 'rgb_array'
 
         self.window_size = window_size
         self.initial_balance = initial_balance
@@ -104,6 +105,7 @@ class ContinuousTradingEnv(gym.Env):
             'action': [],
             'trade_type': [], # 'buy', 'sell', 'hold'
             'trade_price': [],
+            'shares_held': [],
         }
 
     def _calculate_sharpe_reward(self, window=50):
@@ -184,6 +186,7 @@ class ContinuousTradingEnv(gym.Env):
         self.history['action'].append(0.0)
         self.history['trade_type'].append('hold')
         self.history['trade_price'].append(np.nan)
+        self.history['shares_held'].append(self.shares_held)
 
         observation = self._get_observation()
         info = {}
@@ -304,6 +307,7 @@ class ContinuousTradingEnv(gym.Env):
         self.history['action'].append(float(action_magnitude))
         self.history['trade_type'].append(trade_type)
         self.history['trade_price'].append(trade_price_log)
+        self.history['shares_held'].append(self.shares_held)
 
         info = {
             'net_worth': self.net_worth,
@@ -319,18 +323,25 @@ class ContinuousTradingEnv(gym.Env):
 
     def render(self, mode='human', agent_name='RL_Agent'):
         """Plots the agent's performance using mplfinance, saving the result to a file."""
+        print(f"DEBUG: render called with mode='{mode}', agent_name='{agent_name}'")
+        print(f"DEBUG: current_step={self.current_step}, history length={len(self.history['date'])}")
         if mode == 'human':
+            print("DEBUG: Rendering in human mode")
             # 1. Convert history to DataFrame and set a DatetimeIndex
             history_df = pd.DataFrame(self.history)
+            print(f"DEBUG: history_df shape: {history_df.shape}")
             history_df.set_index(pd.to_datetime(history_df['date']), inplace=True)
 
             # Slice the raw_data_for_plot for the episode duration
             start_idx = self.current_step - len(history_df) + 1
             end_idx = self.current_step + 1
-            
+            print(f"DEBUG: slicing raw_data_for_plot from {start_idx} to {end_idx}")
+
             episode_df_raw = self.raw_data_for_plot.iloc[start_idx:end_idx].copy()
+            print(f"DEBUG: episode_df_raw shape: {episode_df_raw.shape}")
             episode_df = episode_df_raw.set_index('timestamp').drop(columns=['ema_50', 'ema_200', 'macd', 'macd_signal', 'rsi', 'sto_rsi_3_14', 'sto_rsi_10_60'], errors='ignore')
             episode_df.index.name = 'Date'
+            print(f"DEBUG: episode_df shape after processing: {episode_df.shape}")
 
             # --- 2. Prepare Trades for mplfinance scatter plot ---
             buys = history_df[history_df['trade_type'] == 'buy']
@@ -362,11 +373,20 @@ class ContinuousTradingEnv(gym.Env):
                 ylabel='Net Worth ($)'
             )
 
-            all_add_plots = trade_plots + [net_worth_plot]
+            # --- 4. Prepare Shares Held for a separate subplot ---
+            shares_plot = mpf.make_addplot(
+                history_df['shares_held'],
+                panel=3,
+                color='purple',
+                type='line',
+                ylabel='Shares Held'
+            )
+
+            all_add_plots = trade_plots + [net_worth_plot, shares_plot]
 
             # --- 4. Plot and SAVE using mplfinance (The fix) ---
             file_name = f'{agent_name.lower().replace(" ", "_")}_evaluation_chart_{pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")}.png'
-            
+
             # Create the plot, capture the figure object, and suppress the warning
             fig, axlist = mpf.plot(
                 episode_df,
@@ -374,15 +394,19 @@ class ContinuousTradingEnv(gym.Env):
                 style='yahoo',
                 volume=True,
                 addplot=all_add_plots,
-                figratio=(16,9),
+                figratio=(3,1),
+                figsize=(18,6),
                 title=f'{agent_name} Trading Performance',
                 ylabel='Price',
                 mav=(10, 50),
                 show_nontrading=False,
                 tight_layout=True,
-                returnfig=True, 
+                returnfig=True,
                 warn_too_much_data=len(episode_df) + 1 # Suppresses the warning
             )
+
+            # Add legend
+            fig.legend(loc='upper left')
 
             # Save the figure to the specified file name
             fig.savefig(file_name) 
@@ -392,6 +416,109 @@ class ContinuousTradingEnv(gym.Env):
             
             print(f"\nVisualisation saved to: {file_name}")
 
+        elif mode == 'rgb_array':
+            print("DEBUG: Rendering in rgb_array mode")
+            try:
+                # Same plotting logic as human mode, but return image array instead of saving
+                # 1. Convert history to DataFrame and set a DatetimeIndex
+                history_df = pd.DataFrame(self.history)
+                print(f"DEBUG: rgb_array history_df shape: {history_df.shape}")
+                history_df.set_index(pd.to_datetime(history_df['date']), inplace=True)
+
+                # Slice the raw_data_for_plot for the episode duration
+                start_idx = self.current_step - len(history_df) + 1
+                end_idx = self.current_step + 1
+                print(f"DEBUG: rgb_array slicing from {start_idx} to {end_idx}")
+
+                episode_df_raw = self.raw_data_for_plot.iloc[start_idx:end_idx].copy()
+                print(f"DEBUG: rgb_array episode_df_raw shape: {episode_df_raw.shape}")
+                episode_df = episode_df_raw.set_index('timestamp').drop(columns=['ema_50', 'ema_200', 'macd', 'macd_signal', 'rsi', 'sto_rsi_3_14', 'sto_rsi_10_60'], errors='ignore')
+                episode_df.index.name = 'Date'
+                print(f"DEBUG: rgb_array episode_df shape: {episode_df.shape}")
+
+                # --- 2. Prepare Trades for mplfinance scatter plot ---
+                buys = history_df[history_df['trade_type'] == 'buy']
+                sells = history_df[history_df['trade_type'] == 'sell']
+
+                buy_prices = pd.Series(index=episode_df.index, data=np.nan)
+                sell_prices = pd.Series(index=episode_df.index, data=np.nan)
+                buy_prices.loc[buys.index] = buys['trade_price']
+                sell_prices.loc[sells.index] = sells['trade_price']
+
+                trade_plots = []
+                if not buys.empty:
+                    buy_plots = mpf.make_addplot(
+                        buy_prices, type='scatter', markersize=100, marker='^', color='green', label='Buy'
+                    )
+                    trade_plots.append(buy_plots)
+                if not sells.empty:
+                    sell_plots = mpf.make_addplot(
+                        sell_prices, type='scatter', markersize=100, marker='v', color='red', label='Sell'
+                    )
+                    trade_plots.append(sell_plots)
+
+                # --- 3. Prepare Net Worth for a separate subplot ---
+                net_worth_plot = mpf.make_addplot(
+                    history_df['net_worth'],
+                    panel=2,
+                    color='blue',
+                    type='line',
+                    ylabel='Net Worth ($)'
+                )
+
+                # --- 4. Prepare Shares Held for a separate subplot ---
+                shares_plot = mpf.make_addplot(
+                    history_df['shares_held'],
+                    panel=3,
+                    color='purple',
+                    type='line',
+                    ylabel='Shares Held'
+                )
+
+                all_add_plots = trade_plots + [net_worth_plot, shares_plot]
+
+                # --- 4. Plot using mplfinance, get figure ---
+                fig, axlist = mpf.plot(
+                    episode_df,
+                    type='candle',
+                    style='yahoo',
+                    volume=True,
+                    addplot=all_add_plots,
+                    figratio=(3,1),
+                    figsize=(18,6),
+                    title=f'{agent_name} Trading Performance',
+                    ylabel='Price',
+                    mav=(10, 50),
+                    show_nontrading=False,
+                    tight_layout=True,
+                    returnfig=True,
+                    warn_too_much_data=len(episode_df) + 1
+                )
+
+                # Add legend
+                fig.legend(loc='upper left')
+
+                # Convert figure to RGB array
+                fig.canvas.draw()
+                width, height = fig.get_size_inches() * fig.dpi
+                width = int(width)
+                height = int(height)
+                img_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(height, width, 3)
+
+                # Close the figure to free up memory
+                plt.close(fig)
+
+                print(f"DEBUG: Returning image array of shape {img_array.shape}")
+                return img_array
+            except Exception as e:
+                print(f"DEBUG: Error in rgb_array render: {e}")
+                import traceback
+                traceback.print_exc()
+                return None
+
         else:
             # Fallback for other modes
-            super().render(mode=mode)
+            print(f"DEBUG: Unsupported render mode '{mode}', calling super().render() which likely returns None")
+            result = super().render(mode=mode)
+            print(f"DEBUG: super().render() returned: {result}")
+            return result
