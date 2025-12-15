@@ -11,6 +11,29 @@ import wandb
 from stable_baselines3.common.callbacks import BaseCallback
 
 
+class ImageRecorderCallback(BaseCallback):
+    def __init__(self, verbose=0, render_freq=1000):
+        super(ImageRecorderCallback, self).__init__(verbose)
+        self.render_freq = render_freq
+
+    def _on_step(self) -> bool:
+        # Only run every 1000 steps (or at end of episode) to save speed
+        if self.n_calls % self.render_freq == 0:
+            # Get the image from the environment
+            # Note: SB3 vectorizes environments, so we access the first one
+            img = self.training_env.render(mode='rgb_array')
+            
+            # If vectorized, img might be a list, take the first one
+            if isinstance(img, list):
+                img = img[0]
+
+            # Log to Weights & Biases
+            if img is not None:
+                wandb.log({"trading_chart": wandb.Image(img, caption=f"Step {self.num_timesteps}")})
+        
+        return True
+
+
 class WandbCallback(BaseCallback):
     def __init__(self, verbose=0):
         super().__init__(verbose)
@@ -238,6 +261,10 @@ def make_env(data_frame):
 # Create Vectorized Environment for stable training
 train_env = make_vec_env(lambda: make_env(train_df), n_envs=4)
 
+
+# Initialize the callback
+img_callback = ImageRecorderCallback(render_freq=2000) # Render every 2000 steps
+
 # 3. TRAIN SAC (Soft Actor-Critic)
 # SAC is off-policy: uses a large replay buffer and is generally more sample efficient.
 print("--- Training Soft Actor-Critic (SAC) Agent ---")
@@ -247,9 +274,10 @@ sac_model = SAC(
     verbose=1,
     buffer_size=1000000,
     learning_rate=3e-5,
-    ent_coef='auto' # Automatically manages exploration/exploitation
+    ent_coef='auto' # Automatically manages exploration/exploitation,
 )
-sac_model.learn(total_timesteps=TIMESTEPS, progress_bar=True, callback=WandbCallback())
+
+sac_model.learn(total_timesteps=TIMESTEPS, progress_bar=True, callback=[img_callback, WandbCallback()])
 sac_model.save("sac_crypto_trader")
 print("SAC training complete and model saved.")
 

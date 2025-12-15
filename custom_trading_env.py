@@ -43,7 +43,7 @@ class ContinuousTradingEnv(gym.Env):
 
         # --- Action Space (Continuous for SAC/PPO) ---
         # Action is a single float between -1.0 (Strong Sell) and 1.0 (Strong Buy)
-        self.action_space = spaces.Box(low=np.array([-1]), high=np.array([1]), dtype=np.float32)
+        self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
         
         self.reset()
 
@@ -188,14 +188,51 @@ class ContinuousTradingEnv(gym.Env):
         observation = self._get_observation()
         info = {}
         return observation, info
+    
+def _take_action(self, action):
+    # Action comes in as an array, e.g., [0.54]
+    # Clip just in case, though PPO usually handles bounds
+    current_action = np.clip(action[0], -1, 1)
+
+    current_price = self.prices[self.current_step]
+
+    # SCENARIO: BUYING (Action > 0)
+    if current_action > 0:
+        # Calculate how much we can buy with available balance
+        # We multiply by the action magnitude (e.g., 0.5 = use 50% of cash)
+        total_possible_crypto = self.balance / current_price
+        amount_to_buy = total_possible_crypto * current_action 
+        
+        # Execute Buy
+        cost = amount_to_buy * current_price
+        trading_fee = cost * self.commission
+        
+        if self.balance >= (cost + trading_fee):
+            self.balance -= (cost + trading_fee)
+            self.crypto_held += amount_to_buy
+            # Log the trade for rendering later
+            self.trades.append({'step': self.current_step, 'type': 'buy', 'total': cost, 'price': current_price})
+
+    # SCENARIO: SELLING (Action < 0)
+    elif current_action < 0:
+        # Calculate how much to sell based on current holdings
+        # We look at the absolute value (e.g., -0.3 = sell 30% of holdings)
+        amount_to_sell = self.crypto_held * abs(current_action)
+
+        # Execute Sell
+        revenue = amount_to_sell * current_price
+        trading_fee = revenue * self.commission
+        
+        self.balance += (revenue - trading_fee)
+        self.crypto_held -= amount_to_sell
+        # Log the trade
+        self.trades.append({'step': self.current_step, 'type': 'sell', 'total': revenue, 'price': current_price})
+    
+    # Action == 0 is a Hold, do nothing.
 
     def step(self, action):
         # Action is a single float in [-1, 1]. Positive is Buy, Negative is Sell.
         self.current_step += 1
-        if self.current_step >= len(self.df) - 1:
-            terminated = True
-        else:
-            terminated = False
         
         # FIX 4: Use raw data for correct price calculation
         current_price = self.raw_data_for_plot.loc[self.current_step]['close']
@@ -269,6 +306,8 @@ class ContinuousTradingEnv(gym.Env):
         action_penalty = -TRADE_PENALTY_COEF * abs(action_magnitude)
 
         # 5. Bankruptcy Check: Terminate episode if net worth falls below 30% of initial balance
+        terminated = False
+        truncated = False
         if self.net_worth < (self.initial_balance * 0.3):
             terminated = True
             reward = -10  # Large penalty for bankruptcy
@@ -276,6 +315,10 @@ class ContinuousTradingEnv(gym.Env):
             # 6. Final Reward (only if not bankrupt)
             inactivity_penalty = -0.0001 if abs(action_magnitude) < 0.1 else 0
             reward = base_reward + sharpe_reward + benchmark_penalty + action_penalty + frequency_penalty + inactivity_penalty
+
+        # Check for truncation (end of data)
+        if self.current_step >= len(self.df) - 1:
+            truncated = True
 
         self.previous_net_worth = self.net_worth
 
@@ -298,7 +341,7 @@ class ContinuousTradingEnv(gym.Env):
             'trade_executed': trade_executed
         }
 
-        return observation, reward, terminated, False, info
+        return observation, reward, terminated, truncated, info
 
     def render(self, mode='human', agent_name='RL_Agent'):
         """Plots the agent's performance using mplfinance, saving the result to a file."""
@@ -324,13 +367,17 @@ class ContinuousTradingEnv(gym.Env):
             buy_prices.loc[buys.index] = buys['trade_price']
             sell_prices.loc[sells.index] = sells['trade_price']
 
-            buy_plots = mpf.make_addplot(
-                buy_prices, type='scatter', markersize=100, marker='^', color='green', label='Buy'
-            )
-            sell_plots = mpf.make_addplot(
-                sell_prices, type='scatter', markersize=100, marker='v', color='red', label='Sell'
-            )
-            trade_plots = [buy_plots, sell_plots]
+            trade_plots = []
+            if not buys.empty:
+                buy_plots = mpf.make_addplot(
+                    buy_prices, type='scatter', markersize=100, marker='^', color='green', label='Buy'
+                )
+                trade_plots.append(buy_plots)
+            if not sells.empty:
+                sell_plots = mpf.make_addplot(
+                    sell_prices, type='scatter', markersize=100, marker='v', color='red', label='Sell'
+                )
+                trade_plots.append(sell_plots)
 
             # --- 3. Prepare Net Worth for a separate subplot ---
             net_worth_plot = mpf.make_addplot(
