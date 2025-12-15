@@ -12,13 +12,15 @@ import talib
 class ContinuousTradingEnv(gym.Env):
     metadata = {'render_modes': ['human', 'rgb_array'], 'render_fps': 30}
 
-    def __init__(self, df, initial_balance=10000, window_size=20, commission=0.000):
+    def __init__(self, df, initial_balance=10000, window_size=20, commission=0.000, buy_threshold=0.0, sell_threshold=0.0):
         super(ContinuousTradingEnv, self).__init__()
         self.render_mode = 'rgb_array'
 
         self.window_size = window_size
         self.initial_balance = initial_balance
         self.commission = commission
+        self.buy_threshold = buy_threshold
+        self.sell_threshold = sell_threshold
         self.episode_trade_count = 0  # Counter for trades in current episode
         
         # --- FIX 1: Separate data for plotting/trading vs. observation features ---
@@ -102,6 +104,7 @@ class ContinuousTradingEnv(gym.Env):
         return {
             'date': [],
             'net_worth': [],
+            'reward': [],
             'action': [],
             'trade_type': [], # 'buy', 'sell', 'hold'
             'trade_price': [],
@@ -183,6 +186,7 @@ class ContinuousTradingEnv(gym.Env):
         # FIX 3: Correctly log the datetime value
         self.history['date'].append(self.raw_data_for_plot.loc[self.current_step, 'timestamp'])
         self.history['net_worth'].append(self.net_worth)
+        self.history['reward'].append(0.0)  # Initial reward is 0
         self.history['action'].append(0.0)
         self.history['trade_type'].append('hold')
         self.history['trade_price'].append(np.nan)
@@ -202,8 +206,8 @@ class ContinuousTradingEnv(gym.Env):
         trade_type = 'hold'
         trade_price = np.nan
 
-        # SCENARIO: BUYING (Action > 0)
-        if current_action > 0:
+        # SCENARIO: BUYING (Action > buy_threshold)
+        if current_action > self.buy_threshold:
             # Calculate how much we can buy with available balance
             # We multiply by the action magnitude (e.g., 0.5 = use 50% of cash)
             total_possible_crypto = self.balance / current_price
@@ -219,8 +223,8 @@ class ContinuousTradingEnv(gym.Env):
                 trade_type = 'buy'
                 trade_price = current_price
 
-        # SCENARIO: SELLING (Action < 0)
-        elif current_action < 0:
+        # SCENARIO: SELLING (Action < -sell_threshold)
+        elif current_action < -self.sell_threshold:
             # Calculate how much to sell based on current holdings
             # We look at the absolute value (e.g., -0.3 = sell 30% of holdings)
             amount_to_sell = self.shares_held * abs(current_action)
@@ -235,7 +239,7 @@ class ContinuousTradingEnv(gym.Env):
                 trade_type = 'sell'
                 trade_price = current_price
 
-        # Action == 0 is a Hold, do nothing.
+        # Action == 0 or below threshold is a Hold, do nothing.
         return trade_type, trade_price
 
     def step(self, action):
@@ -304,6 +308,7 @@ class ContinuousTradingEnv(gym.Env):
         # FIX 5: Correctly log the datetime value
         self.history['date'].append(self.raw_data_for_plot.loc[self.current_step, 'timestamp'])
         self.history['net_worth'].append(self.net_worth)
+        self.history['reward'].append(reward)  # Log the calculated reward
         self.history['action'].append(float(action_magnitude))
         self.history['trade_type'].append(trade_type)
         self.history['trade_price'].append(trade_price_log)
@@ -364,13 +369,13 @@ class ContinuousTradingEnv(gym.Env):
                 )
                 trade_plots.append(sell_plots)
 
-            # --- 3. Prepare Net Worth for a separate subplot ---
-            net_worth_plot = mpf.make_addplot(
-                history_df['net_worth'],
+            # --- 3. Prepare Reward for a separate subplot ---
+            reward_plot = mpf.make_addplot(
+                history_df['reward'],
                 panel=2,
-                color='blue',
+                color='orange',
                 type='line',
-                ylabel='Net Worth ($)'
+                ylabel='Reward'
             )
 
             # --- 4. Prepare Shares Held for a separate subplot ---
@@ -382,7 +387,7 @@ class ContinuousTradingEnv(gym.Env):
                 ylabel='Shares Held'
             )
 
-            all_add_plots = trade_plots + [net_worth_plot, shares_plot]
+            all_add_plots = trade_plots + [reward_plot, shares_plot]
 
             # --- 4. Plot and SAVE using mplfinance (The fix) ---
             file_name = f'{agent_name.lower().replace(" ", "_")}_evaluation_chart_{pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")}.png'
@@ -395,15 +400,21 @@ class ContinuousTradingEnv(gym.Env):
                 volume=True,
                 addplot=all_add_plots,
                 figratio=(3,1),
-                figsize=(18,6),
+                figsize=(25,5),
                 title=f'{agent_name} Trading Performance',
                 ylabel='Price',
                 mav=(10, 50),
                 show_nontrading=False,
-                tight_layout=True,
+                tight_layout=False,  # Disable tight_layout for more padding
+                # panelratios parameter removed in newer mplfinance versions
                 returnfig=True,
                 warn_too_much_data=len(episode_df) + 1 # Suppresses the warning
+                # pad_rect parameter removed in newer mplfinance versions
             )
+            
+            # Add extra padding between subplots
+            for ax in axlist:
+                ax.margins(x=0.02, y=0.05)  # Add margins for better spacing
 
             # Add legend
             fig.legend(loc='upper left')
@@ -422,19 +433,19 @@ class ContinuousTradingEnv(gym.Env):
                 # Same plotting logic as human mode, but return image array instead of saving
                 # 1. Convert history to DataFrame and set a DatetimeIndex
                 history_df = pd.DataFrame(self.history)
-                print(f"DEBUG: rgb_array history_df shape: {history_df.shape}")
+                #print(f"DEBUG: rgb_array history_df shape: {history_df.shape}")
                 history_df.set_index(pd.to_datetime(history_df['date']), inplace=True)
 
                 # Slice the raw_data_for_plot for the episode duration
                 start_idx = self.current_step - len(history_df) + 1
                 end_idx = self.current_step + 1
-                print(f"DEBUG: rgb_array slicing from {start_idx} to {end_idx}")
+                #print(f"DEBUG: rgb_array slicing from {start_idx} to {end_idx}")
 
                 episode_df_raw = self.raw_data_for_plot.iloc[start_idx:end_idx].copy()
-                print(f"DEBUG: rgb_array episode_df_raw shape: {episode_df_raw.shape}")
+                #print(f"DEBUG: rgb_array episode_df_raw shape: {episode_df_raw.shape}")
                 episode_df = episode_df_raw.set_index('timestamp').drop(columns=['ema_50', 'ema_200', 'macd', 'macd_signal', 'rsi', 'sto_rsi_3_14', 'sto_rsi_10_60'], errors='ignore')
                 episode_df.index.name = 'Date'
-                print(f"DEBUG: rgb_array episode_df shape: {episode_df.shape}")
+                #print(f"DEBUG: rgb_array episode_df shape: {episode_df.shape}")
 
                 # --- 2. Prepare Trades for mplfinance scatter plot ---
                 buys = history_df[history_df['trade_type'] == 'buy']
@@ -457,13 +468,13 @@ class ContinuousTradingEnv(gym.Env):
                     )
                     trade_plots.append(sell_plots)
 
-                # --- 3. Prepare Net Worth for a separate subplot ---
-                net_worth_plot = mpf.make_addplot(
-                    history_df['net_worth'],
+                # --- 3. Prepare Reward for a separate subplot ---
+                reward_plot = mpf.make_addplot(
+                    history_df['reward'],
                     panel=2,
-                    color='blue',
+                    color='orange',
                     type='line',
-                    ylabel='Net Worth ($)'
+                    ylabel='Reward'
                 )
 
                 # --- 4. Prepare Shares Held for a separate subplot ---
@@ -475,7 +486,7 @@ class ContinuousTradingEnv(gym.Env):
                     ylabel='Shares Held'
                 )
 
-                all_add_plots = trade_plots + [net_worth_plot, shares_plot]
+                all_add_plots = trade_plots + [reward_plot, shares_plot]
 
                 # --- 4. Plot using mplfinance, get figure ---
                 fig, axlist = mpf.plot(
@@ -485,15 +496,21 @@ class ContinuousTradingEnv(gym.Env):
                     volume=True,
                     addplot=all_add_plots,
                     figratio=(3,1),
-                    figsize=(18,6),
+                    figsize=(20,10),
                     title=f'{agent_name} Trading Performance',
                     ylabel='Price',
                     mav=(10, 50),
                     show_nontrading=False,
-                    tight_layout=True,
+                    tight_layout=False,  # Disable tight_layout for more padding
+                    # panelratios parameter removed in newer mplfinance versions
                     returnfig=True,
-                    warn_too_much_data=len(episode_df) + 1
+                    warn_too_much_data=len(episode_df) + 1,
+                    # pad_rect parameter removed in newer mplfinance versions
                 )
+                
+                # Add extra padding between subplots
+                for ax in axlist:
+                    ax.margins(x=0.02, y=0.05)  # Add margins for better spacing
 
                 # Add legend
                 fig.legend(loc='upper left')
@@ -508,7 +525,7 @@ class ContinuousTradingEnv(gym.Env):
                 # Close the figure to free up memory
                 plt.close(fig)
 
-                print(f"DEBUG: Returning image array of shape {img_array.shape}")
+                #print(f"DEBUG: Returning image array of shape {img_array.shape}")
                 return img_array
             except Exception as e:
                 print(f"DEBUG: Error in rgb_array render: {e}")
