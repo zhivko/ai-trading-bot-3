@@ -223,8 +223,8 @@ class ContinuousTradingEnv(gym.Env):
                 trade_type = 'buy'
                 trade_price = current_price
 
-        # SCENARIO: SELLING (Action < -sell_threshold)
-        elif current_action < -self.sell_threshold:
+        # SCENARIO: SELLING (Action < sell_threshold)
+        elif current_action < self.sell_threshold:
             # Calculate how much to sell based on current holdings
             # We look at the absolute value (e.g., -0.3 = sell 30% of holdings)
             amount_to_sell = self.shares_held * abs(current_action)
@@ -387,7 +387,16 @@ class ContinuousTradingEnv(gym.Env):
                 ylabel='Shares Held'
             )
 
-            all_add_plots = trade_plots + [reward_plot, shares_plot]
+            # --- 5. Prepare Actions for a separate subplot ---
+            actions_plot = mpf.make_addplot(
+                history_df['action'],
+                panel=4,
+                color='blue',
+                type='line',
+                ylabel='Actions'
+            )
+
+            all_add_plots = trade_plots + [reward_plot, shares_plot, actions_plot]
 
             # --- 4. Plot and SAVE using mplfinance (The fix) ---
             file_name = f'{agent_name.lower().replace(" ", "_")}_evaluation_chart_{pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")}.png'
@@ -486,7 +495,16 @@ class ContinuousTradingEnv(gym.Env):
                     ylabel='Shares Held'
                 )
 
-                all_add_plots = trade_plots + [reward_plot, shares_plot]
+                # --- 5. Prepare Actions for a separate subplot ---
+                actions_plot = mpf.make_addplot(
+                    history_df['action'],
+                    panel=4,
+                    color='blue',
+                    type='line',
+                    ylabel='Actions'
+                )
+
+                all_add_plots = trade_plots + [reward_plot, shares_plot, actions_plot]
 
                 # --- 4. Plot using mplfinance, get figure ---
                 fig, axlist = mpf.plot(
