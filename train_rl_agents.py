@@ -262,7 +262,7 @@ train_env = make_vec_env(lambda: make_env(train_df), n_envs=4)
 
 
 # Initialize the callback
-img_callback = ImageRecorderCallback(render_freq=2000) # Render every 2000 steps
+# img_callback = ImageRecorderCallback(render_freq=5000) # Render every 2000 steps
 
 # 3. TRAIN SAC (Soft Actor-Critic)
 # SAC is off-policy: uses a large replay buffer and is generally more sample efficient.
@@ -276,7 +276,7 @@ sac_model = SAC(
     ent_coef='auto' # Automatically manages exploration/exploitation,
 )
 
-sac_model.learn(total_timesteps=TIMESTEPS, progress_bar=True, callback=[img_callback, WandbCallback()])
+sac_model.learn(total_timesteps=TIMESTEPS, progress_bar=True, callback=[WandbCallback()])
 sac_model.save("sac_crypto_trader")
 print("SAC training complete and model saved.")
 
