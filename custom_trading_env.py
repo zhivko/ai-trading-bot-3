@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
+from collections import deque
 import mplfinance as mpf
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend for headless operation
@@ -11,7 +12,7 @@ import talib
 class ContinuousTradingEnv(gym.Env):
     metadata = {'render_modes': ['human'], 'render_fps': 30}
 
-    def __init__(self, df, initial_balance=10000, window_size=20, commission=0.001):
+    def __init__(self, df, initial_balance=10000, window_size=20, commission=0.000):
         super(ContinuousTradingEnv, self).__init__()
 
         self.window_size = window_size
@@ -29,6 +30,10 @@ class ContinuousTradingEnv(gym.Env):
         
         # --- NEW: History logging structure ---
         self.history = self._get_history_template()
+
+        # --- NEW: Reward enhancement tracking ---
+        self.portfolio_returns = deque(maxlen=100)  # For Sharpe calculation
+        self.episode_start_price = None  # For buy-and-hold benchmark
 
         # --- Observation Space ---
         # The agent observes a window_size of normalized market data (12 features: O,H,L,C,V,EMA, MACD, RSI, STO_RSI)
@@ -70,6 +75,8 @@ class ContinuousTradingEnv(gym.Env):
         for col in price_cols:
             # Replaces absolute price with percentage change
             df_features.loc[:, col] = df_features[col].pct_change()
+            # Forward-fill NaNs with the first valid percentage change to avoid artificial zeros
+            df_features.loc[:, col] = df_features[col].fillna(method='bfill').fillna(0)
             
         # Normalize volume
         df_features.loc[:, 'volume'] = df_features['volume'] / df_features['volume'].rolling(self.window_size).mean()
@@ -99,6 +106,39 @@ class ContinuousTradingEnv(gym.Env):
             'trade_price': [],
         }
 
+    def _calculate_sharpe_reward(self, window=50):
+        """Calculate Sharpe-like reward over a rolling window."""
+        if len(self.portfolio_returns) < window:
+            return 0.0
+
+        # Get recent returns
+        recent_returns = list(self.portfolio_returns)[-window:]
+
+        # Calculate annualized Sharpe ratio components
+        mean_return = np.mean(recent_returns)
+        std_return = np.std(recent_returns) + 1e-8  # Avoid division by zero
+
+        # Sharpe ratio (assuming daily returns, multiply by sqrt(252) for annualization)
+        sharpe = (mean_return / std_return) * np.sqrt(252)
+
+        # Scale for reward (typically Sharpe > 1 is good, < 0 is bad)
+        reward = np.clip(sharpe, -5, 5)  # Reasonable bounds
+
+        return reward
+
+    def _calculate_buy_hold_return(self):
+        """Calculate return if holding from episode start."""
+        if self.episode_start_price is None:
+            self.episode_start_price = self.raw_data_for_plot.loc[self.current_step]['close']
+            return 0.0
+
+        current_price = self.raw_data_for_plot.loc[self.current_step]['close']
+        # Buy-and-hold return from episode start
+        price_change = (current_price - self.episode_start_price) / self.episode_start_price
+        buy_hold_return = price_change * 100.0  # As percentage
+
+        return buy_hold_return
+
     def _get_observation(self):
         # Extract features for the current time step window
         window_data = self.df.loc[self.current_step - self.window_size + 1:self.current_step,
@@ -118,8 +158,13 @@ class ContinuousTradingEnv(gym.Env):
         self.shares_held = 0
         self.episode_trade_count = 0  # Reset trade counter for new episode
         
-        # Start at a random point after the first observation window
-        self.current_step = self.window_size + self.np_random.integers(len(self.df) - self.window_size - 100)
+        # Start at a random point after the first observation window, with longer burn-in to avoid NaN artifacts
+        burn_in_buffer = 50  # Additional rows to skip beyond window_size
+        min_start = self.window_size + burn_in_buffer
+        max_start = len(self.df) - 100
+        if max_start <= min_start:
+            max_start = min_start + 1
+        self.current_step = self.np_random.integers(min_start, max_start)
 
         # FIX 2: Use raw data for correct price calculation
         initial_price = self.raw_data_for_plot.loc[self.current_step]['close']
@@ -130,6 +175,9 @@ class ContinuousTradingEnv(gym.Env):
 
         # New: Reset and initialize history for the new episode
         self.history = self._get_history_template()
+        self.portfolio_returns.clear()  # Reset for new episode
+        self.episode_start_price = self.raw_data_for_plot.loc[self.current_step]['close']  # Set for buy-and-hold benchmark
+
         # FIX 3: Correctly log the datetime value
         self.history['date'].append(self.raw_data_for_plot.loc[self.current_step, 'timestamp'])
         self.history['net_worth'].append(self.net_worth)
@@ -200,24 +248,34 @@ class ContinuousTradingEnv(gym.Env):
         # --- Calculate Reward and Update State (The Critical Fix) ---
         self.net_worth = self.balance + self.shares_held * current_price
 
+        # Calculate portfolio return for tracking
+        portfolio_return = (self.net_worth - self.previous_net_worth) / (self.previous_net_worth + 1e-8)
+        self.portfolio_returns.append(portfolio_return)
+
         # 1. Base Reward: Use Log Return for smoother, more stable training
         net_worth_ratio = self.net_worth / self.previous_net_worth
         # Use np.log(max(..., 1e-6)) to avoid log of zero/negative
         base_reward = np.log(max(net_worth_ratio, 1e-6))
 
-        # 2. Action Penalty: Strongly penalize any trade action to reduce over-trading
-        TRADE_PENALTY_COEF = 0.005 # 0.5% penalty for any action magnitude
+        # 2. Sharpe-like Reward Component
+        sharpe_reward = self._calculate_sharpe_reward(window=30) * 0.1  # Scale down Sharpe component
 
-        # The penalty scales with how large the action was
+        # 3. Buy-and-Hold Benchmark Comparison
+        buy_hold_return = self._calculate_buy_hold_return()
+        benchmark_penalty = -0.01 * buy_hold_return  # Penalize if underperforming buy-and-hold
+
+        # 4. Action Penalty: Strongly penalize any trade action to reduce over-trading
+        TRADE_PENALTY_COEF = 0.001 # 0.1% penalty for any action magnitude
         action_penalty = -TRADE_PENALTY_COEF * abs(action_magnitude)
 
-        # 3. Bankruptcy Check: Terminate episode if net worth falls below 30% of initial balance
+        # 5. Bankruptcy Check: Terminate episode if net worth falls below 30% of initial balance
         if self.net_worth < (self.initial_balance * 0.3):
             terminated = True
             reward = -10  # Large penalty for bankruptcy
         else:
-            # 4. Final Reward (only if not bankrupt)
-            reward = base_reward + action_penalty + frequency_penalty
+            # 6. Final Reward (only if not bankrupt)
+            inactivity_penalty = -0.0001 if abs(action_magnitude) < 0.1 else 0
+            reward = base_reward + sharpe_reward + benchmark_penalty + action_penalty + frequency_penalty + inactivity_penalty
 
         self.previous_net_worth = self.net_worth
 

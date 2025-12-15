@@ -203,7 +203,7 @@ class WandbCallback(BaseCallback):
 # --- CONFIGURATION ---
 DATA_FILE = 'BTCUSDT_data.csv'
 TIMESTEPS = 500000
-WINDOW_SIZE = 10
+WINDOW_SIZE = 20
 
 wandb.init(project="crypto-trading-rl", name="sac-training")
 
