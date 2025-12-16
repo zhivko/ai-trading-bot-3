@@ -505,6 +505,7 @@ class ImprovedTradingEnv(gym.Env):
         
         # Store previous state
         self.previous_net_worth = self.net_worth
+        previous_shares_held = self.shares_held  # Store for trade type calculation
         if hasattr(self, 'previous_action'):
             pass  # Will be used for action change penalty
         else:
@@ -594,10 +595,13 @@ class ImprovedTradingEnv(gym.Env):
         
         trade_type = 'hold'
         if trade_executed:
-            if action_components[0] > 0:
-                trade_type = 'buy'
-            elif action_components[0] < 0:
-                trade_type = 'sell'
+            # Calculate the actual change
+            share_change = self.shares_held - previous_shares_held
+
+            if share_change > 0:
+                trade_type = 'buy'   # Green Triangle (Buying/Covering)
+            elif share_change < 0:
+                trade_type = 'sell'  # Red Triangle (Selling/Shorting)
         
         self.history['trade_type'].append(trade_type)
         self.history['trade_price'].append(current_price if trade_executed else np.nan)
